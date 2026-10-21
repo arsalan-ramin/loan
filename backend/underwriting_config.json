@@ -1,0 +1,84 @@
+{
+  "policy_version": "v4-USD-verified-draft-2",
+  "source_document": "LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf",
+  "source_sha256": "9ed35356fdf8d7f638b6eb77c463df71f9a6dd17234a5fe31be251fda8ac18e7",
+  "source_currency": "USD",
+  "amount_scale": "actual_dollars",
+  "units_confirmation": "Actual USD dollars confirmed by user 2026-10-20; row overrides must also be USD/actual_dollars",
+  "minimum_age": 18,
+  "high_risk_naics": ["23", "4451", "45", "8111", "8121", "8123"],
+  "source_status": "Verified draft, pages 1-3; not approved production credit policy",
+  "implementation_guide_source_document": "MTB_LLM_Underwriting_Complete_Implementation_Guide.pdf",
+  "implementation_guide_source_sha256": "8a409bf6499129be8efe109d1a15f21ecfd95929b0674b993ab6d13c9c8e9467",
+  "implementation_guide_status": "Verified seven-page implementation draft; not approved production credit policy",
+  "expanded_spec_source_document": "MTB_Underwriting_Expanded_Technical_Specification.pdf",
+  "expanded_spec_source_sha256": "a4622c26c642f9546f0df9fd1634ed735d25be36e8042451ba702ddd958a326b",
+  "expanded_spec_version": "expanded-draft-1",
+  "implementation_guide_sections": {"decision_tree": 4, "processing_stages": 5, "out_of_scope": 5, "auditability": 5},
+  "implementation_guide_out_of_scope": ["negative_news", "lawsuits", "garnishment", "sba_eligibility", "ltv", "collections_thresholds", "judgements_thresholds", "collateral_terms"],
+  "ebitda_derivation": "blocked_without_approved_inputs",
+  "unresolved_conflicts": ["REQUEST_THRESHOLD_100M_VS_100K", "INCREASE_WAIT_6_VS_12_MONTHS"],
+  "test_policy": {
+    "synthetic": false,
+    "approved": false,
+    "label": null,
+    "resolved_conflicts": [],
+    "criteria": null
+  },
+  "mapping_manifest": {
+    "expanded_canonical_fields": {
+      "Account": ["identity_verified", "income_verified", "business_formation_date", "financial_period_start", "financial_period_end", "current_assets", "current_liabilities", "prior_revenue", "current_revenue", "prior_expenses", "current_expenses", "prior_profit", "current_profit", "prior_period_end", "current_period_end"],
+      "Loan": ["application_complete", "application_expiry_date", "broker_referred", "acceptance_letter_present", "sba_memo_present", "cam_complete", "loan_purpose", "existing_product", "new_line", "collateral_retained", "reducing_secured_line", "fixed_rate_confirmed", "repayment_terms_confirmed"],
+      "CreditReport": ["account_count", "thin_file_indicator", "judgment_count", "judgments_satisfied", "lien_count", "liens_satisfied", "collection_indicator", "tax_lien_indicator", "max_delinquency_public_records"],
+      "LCRESPONSE": ["score_date"]
+    },
+    "group_credit_tier1_scope_confirmed": false,
+    "verified_usd_source_fields": {
+      "Loan": {"requested_amount": ["LLC_BI_Amount__c"], "tier_i": ["Group_Credit_Amount__c"], "new_money": [], "tier_ii": [], "credit_limit": []},
+      "Account": {"estimated_annual_revenue": ["Estimated_Annual_Revenue__c"], "business_net_income": ["Business_Net_Income__c"], "cash_and_equiv": ["SBSS7_cash_and_equiv__c"], "net_worth": ["SBSS7_net_worth__c"], "total_assets": ["SBSS7_total_assets__c"], "total_liabilities": ["SBSS7_total_liabilities__c"]},
+      "CreditReport": {"past_due": ["nFUSE_Total_Past_Due__c"], "available_credit": ["nFUSE_Available_Credit__c"], "bankruptcy_amount": ["nFUSE_Bankruptcy_Amount__c"]}
+    },
+    "roles": {"borrower": "borrower", "guarantor": "guarantor"},
+    "completed_report_statuses": ["completed", "complete"],
+    "incomplete_report_statuses": ["pending", "in_progress", "failed", "cancelled"],
+    "tables": {
+      "Account": {"id": ["Id", "account_id"], "fields": {"dob": ["dob"], "is_nfp": ["is_nfp"], "ownership_years": ["ownership_years"], "naics": ["naics"], "ebitda": ["ebitda"], "estimated_annual_revenue": ["estimated_annual_revenue", "Estimated_Annual_Revenue__c"], "business_net_income": ["business_net_income", "Business_Net_Income__c"], "cash_and_equiv": ["cash_and_equiv", "SBSS7_cash_and_equiv__c"], "net_worth": ["net_worth", "SBSS7_net_worth__c"], "total_assets": ["total_assets", "SBSS7_total_assets__c"], "total_liabilities": ["total_liabilities", "SBSS7_total_liabilities__c"], "currency": ["currency"], "amount_scale": ["amount_scale"]}},
+      "Loan": {"id": ["Id", "loan_id"], "fields": ["borrower_account_id", "response_id", "as_of_date", "product", "requested_path", "requested_amount", "new_money", "tier_i", "tier_ii", "secured", "is_startup", "is_investment_re", "is_increase", "account_opened", "vehicle_only", "currency", "amount_scale"]},
+      "EntityInvolvement": {"id": ["Id", "involvement_id", "entity_involvement_id"], "fields": ["loan_id", "account_id", "role"]},
+      "CreditReport": {"id": ["Id", "report_id"], "fields": ["account_id", "status", "report_date", "fico", "personal_fico", "report_category", "report_role", "ofac_disposition", "ofac_alert", "credit_freeze", "bankruptcy_count", "bankruptcy_discharge_date", "past_due", "currency", "amount_scale"]},
+      "LoanExtension": {"id": ["Id", "extension_id"], "fields": ["loan_id", "ownership_years", "ebitda", "currency", "amount_scale"]},
+      "LCRESPONSE": {"id": ["Id", "response_id"], "fields": ["loan_id", "sbss"]},
+      "LCREntity": {"id": ["Id", "entity_id", "lcrentity_id"], "fields": ["account_id", "response_id", "entity_involvement_id"]},
+      "DataSourceAnalysis": {"id": ["Id", "analysis_id"], "fields": ["entity_id"]},
+      "Indicator": {"id": ["Id", "indicator_id"], "fields": ["analysis_id", "key", "value"]},
+      "Characteristic": {"id": ["Id", "characteristic_id"], "fields": ["analysis_id", "key", "value"]},
+      "Regulation": {"id": ["Id", "regulation_id"], "fields": ["loan_id"]}
+    },
+    "canonical_table_aliases": {
+      "LLC_BI_LOAN__C": "Loan",
+      "LLC_BI_LEGAL_ENTITIES__C": "EntityInvolvement",
+      "NFUSE_CREDIT_REPORT__C": "CreditReport",
+      "LOAN_EXTENSION__C": "LoanExtension",
+      "SCOC_LCRESPONSE__C": "LCRESPONSE",
+      "SCOC_LCRENTITY__C": "LCREntity",
+      "SCOC_LCRDATASOURCEANALYSIS__C": "DataSourceAnalysis",
+      "SCOC_LCCHARACTERISTIC__C": "Characteristic",
+      "SCOC_LCINDICATOR__C": "Indicator",
+      "MTB_REGULATION__C": "Regulation"
+    },
+    "flattened": {
+      "Loan": {"id": ["Loan_Request_Id", "LLC_BI__Loan__c", "loan_id"], "fields": {"borrower_account_id": ["borrower_account_id"], "response_id": ["applicable_response_id"], "as_of_date": ["as_of_date", "request_date"], "product": ["product"], "requested_path": ["requested_path"], "requested_amount": ["requested_amount"], "new_money": ["new_money"], "tier_i": ["tier_i"], "tier_ii": ["tier_ii"], "secured": ["secured"], "is_startup": ["is_startup"], "is_investment_re": ["is_investment_re"], "is_increase": ["is_increase"], "account_opened": ["account_opened"], "currency": ["currency"], "amount_scale": ["amount_scale"]}},
+      "Account": {"id": ["LLC_BI__Account__c", "account_id", "borrower_account_id"], "fields": {"dob": ["dob"], "is_nfp": ["is_nfp"], "ownership_years": ["ownership_years"], "naics": ["naics"], "ebitda": ["ebitda"], "currency": ["currency"], "amount_scale": ["amount_scale"]}},
+      "CreditReport": {"id": ["nFUSE__Credit_Report__r.Id", "report_id"], "fields": {"account_id": ["LLC_BI__Account__c", "account_id"], "status": ["report_status"], "report_date": ["report_date"], "fico": ["nFUSE__Credit_Score__c", "fico"], "ofac_disposition": ["ofac_disposition"], "ofac_alert": ["nFUSE__OFAC_Alert_Indicator__c", "ofac_alert"], "credit_freeze": ["nFUSE__Credit_Report_Freeze__c", "credit_freeze"], "bankruptcy_count": ["nFUSE__Number_Of_Bankruptcies__c", "bankruptcy_count"], "bankruptcy_discharge_date": ["bankruptcy_discharge_date"], "past_due": ["nFUSE__Total_Past_Due__c", "past_due"], "currency": ["currency"], "amount_scale": ["amount_scale"]}},
+      "LCRESPONSE": {"id": ["SCOC__LCResponse__r.Id", "SCOC__LCResponse__r", "response_id"], "fields": {"loan_id": ["Loan_Request_Id", "LLC_BI__Loan__c", "loan_id"], "sbss": ["SCOC__LCResponse__r.SCOC__SBSS7Score__c", "sbss"]}},
+      "LCREntity": {"id": ["SCOC__LCREntity__r.Id", "entity_id"], "fields": {"account_id": ["LLC_BI__Account__c", "account_id"], "response_id": ["SCOC__LCResponse__r.Id", "SCOC__LCResponse__r", "response_id"], "entity_involvement_id": ["entity_involvement_id"]}},
+      "DataSourceAnalysis": {"id": ["SCOC__DataSourceAnalysis__r.Id", "analysis_id"], "fields": {"entity_id": ["SCOC__LCREntity__r.Id", "entity_id"]}},
+      "Indicator": {"id": ["indicator_id"], "fields": {"analysis_id": ["SCOC__DataSourceAnalysis__r.Id", "analysis_id"], "key": ["SCOC__IndicatorKey__c", "key"], "value": ["SCOC__IndicatorValue__c", "value"]}},
+      "Characteristic": {"id": ["characteristic_id"], "fields": {"analysis_id": ["SCOC__DataSourceAnalysis__r.Id", "analysis_id"], "key": ["SCOC__CharacteristicKey__c"], "value": ["SCOC__CharacteristicValue__c"]}}
+    },
+    "flattened_role_fields": ["borrower_role", "LLC_BI__Borrower_Type__c"],
+    "scalar_response_id_pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    "indicator_feature_mapping": {},
+    "characteristic_feature_mapping": {}
+  }
+}

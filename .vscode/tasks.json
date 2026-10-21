@@ -1,0 +1,50 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Agent: API",
+			"type": "shell",
+			"command": "${workspaceFolder}/.venv/Scripts/python.exe",
+			"args": [
+				"-m",
+				"uvicorn",
+				"backend.main:app",
+				"--host",
+				"127.0.0.1",
+				"--port",
+				"8010"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Agent: UI",
+			"type": "shell",
+			"command": "npm",
+			"args": ["--prefix", "frontend", "run", "dev"],
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Agent: Start",
+			"dependsOn": ["Agent: API", "Agent: UI"],
+			"problemMatcher": []
+		},
+		{
+			"label": "Agent: Backend tests",
+			"type": "shell",
+			"command": "${workspaceFolder}/.venv/Scripts/python.exe",
+			"args": ["-m", "pytest", "backend/tests", "-q"],
+			"group": "test",
+			"problemMatcher": []
+		},
+		{
+			"label": "Agent: Frontend build",
+			"type": "shell",
+			"command": "npm",
+			"args": ["--prefix", "frontend", "run", "build"],
+			"group": "build",
+			"problemMatcher": []
+		}
+	]
+}

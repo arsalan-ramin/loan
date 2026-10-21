@@ -1,0 +1,18 @@
+{
+  "version": "mtb-design-guide-updated-draft-v2-usd-confirmed",
+  "source_document": "LLM_Loan_Approval_Design_Guide_Updated.pdf",
+  "source_sha256": "2a47cd920d38b18d549378fdc627d17f923171e453c92a6625472ebe3fe62076",
+  "amount_unit_confirmed": true,
+  "effective_tgc_formula_confirmed": true,
+  "currency": "USD",
+  "amount_scale": "actual_dollars",
+  "confirmation_note": "User confirmed actual USD dollars and max(Tier I, Tier II) on 2026-10-20. No approval reference or risk thresholds supplied; source PDF remains draft.",
+  "quick_app_new_money_limit": "100000000",
+  "quick_app_tier_i_limit": "250000000",
+  "baloc_special_cap": "25000000",
+  "unsecured_equipment_limit": "20000000",
+  "multiple_bankruptcies_threshold": null,
+  "high_past_due_threshold": null,
+  "minimum_sbss": null,
+  "minimum_credit_score": null
+}

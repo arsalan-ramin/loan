@@ -1,0 +1,14 @@
+Orchid Project — Document Review Policy
+
+This policy describes the approved document review process for the Orchid project.
+Every submission must identify its purpose, responsible team, effective date, and
+supporting evidence. The operations team checks each document before publishing.
+
+Effective date: 20 October 2026
+Responsible team: Document Operations
+Status: Approved
+
+Reviewers should confirm that all required information is available, record any
+missing details, and retain the final decision report with the original submission.
+Automated rule results support the reviewer but do not replace professional judgment.
+Questions about the policy should be directed to the responsible team for clarification.

@@ -4,7 +4,13 @@ __pycache__/
 *.py[cod]
 .env
 backend/.env.example
-backend/data/
+backend/data/*
+!backend/data/*.pdf
+!backend/data/*.xlsx
+backend/data/chroma/
+backend/data/uploads/
+backend/data/*.sqlite*
+backend/data/*.db
 node_modules/
 dist/
 *.tsbuildinfo

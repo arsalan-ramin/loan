@@ -8,13 +8,15 @@ from openpyxl import load_workbook
 
 MAX_CELLS = 1_000_000
 MAX_TEXT = 10_000_000
+MAX_EXPANDED_BYTES = 250 * 1024 * 1024
 
 
 def extract_excel(raw: bytes) -> tuple[str, dict]:
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-            if sum(item.file_size for item in archive.infolist()) > 50 * 1024 * 1024:
-                raise ValueError("Expanded XLSX exceeds the 50 MB limit.")
+            expanded_size = sum(item.file_size for item in archive.infolist())
+            if expanded_size > MAX_EXPANDED_BYTES:
+                raise ValueError("Expanded XLSX exceeds the 250 MB limit.")
         book = load_workbook(io.BytesIO(raw), read_only=True, data_only=False, keep_links=False)
     except (zipfile.BadZipFile, KeyError) as exc:
         raise ValueError("Invalid XLSX workbook. Re-save it as a standard .xlsx file.") from exc

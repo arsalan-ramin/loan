@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from backend.agents import ExtractionAgent, RulesAgent
+from backend import excel
 from backend.main import create_app
 from backend.models import Document, Session
 
@@ -45,6 +46,10 @@ def test_excel_records_metadata_and_formula_text(tmp_path):
     assert doc.metadata["formula_count"] == 1
     assert "FORMULA (not evaluated): =1+1" in doc.content
     assert "[MTB Query 1!row 2] A2=SYNTHETIC-001" in doc.content
+
+
+def test_xlsx_expanded_size_limit_is_above_previous_50_mb():
+    assert excel.MAX_EXPANDED_BYTES == 250 * 1024 * 1024
 
 
 def test_excel_extraction_accepts_text_above_previous_limit(tmp_path):

@@ -6,8 +6,8 @@ from datetime import date, datetime, time
 
 from openpyxl import load_workbook
 
-MAX_CELLS = 200_000
-MAX_TEXT = 2_000_000
+MAX_CELLS = 1_000_000
+MAX_TEXT = 10_000_000
 
 
 def extract_excel(raw: bytes) -> tuple[str, dict]:
@@ -36,7 +36,7 @@ def extract_excel(raw: bytes) -> tuple[str, dict]:
             for row in sheet.iter_rows():
                 cells_seen += len(row)
                 if cells_seen > MAX_CELLS:
-                    raise ValueError("XLSX exceeds the 200,000 visited-cell limit.")
+                    raise ValueError("XLSX exceeds the 1,000,000 visited-cell limit.")
                 nonempty = [cell for cell in row if cell.value is not None and str(cell.value).strip()]
                 if not nonempty:
                     continue
@@ -75,7 +75,7 @@ def extract_excel(raw: bytes) -> tuple[str, dict]:
                 line = f"[{sheet.title}!row {nonempty[0].row}] " + " | ".join(values)
                 text_length += len(line)
                 if text_length > MAX_TEXT:
-                    raise ValueError("XLSX extracted text exceeds the 2 million character limit.")
+                    raise ValueError("XLSX extracted text exceeds the 10 million character limit.")
                 parts.append(line)
             sheets.append({"name": sheet.title, "headers": headers, "header_row": header_row,
                            "data_rows": data_rows, "columns": columns, "is_reference": is_reference})

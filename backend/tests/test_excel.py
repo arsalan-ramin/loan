@@ -47,6 +47,49 @@ def test_excel_records_metadata_and_formula_text(tmp_path):
     assert "[MTB Query 1!row 2] A2=SYNTHETIC-001" in doc.content
 
 
+def test_excel_extraction_accepts_text_above_previous_limit(tmp_path):
+    book = Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.title = "Loans"
+    sheet.append(["Description"])
+    long_text = "x" * 32_767
+    for _ in range(70):
+        sheet.append([long_text])
+    buffer = io.BytesIO()
+    book.save(buffer)
+    book.close()
+
+    path = tmp_path / "large.xlsx"
+    path.write_bytes(buffer.getvalue())
+    document = Document(name="large.xlsx", extension=".xlsx", size=path.stat().st_size)
+    ExtractionAgent().extract(document, path)
+
+    assert document.metadata["character_count"] > 2_000_000
+    assert document.content.count(long_text) == 70
+
+
+def test_excel_extraction_accepts_more_than_previous_cell_limit(tmp_path):
+    book = Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.title = "Loans"
+    sheet.append(["Account", *([None] * 18), "Amount"])
+    for row_number in range(1, 10_002):
+        sheet.append([f"SYNTHETIC-{row_number}", *([None] * 18), row_number])
+    buffer = io.BytesIO()
+    book.save(buffer)
+    book.close()
+
+    path = tmp_path / "many-cells.xlsx"
+    path.write_bytes(buffer.getvalue())
+    document = Document(name="many-cells.xlsx", extension=".xlsx", size=path.stat().st_size)
+    ExtractionAgent().extract(document, path)
+
+    assert document.metadata["data_row_count"] == 10_001
+    assert "SYNTHETIC-10001" in document.content
+
+
 def test_schema_only_workbook_cannot_pass_unnoticed(tmp_path):
     doc = extract(tmp_path, records=False)
     assert doc.metadata["data_row_count"] == 0

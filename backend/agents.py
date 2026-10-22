@@ -105,7 +105,9 @@ class ExtractionAgent:
                 rows = csv.reader(io.StringIO(content))
                 metadata["columns"] = next(rows, [])
                 metadata["rows"] = sum(1 for _ in rows)
-        if len(content) > MAX_CONTENT:
+        # XLSX has its own larger bounded limit in extract_excel; keep the
+        # existing 2-million-character ceiling for all other formats.
+        if document.extension != ".xlsx" and len(content) > MAX_CONTENT:
             raise ValueError(f"{document.name}: extracted text exceeds the 2 million character limit.")
         metadata["word_count"] = len(content.split())
         metadata["character_count"] = len(content)

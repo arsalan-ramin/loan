@@ -210,7 +210,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @application.post("/api/sessions/{session_id}/documents", response_model=Session)
     def upload_documents(request: Request, session_id: str, files: list[UploadFile] = File(...)):
         store: Store = request.app.state.store
-        max_bytes = int(os.getenv("FOLIO_MAX_FILE_MB", "20")) * 1024 * 1024
         created: list[Path] = []
         try:
             with store.lock:
@@ -226,6 +225,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     extension = Path(name).suffix.lower()
                     if extension not in SUPPORTED:
                         raise HTTPException(400, f"{name}: unsupported file type. Use XLSX, PDF, DOCX, TXT, MD, CSV, or JSON.")
+                    max_file_mb = int(os.getenv("FOLIO_MAX_XLSX_MB", "50")) if extension == ".xlsx" else int(os.getenv("FOLIO_MAX_FILE_MB", "20"))
+                    max_bytes = max_file_mb * 1024 * 1024
                     document = Document(name=name[:240], size=0, extension=extension)
                     path = directory / document.id
                     created.append(path)
@@ -233,7 +234,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         while chunk := file.file.read(1024 * 1024):
                             document.size += len(chunk)
                             if document.size > max_bytes:
-                                raise HTTPException(413, f"{name}: file exceeds the {max_bytes // (1024 * 1024)} MB limit.")
+                                raise HTTPException(413, f"{name}: file exceeds the {max_file_mb} MB limit.")
                             destination.write(chunk)
                     if not document.size:
                         raise HTTPException(400, f"{name}: empty files cannot be reviewed.")
@@ -268,7 +269,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             editable(session)
             if session.documents:
                 raise HTTPException(409, "Use a new, empty session to load the three Excel files.")
-            max_bytes = int(os.getenv("FOLIO_MAX_FILE_MB", "20")) * 1024 * 1024
+            max_bytes = int(os.getenv("FOLIO_MAX_XLSX_MB", "50")) * 1024 * 1024
             files = []
             try:
                 for name in names:

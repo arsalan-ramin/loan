@@ -257,3 +257,12 @@ def test_oversized_upload_rolls_back_all_files(client, monkeypatch):
     assert response.status_code == 413
     assert client.get(f"/api/sessions/{sid}").json()["documents"] == []
     assert list((client.app.state.store.root / "uploads" / sid).iterdir()) == []
+
+
+def test_xlsx_upload_allows_more_than_previous_20_mb_default(client):
+    sid = new_session(client)
+    response = client.post(f"/api/sessions/{sid}/documents", files=[
+        ("files", ("large.xlsx", b"x" * (20 * 1024 * 1024 + 1))),
+    ])
+    assert response.status_code == 200
+    assert response.json()["documents"][0]["size"] == 20 * 1024 * 1024 + 1

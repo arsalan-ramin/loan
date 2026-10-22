@@ -29,7 +29,7 @@ For a fresh checkout, create a Python virtual environment, install [backend/requ
 ## Using the workspace
 
 1. Open the UI and ask the assistant a question or create a session. The assistant asks for the required documents first.
-2. Upload XLSX, PDF, DOCX, UTF-8 TXT, Markdown, CSV, or JSON files, or select **Use 3 Excel files from data folder** in a new/empty session. You can also try [examples/sample-policy.txt](examples/sample-policy.txt). Maximum: **20 files per conversation, 20 MB per file** by default.
+2. Upload XLSX, PDF, DOCX, UTF-8 TXT, Markdown, CSV, or JSON files, or select **Use 3 Excel files from data folder** in a new/empty session. You can also try [examples/sample-policy.txt](examples/sample-policy.txt). Maximum: **20 files per conversation; XLSX up to 50 MB and other files up to 20 MB** by default.
 3. For recognized MTB workbooks, choose **Review mode**: **PRODUCTION — manual review only** (default) or **TEST — simulated paths only**. Changing mode clears the report and current validation and requires reprocessing. The selector is disabled during processing or another pending action; errors retain the prior mode/report. **Edit document checks** manages optional text checks separately. Exact bundled examples are removed from MTB sessions; modified/custom checks are retained. **View guideline rules** displays the current v4 catalog and separately categorized guide/expanded diagnostics. Readiness counts are not evaluated loan outcomes.
 4. Select **Process documents**. Uploading and chatting never automatically start processing.
 5. Follow the five-agent pipeline. Open **Review report** to inspect each finding and its evidence.
@@ -65,7 +65,7 @@ Files actually inspected on 2026-10-20 (local test data, not verified customer r
 
 The original fixed-name templates are currently absent from this workspace. Earlier 50/11/32-column, zero-row template descriptions are historical, not the current revised-file inventory. Upload the revised files manually if needed; their current names omit the MTB prefix, but extracted sheet/header signatures recognize them as MTB. 150 source rows do **not** mean 150 loans or joined borrowers. Recognition does not validate their business mappings. Extraction records first nonempty-row headers, counts and sheet/row/cell provenance. README, instructions and guidelines sheets are reference-only and excluded from data totals. Empty templates yield no invented loans.
 
-XLSX is supported; legacy XLS and macro-enabled XLSM are not. Formulas are preserved as text and **never calculated**. Limits: 30 sheets, 200,000 visited cells, 50 MB expanded ZIP contents, and 2 million extracted characters. Header-only workbooks produce mandatory needs-review findings even when generic text checks pass.
+XLSX is supported; legacy XLS and macro-enabled XLSM are not. Formulas are preserved as text and **never calculated**. Limits: 30 sheets, 1,000,000 visited cells, 50 MB expanded ZIP contents, and 10 million extracted characters. Header-only workbooks produce mandatory needs-review findings even when generic text checks pass.
 
 **New MTB reviews use the deterministic v4 engine**, [backend/underwriting_engine.py](backend/underwriting_engine.py), models, graph and [backend/underwriting_config.json](backend/underwriting_config.json). The policy source is [backend/data/LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf](backend/data/LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf), **three pages**, SHA-256 **9ed35356fdf8d7f638b6eb77c463df71f9a6dd17234a5fe31be251fda8ac18e7**; version `v4-USD-verified-draft-2`. This remains the separately pinned v4 policy-evidence source; hash verification establishes integrity, **not production credit-policy authorization**.
 
@@ -172,6 +172,7 @@ Agent retains the legacy `FOLIO_*` environment variable names and `folio_memory`
 - `FOLIO_DATA_DIR`: defaults to the backend data directory; relative overrides resolve from the launch working directory.
 - `FOLIO_CORS_ORIGINS`: comma-separated explicit browser origins, defaults to localhost/127.0.0.1 on port 5174.
 - `FOLIO_MAX_FILE_MB`: default 20.
+- `FOLIO_MAX_XLSX_MB`: default 50; applies to uploaded and allowlisted data-folder XLSX files.
 
 The backend creates a SQLite database, local Chroma persistence and uploads under its data directory; never commit these or customer uploads. Reports persist within sessions. There is no automatic retention policy or encryption at rest. Do not delete the whole data directory casually: it also contains source PDFs and workbook inputs. Back up needed data before any deliberate reset. V4 source verification specifically reads the pinned PDF from the module's backend data directory, not an uploaded policy document or an alternative `FOLIO_DATA_DIR`.
 

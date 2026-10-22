@@ -60,7 +60,7 @@ describe('Agent', () => {
     expect(screen.getByRole('button', { name: 'Process documents' })).toBeDisabled();
     expect(screen.getByText('No documents added yet')).toBeInTheDocument();
     expect(screen.getByLabelText('Choose documents')).toHaveAttribute('accept', '.pdf,.docx,.xlsx,.txt,.md,.csv,.json');
-    expect(screen.getByText('PDF, DOCX, XLSX, TXT, MD, CSV, JSON · Max 20 MB per file · 20 files per session')).toBeInTheDocument();
+    expect(screen.getByText('XLSX up to 50 MB · Other files up to 20 MB · 20 files per session')).toBeInTheDocument();
     expect(screen.getByText(/.xls and .xlsm are unsupported/)).toBeInTheDocument();
     expect(screen.getByText(/V4 guideline available\. Amounts use actual USD dollars/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Use 3 Excel files from data folder' })).toBeEnabled();

@@ -1,0 +1,111 @@
+"""Renamed MTB data must never silently fall through to generic approval."""
+
+import io
+
+import pytest
+from fastapi.testclient import TestClient
+from openpyxl import Workbook
+
+from backend.agents import DecisionAgent, RulesAgent
+from backend.datasets import SIGNATURES, mtb_query_ids
+from backend.llm import AnthropicLLM, LLMError
+from backend.main import create_app, process_session
+from backend.models import Document, Report, Session
+from backend.policy import evaluate_session
+from backend.storage import Store
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("MTB_Query_1.xlsx", {1}), ("MTB_Query_1_Sample_Data.xlsx", {1}),
+    ("MTB_Query_2_Sample_Data.xlsx", {2}), ("MTB_Query_4_Sample_Data.xlsx", {4}),
+    ("mtb query 4 (copy).XLSX", {4}), ("MTB-Query-2-test.xlsx", {2}),
+    ("MTB_Query_14.xlsx", set()), ("MTB_Query_3.xlsx", set()),
+    ("MTB_Query_1.txt", set()), ("MTB_Query_1.xlsm", set()), ("report.xlsx", set()),
+])
+def test_sample_names_and_unrelated_files(name, expected):
+    assert mtb_query_ids(name, {}) == expected
+
+
+@pytest.mark.parametrize("query", [1, 2, 4])
+def test_renamed_workbook_detected_from_sheet_or_headers(query):
+    assert mtb_query_ids("renamed.xlsx", {"sheets": [{"name": f"MTB Query {query}", "headers": []}]}) == {query}
+    assert mtb_query_ids("renamed.xlsx", {"sheets": [{"name": "Data", "headers": list(SIGNATURES[query])}]}) == {query}
+    assert mtb_query_ids("renamed.xlsx", {"sheets": [{"name": "README", "is_reference": True,
+                                                         "headers": list(SIGNATURES[query])}]}) == set()
+
+
+def test_query_one_bureau_columns_not_misclassified_as_query_four():
+    metadata = {"sheets": [{"name": "Data", "headers": list(SIGNATURES[1] | SIGNATURES[4])}]}
+    assert mtb_query_ids("renamed.xlsx", metadata) == {1}
+
+
+def test_sample_report_runs_guideline_not_word_count(monkeypatch):
+    monkeypatch.setattr(AnthropicLLM, "complete", lambda *_: (_ for _ in ()).throw(LLMError("Network disabled")))
+    documents = [Document(name=f"MTB_Query_{query}_Sample_Data.xlsx", extension=".xlsx", size=10,
+                          content="Many readable words. " * 50,
+                          metadata={"data_row_count": 1, "records": [{"sheet": f"MTB Query {query}", "row": 2,
+                          "values": {"nFUSE__Credit_Report_Freeze__c": True},
+                          "sources": {"nFUSE__Credit_Report_Freeze__c": "A2"}}]}) for query in (1, 2, 4)]
+    session = Session(documents=documents)
+    findings = RulesAgent().evaluate(session)
+    report = DecisionAgent().decide(session, findings)
+    assert report.decision == "needs_review"
+    assert report.policy_evaluation is not None
+    # V4 requires explicit loan identity: unrelated source rows are not profiles.
+    assert report.underwriting is not None
+    assert report.underwriting.loan_results == []
+    assert report.policy_evaluation.profiles == []
+    assert report.policy_evaluation.rule_results == []
+    assert "NO_EXPLICIT_LOAN_RECORDS" in report.underwriting.data_quality_issues
+    assert report.policy_evaluation.source_document == report.underwriting.source_document
+    assert not any(f.rule_id in {"readable-content", "draft-check"} for f in findings)
+    assert not any("Required workbook" in item for item in report.policy_evaluation.missing_information)
+
+
+def test_stale_sample_approval_invalidated_even_without_default_checks(tmp_path):
+    root = tmp_path / "data"
+    store = Store(root)
+    session = Session(documents=[Document(name="MTB_Query_1_Sample_Data.xlsx", extension=".xlsx", size=10)], rules=[], status="completed",
+                      report=Report(decision="approved", summary="Generic approval", findings=[], document_count=1,
+                                    llm_analysis="Generic checks passed."))
+    store.save(session)
+    with TestClient(create_app(root)) as client:
+        migrated = client.get(f"/api/sessions/{session.id}").json()
+        assert migrated["status"] == "ready"
+        assert migrated["report"] is None
+        assert migrated["policy_rules"]
+        assert "invalidated" in migrated["messages"][-1]["content"]
+        assert client.get(f"/api/sessions/{session.id}/report").status_code == 409
+
+
+def test_duplicate_query_files_disclosed_not_joined():
+    session = Session(documents=[Document(name=name, extension=".xlsx", size=10) for name in
+                                 ("MTB_Query_1.xlsx", "MTB_Query_1_Sample_Data.xlsx")])
+    policy = evaluate_session(session)
+    assert policy is not None
+    assert any("Multiple workbooks" in item for item in policy.missing_information)
+    assert any("MTB Query 2" in item for item in policy.missing_information)
+
+
+def test_header_recognition_switches_workflow_after_extraction(tmp_path, monkeypatch):
+    monkeypatch.setattr(AnthropicLLM, "complete", lambda *_: (_ for _ in ()).throw(LLMError("Network disabled")))
+    book = Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.title = "Data"
+    sheet.append(sorted(SIGNATURES[4]))
+    sheet.append([False, 0, False])
+    stream = io.BytesIO()
+    book.save(stream)
+    book.close()
+    app = create_app(tmp_path / "data")
+    with TestClient(app) as client:
+        sid = client.post("/api/sessions", json={}).json()["id"]
+        client.post(f"/api/sessions/{sid}/documents", files=[("files", ("renamed.xlsx", stream.getvalue()))])
+        process_session(app.state.store, sid)
+        result = client.get(f"/api/sessions/{sid}").json()
+        assert result["status"] == "completed"
+        assert result["rules"] == []
+        assert result["policy_rules"]
+        assert result["report"]["policy_evaluation"] is not None
+        assert result["report"]["decision"] == "needs_review"

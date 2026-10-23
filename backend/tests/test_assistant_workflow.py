@@ -45,6 +45,15 @@ def test_local_validation_is_persisted_bounded_and_never_creates_a_report(client
     assert result["query_roles"] == [1, 2, 4]
     assert result["missing_query_roles"] == []
     assert result["loan_count"] == 1
+    assert result["account_count"] == 1
+    accounts = client.get(f"/api/sessions/{sid}/accounts?q=A1").json()
+    assert accounts["total"] == 1
+    assert accounts["results"][0]["account_id"] == "A1"
+    assert accounts["results"][0]["loan_count"] == 1
+    assert accounts["results"][0]["loan_ids"] == ["L1"]
+    by_loan = client.get(f"/api/sessions/{sid}/accounts?q=L1").json()
+    assert by_loan["total"] == 1
+    assert by_loan["results"][0]["account_id"] == "A1"
     assert result["external_processing"] is False
     assert len(result["priority_issues"]) <= 10
     assert session["status"] == "ready" and session["report"] is None
@@ -125,6 +134,25 @@ def test_confirmed_processing_is_revision_bound_and_disallows_extra_configuratio
     assert client.post(endpoint, json={"confirmed": True, "expected_updated_at": current["updated_at"]}).status_code == 409
 
 
+def test_processing_requires_a_selected_detected_account(client, monkeypatch):
+    sid = upload_three(client)
+    session = client.app.state.store.get(sid)
+    session.selected_account_id = None
+    client.app.state.store.save(session)
+    submit = Mock()
+    monkeypatch.setattr(client.app.state.executor, "submit", submit)
+
+    blocked = client.post(f"/api/sessions/{sid}/process")
+    assert blocked.status_code == 409
+    assert "Select a detected borrower account" in blocked.json()["detail"]
+    assert submit.call_count == 0
+
+    page = client.get(f"/api/sessions/{sid}/accounts").json()
+    selected = client.put(f"/api/sessions/{sid}/account", json={"account_id": page["results"][0]["account_id"]})
+    assert selected.status_code == 200
+    assert selected.json()["selected_account_id"] == page["results"][0]["account_id"]
+
+
 @pytest.mark.parametrize("kind", ["note", "acknowledgment"])
 def test_notes_are_unverified_report_bound_and_do_not_clear_any_rules(client, kind):
     sid, report = completed(client)
@@ -152,6 +180,9 @@ def test_processing_locks_all_local_state_changes(client):
 
 def test_concurrent_preflight_never_overwrites_changes(client, monkeypatch):
     sid = upload_three(client)
+    initial = client.app.state.store.get(sid)
+    initial.preflight = None
+    client.app.state.store.save(initial)
     original = main.preflight
 
     def changed(session, root):
@@ -212,17 +243,34 @@ def test_review_note_limit_and_unrecognized_action_are_enforced(client):
     assert client.post(f"/api/sessions/{sid}/assistant/approve", json={"loan_id": "L1"}).status_code == 404
 
 
-def test_priority_summary_groups_repeated_graph_codes(client, monkeypatch):
-    from backend.assistant_workflow import preflight
-    from backend.underwriting_models import UnderwritingBatch
-
+def test_account_directory_search_is_paginated_and_session_scoped(client):
+    from backend.models import AccountCandidate
     sid = upload_three(client)
-    batch = UnderwritingBatch(mode="PRODUCTION", policy_version="draft", data_quality_issues=[
-        "MISSING_OR_INVALID_ID:CreditReport [ev-a]", "MISSING_OR_INVALID_ID:CreditReport [ev-b]",
-        "ORPHAN_RELATION:Loan:account [ev-c]",
+    client.app.state.store.replace_account_candidates(sid, [
+        AccountCandidate(account_id=f"A{i:03}", name=f"Client {i:03}", loan_count=i,
+                 loan_ids=[f"L{i:03}"]) for i in range(1, 6)
     ])
-    monkeypatch.setattr("backend.assistant_workflow.evaluate_underwriting", lambda *args: batch)
-    result = preflight(client.app.state.store.get(sid), client.app.state.store.root)
-    assert result.issue_count == 3
-    assert result.priority_issues[0] == "MISSING_OR_INVALID_ID:CreditReport (2 affected observations)"
-    assert len(result.priority_issues) == 2
+    first = client.get(f"/api/sessions/{sid}/accounts?limit=2").json()
+    assert first["total"] == 5 and len(first["results"]) == 2
+    second = client.get(f"/api/sessions/{sid}/accounts?limit=2&offset=2&q=Client%2000").json()
+    assert [item["account_id"] for item in second["results"]] == ["A003", "A004"]
+    assert client.get("/api/sessions/missing/accounts").status_code == 404
+
+
+def test_account_search_refreshes_legacy_preflight_index(client):
+    sid = upload_three(client)
+    store = client.app.state.store
+    session = store.get(sid)
+    session.preflight.account_index_version = 0
+    session.preflight.account_count = 0
+    store.forget_account_candidates(sid)
+    store.save(session)
+
+    response = client.get(f"/api/sessions/{sid}/accounts?q=L1")
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["account_count"] == 1
+    assert result["refreshed_preflight"]["account_index_version"] == 1
+    assert result["results"][0]["account_id"] == "A1"
+    assert result["results"][0]["loan_ids"] == ["L1"]

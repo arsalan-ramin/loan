@@ -6,7 +6,7 @@ import type { LoanInspection, LoanRecommendation, Session } from './types';
 
 function session(): Session {
   return { id: 's1', title: 'Review', mode: 'PRODUCTION', created_at: 'today', updated_at: 'revision1',
-    status: 'ready', messages: [], documents: [{ id: 'd1', name: 'MTB_Query_1.xlsx', size: 10, extension: '.xlsx', metadata: {} }],
+    status: 'ready', messages: [], documents: [{ id: 'd1', name: 'evidence.txt', size: 10, extension: '.txt', metadata: {} }],
     rules: [], steps: [], report: null, error: null };
 }
 
@@ -35,6 +35,33 @@ describe('Guided assistant workflow', () => {
     expect(fetch).toHaveBeenCalledWith('/api/sessions/s1/assistant/process', expect.objectContaining({ method: 'POST', body: JSON.stringify({ confirmed: true, expected_updated_at: 'revision1' }) }));
   });
 
+  it('requires local validation and an explicit borrower selection for MTB processing', async () => {
+    const active = session();
+    active.documents = [{ id: 'd1', name: 'MTB_Query_1.xlsx', size: 10, extension: '.xlsx', metadata: {} }];
+    active.preflight = { created_at: 'now', input_fingerprint: 'hash', recognized_mtb: true, query_roles: [1, 2, 4],
+      missing_query_roles: [], document_count: 3, loan_count: 2, account_count: 1, issue_count: 0,
+      priority_issues: [], suggested_next_step: 'Select account', comparison: 'First', external_processing: false };
+    const selected = { ...active, selected_account_id: 'A1' };
+    const fetchMock = vi.fn(async (url: string) => {
+      const body = url.includes('/accounts?')
+        ? { results: [{ account_id: 'A1', name: 'Client A', loan_count: 2, loan_ids: ['MTB-L003', 'MTB-L004'] }], total: 1, offset: 0, limit: 50, account_count: 1 }
+        : url.endsWith('/account') ? selected : active;
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const p = props(active); const view = render(<GuidedAssistant {...p} />);
+    await screen.findByRole('option', { name: /Client A/ });
+    await userEvent.type(screen.getByRole('textbox', { name: 'Search accounts or clients' }), 'MTB-L003');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/sessions/s1/accounts?q=MTB-L003&offset=0&limit=50', undefined));
+    expect(await screen.findByRole('option', { name: /matched loan MTB-L003/ })).toBeInTheDocument();
+    const prepare = screen.getByRole('button', { name: 'Prepare review' });
+    expect(prepare).toBeDisabled();
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Choose account/client' }), 'A1');
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/s1/account', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ account_id: 'A1' }) }));
+    view.rerender(<GuidedAssistant {...p} session={selected} />);
+    expect(prepare).toBeEnabled();
+  });
+
   it('cancels confirmation and clears stale confirmations after input revisions change', async () => {
     const p = props(); const view = render(<GuidedAssistant {...p} />);
     await userEvent.click(screen.getByRole('button', { name: 'Prepare review' }));
@@ -49,7 +76,7 @@ describe('Guided assistant workflow', () => {
   it('shows escaped priority blockers and comparison without claiming approval', () => {
     const active = session();
     active.preflight = { created_at: 'now', input_fingerprint: 'hash', recognized_mtb: true, query_roles: [1],
-      missing_query_roles: [2, 4], document_count: 1, loan_count: 0, issue_count: 20,
+      missing_query_roles: [2, 4], document_count: 1, loan_count: 0, account_count: 0, issue_count: 20,
       priority_issues: ['<script>missing borrower</script>'], suggested_next_step: 'Replace source', comparison: 'Previous issue count 30; current 20', external_processing: false };
     const { container } = render(<GuidedAssistant {...props(active)} />);
     expect(screen.getByText('<script>missing borrower</script>')).toBeInTheDocument();

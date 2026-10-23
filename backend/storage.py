@@ -37,6 +37,16 @@ class Store:
         self.db_path = root / "sessions.sqlite3"
         with self.connect() as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, updated_at TEXT, payload TEXT)")
+            conn.execute("""CREATE TABLE IF NOT EXISTS account_candidates (
+                session_id TEXT NOT NULL, account_id TEXT NOT NULL, name TEXT, loan_count INTEGER NOT NULL,
+                PRIMARY KEY (session_id, account_id)
+            )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS account_candidates_name ON account_candidates (session_id, name COLLATE NOCASE, account_id)")
+            conn.execute("""CREATE TABLE IF NOT EXISTS account_candidate_loans (
+                session_id TEXT NOT NULL, account_id TEXT NOT NULL, loan_id TEXT NOT NULL,
+                PRIMARY KEY (session_id, account_id, loan_id)
+            )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS account_candidate_loans_lookup ON account_candidate_loans (session_id, loan_id, account_id)")
         self.chroma = chromadb.PersistentClient(path=str(root / "chroma"))
         self.vectors = self.chroma.get_or_create_collection(
             name="folio_memory", embedding_function=None, metadata={"hnsw:space": "cosine"}
@@ -60,6 +70,56 @@ class Store:
         with self.connect() as conn:
             rows = conn.execute("SELECT payload FROM sessions ORDER BY updated_at DESC").fetchall()
         return [Session.model_validate_json(row[0]) for row in rows]
+
+    def replace_account_candidates(self, session_id: str, candidates) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM account_candidates WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM account_candidate_loans WHERE session_id = ?", (session_id,))
+            conn.executemany(
+                "INSERT INTO account_candidates (session_id, account_id, name, loan_count) VALUES (?, ?, ?, ?)",
+                [(session_id, item.account_id, item.name, item.loan_count) for item in candidates],
+            )
+            conn.executemany(
+                "INSERT INTO account_candidate_loans (session_id, account_id, loan_id) VALUES (?, ?, ?)",
+                [(session_id, item.account_id, loan_id) for item in candidates for loan_id in item.loan_ids],
+            )
+
+    def account_candidates(self, session_id: str, query: str = "", offset: int = 0, limit: int = 50):
+        term = query.strip().casefold()
+        with self.connect() as conn:
+            if term:
+                pattern = term.replace("%", "\\%").replace("_", "\\_") + "%"
+                where = ("session_id = ? AND (account_id LIKE ? ESCAPE '\\' COLLATE NOCASE "
+                         "OR name LIKE ? ESCAPE '\\' COLLATE NOCASE OR EXISTS ("
+                         "SELECT 1 FROM account_candidate_loans l WHERE l.session_id = account_candidates.session_id "
+                         "AND l.account_id = account_candidates.account_id AND l.loan_id LIKE ? ESCAPE '\\' COLLATE NOCASE))")
+                params = (session_id, pattern, pattern, pattern)
+            else:
+                where = "session_id = ?"
+                params = (session_id,)
+            total = conn.execute(f"SELECT COUNT(*) FROM account_candidates WHERE {where}", params).fetchone()[0]
+            rows = conn.execute(
+                "SELECT account_id, name, loan_count, "
+                "(SELECT group_concat(loan_id, char(31)) FROM account_candidate_loans l "
+                "WHERE l.session_id = account_candidates.session_id AND l.account_id = account_candidates.account_id) "
+                "FROM account_candidates "
+                f"WHERE {where} ORDER BY name COLLATE NOCASE, account_id LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+        return rows, total
+
+    def has_account_candidate(self, session_id: str, account_id: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM account_candidates WHERE session_id = ? AND account_id = ?",
+                (session_id, account_id),
+            ).fetchone()
+        return row is not None
+
+    def forget_account_candidates(self, session_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM account_candidates WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM account_candidate_loans WHERE session_id = ?", (session_id,))
 
     def remember(self, session_id: str, item_id: str, text: str, kind: str, source: str = "") -> None:
         if not text.strip():

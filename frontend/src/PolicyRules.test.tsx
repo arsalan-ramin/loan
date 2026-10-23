@@ -178,7 +178,7 @@ it.each([
   await user.click(download);
   expect(fetchMock.mock.calls.some(([url]) => url.includes('/report'))).toBe(false);
   await user.click(screen.getByRole('button', { name: 'Document studio' }));
-  expect(screen.getByRole('button', { name: 'Process documents' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Process documents' })).toBeDisabled();
 });
 
 it.each(['renamed.xlsx', 'MTB_Query_3.xlsx'])('preserves generic approved reports and commentary for %s without a catalog', async (name) => {

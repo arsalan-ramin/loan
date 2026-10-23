@@ -43,7 +43,8 @@ def rows():
                   "is_investment_re": False, "is_increase": False}),
         ("CreditReport", {"Id": "R1", "account_id": "A1", "status": "completed", "report_date": "2026-10-19",
                           "personal_fico": "760", "ofac_disposition": "cleared", "ofac_alert": False,
-                          "credit_freeze": False, "bankruptcy_count": "0", "past_due": "0"}),
+                          "credit_freeze": False, "bankruptcy_count": "0", "past_due": "0",
+                          "max_delinquency_public_records": "0"}),
         ("LCRESPONSE", {"Id": "S1", "loan_id": "L1", "sbss": "200"}),
     ]
 
@@ -475,6 +476,73 @@ def test_full_graph_retains_one_to_many_with_provenance_no_implicit_pivot():
     assert result.normalized_data["ownership_years"] == "2"
     assert {item.record_id for item in result.source_evidence} >= {"E1", "D1", "I1", "I2", "C1"}
     assert all(set(item.evidence_refs) <= {e.id for e in result.source_evidence} for item in result.rule_results)
+
+
+def test_selected_account_scopes_engine_to_its_loans_and_source_evidence():
+    source = rows() + [
+        ("Account", {"Id": "A2", "ownership_years": "5", "naics": "541100", "ebitda": "100"}),
+        ("Loan", {"Id": "L2", "borrower_account_id": "A2", "as_of_date": "2026-10-20",
+                  "product": "bil", "requested_path": "full_underwriting", "requested_amount": "50000"}),
+        ("CreditReport", {"Id": "R2", "account_id": "A2", "status": "completed",
+                           "report_date": "2026-10-19", "personal_fico": "800"}),
+    ]
+
+    batch = evaluate_underwriting([document(source)], selected_account_id="A1")
+
+    assert [loan.loan_id for loan in batch.loan_results] == ["L1"]
+    evidence_record_ids = {item.record_id for loan in batch.loan_results for item in loan.source_evidence}
+    assert not {"A2", "L2", "R2"} & evidence_record_ids
+
+
+def test_screenshot_er_diagram_labels_map_characteristics_and_relationships():
+    source = [
+        ("ACCOUNT", {"ACCOUNT_ID": "A1"}),
+        ("LLC_BI_LOAN__C", {"LOAN_ID": "L1", "ACCOUNT_ID": "A1"}),
+        ("NFUSE_CREDIT_REPORT__C", {
+            "CREDIT_REPORT_ID": "R1", "ACCOUNT_ID": "A1", "CREDIT_SCORE": "700",
+            "NO OF JUDGEMENTS": "2",
+        }),
+        ("SCOC_LCRESPONSE__C", {"LCResponse_ID": "S1", "Loan_ID": "L1", "sbss": "200"}),
+        ("SCOC_LCRENTITY__C", {"LCREntity_ID": "E1", "LCResponse_ID": "S1", "Account_ID": "A1"}),
+        ("SCOC_LCRDATASOURCEANALYSIS__C", {"LCRDataSourceAnalysis_ID": "D1", "LCREntity_ID": "E1"}),
+        ("SCOC_LCCHARACTERISTIC__C", {
+            "LCCharacteristic_ID": "C1",
+            "LCDataSourceAnalysis_ID": "D1",
+            "Characteristic_Key": "FLAG",
+            "Characteristic_Value": "false",
+        }),
+    ]
+
+    graph = build_entity_graph([document(source)], load_underwriting_config())
+
+    assert not graph.issues
+    characteristic = graph.table("Characteristic")["C1"]
+    assert characteristic.fields == {
+        "analysis_id": "D1", "key": "FLAG", "value": "false",
+    }
+    assert graph.table("DataSourceAnalysis")["D1"].fields["entity_id"] == "E1"
+    assert graph.table("LCREntity")["E1"].fields["response_id"] == "S1"
+    assert graph.table("CreditReport")["R1"].fields["fico"] == "700"
+    assert graph.table("CreditReport")["R1"].fields["judgment_count"] == "2"
+
+
+def test_screenshot_er_diagram_labels_map_in_flattened_mtb_rows():
+    source = [("Data", {
+        "Loan_Request_Id": "L1", "borrower_account_id": "A1", "borrower_role": "Borrower",
+        "LLC_BI__Account__c": "A1", "LCResponse_ID": "S1", "LOAN_ID": "L1",
+        "LCREntity_ID": "E1", "Account_ID": "A1", "LCRDataSourceAnalysis_ID": "D1",
+        "LCDataSourceAnalysis_ID": "D1", "LCCharacteristic_ID": "C1",
+        "Characteristic_Key": "FLAG", "Characteristic_Value": "false",
+    })]
+
+    graph = build_entity_graph(
+        [document(source, name="MTB_Query_2.xlsx")], load_underwriting_config(),
+    )
+
+    assert not graph.issues
+    assert graph.table("Characteristic")["C1"].fields == {
+        "analysis_id": "D1", "key": "FLAG", "value": "false",
+    }
 
 
 @pytest.mark.parametrize("table,key,bad", [("CreditReport", "account_id", "MISSING"), ("LoanExtension", "loan_id", "MISSING"),

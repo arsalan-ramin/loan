@@ -36,7 +36,7 @@ def test_increase_six_and_twelve_months_remain_distinct(opened, asof, six, twelv
                                         ("CreditReport", "personal_fico"), ("CreditReport", "report_date"),
                                         ("CreditReport", "ofac_disposition"), ("CreditReport", "ofac_alert"),
                                         ("CreditReport", "credit_freeze"), ("CreditReport", "bankruptcy_count"),
-                                        ("LCRESPONSE", "sbss")])
+                                        ("CreditReport", "max_delinquency_public_records"), ("LCRESPONSE", "sbss")])
 def test_omitted_core_evidence_never_allows_synthetic_approval(table, key):
     source = rows()
     next(fields for name, fields in source if name == table).pop(key)

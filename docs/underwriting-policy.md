@@ -75,6 +75,8 @@ The manifest supports **exact canonical sheets** and **explicit flattened aliase
 | DataSourceAnalysis | `Id` or `analysis_id`; `entity_id` |
 | Indicator / Characteristic | `Id` or appropriate observation ID; `analysis_id`, `key`, `value` |
 
+The supplied data-model screenshot's explicit ERD labels are also accepted as aliases for the corresponding graph IDs/foreign keys, including `ACCOUNT_ID`, `LOAN_ID`, `LCResponse_ID`, `LCREntity_ID`, `LCRDataSourceAnalysis_ID`/`LCDataSourceAnalysis_ID`, and characteristic `LCCharacteristic_ID`, `Characteristic_Key`, `Characteristic_Value`. The credit-report labels `CREDIT_SCORE` and `NO OF JUDGEMENTS` are retained as raw score/judgment-count fields. A generic credit score is **not** personal FICO without explicit report category and party role; a judgment count is not the separately named maximum-delinquency-public-records code. These aliases support both exact canonical table names and recognized flattened MTB rows. They do not infer missing IDs, relationships, applicant roles, or business meaning.
+
 Relationships are explicit: Loan–Account (direct borrower or involvement junction); CreditReport–Account; LoanExtension–Loan; Loan–LCRESPONSE; response–LCREntity–Account; entity–analysis–observations. Flattened examples include `Loan_Request_Id`/`LLC_BI__Loan__c`, `LLC_BI__Account__c`, `SCOC__LCResponse__r.Id` or a valid scalar `SCOC__LCResponse__r`, and explicit `borrower_role`/`LLC_BI__Borrower_Type__c`. The checked-in manifest is the full allowlist, not a claim that every source field has confirmed business semantics.
 
 IDs must be explicit opaque lexical scalars (letters/digits followed by letters/digits/underscore/hyphen, maximum 128 characters); not objects, numbers, formulas or relationship repr strings. Canonical direct borrower IDs are explicit links. A flattened Account ID alone is not a borrower role. `Identity_Mapping_Validated` is ignored. No row-order, same-name, convenient-score or filename-based join is invented. Duplicate conflicts preserve evidence, poison the field and hold rather than overwrite; orphan links and multiple borrowers/extensions are reported. Batch graph defects intentionally hold **all** loans, not only a guessed affected subset. ID-less observations may use local provenance storage keys, never fabricated Salesforce record IDs.
@@ -103,6 +105,8 @@ IDs must be explicit opaque lexical scalars (letters/digits followed by letters/
 | Policy gates | `QUICKAPP_POLICY`, `PRODUCT_BALOC_POLICY`, `SBSS_FICO_BRANCH_POLICY`, `OWNERSHIP_EBITDA_POLICY`, `BANKRUPTCY_POLICY`, `GROUP_EXPOSURE_POLICY`, `INCREASE_WAIT_POLICY` remain `UNKNOWN` |
 
 Both conflicts remain explicit: `REQUEST_THRESHOLD_100M_VS_100K` and `INCREASE_WAIT_6_VS_12_MONTHS`. Neither units confirmation nor passing candidate diagnostics resolves them. Legacy acceptance-letter/CAM/pricing/conversion/automatic nCino routing rules do not execute as new v4 policy.
+
+The user-directed screenshot diagnostic interpretation is: use the selected borrower's explicitly typed personal FICO (do not average guarantors), treat explicit maximum-delinquency public-record codes 1/2/3 as knockout candidates and code 0 as no match for that candidate, and in the SBSS 160–189 / ownership-under-two / FICO-650–759 branch treat requested amount >USD 100K as a simulated-decline candidate and <=USD 100K as an SBA candidate. These are deterministic screenshot diagnostics only. The competing <=USD 100M chart label and >USD 100K knockout-list condition remain recorded as `REQUEST_THRESHOLD_100M_VS_100K`; the selected interpretation does not resolve production policy or make an operational decision. The vehicle-only SBA override remains unimplemented because its criteria are unspecified. PRODUCTION remains `POLICY_REVIEW_REQUIRED`/`MANUAL_REVIEW`; no screenshot condition produces production approval or denial.
 
 ## Complete implementation-guide diagnostics
 
@@ -144,7 +148,7 @@ JSON exports include full `expanded_spec`; CSV adds that JSON-encoded column plu
 
 ## Public controls and API
 
-Guided conversation cards offer local preflight, saved loan inspection, explicit process confirmation and report-bound review notes; see [the walkthrough](../README.md#guided-assistant-workflow). `POST /preflight` under a session parses detached uploads and runs deterministic diagnostics with no provider call, no new underwriting report and no modification to saved outcomes. Top-ten summaries are bounded and prioritize schema/identity/date blockers. The full report still requires processing.
+Guided conversation cards offer local preflight, paginated account discovery/selection, saved loan inspection, explicit process confirmation and report-bound review notes; see [the walkthrough](../README.md#guided-assistant-workflow). `POST /preflight` parses detached uploads and performs an explicit-ID/borrower-relationship scan without materializing the redundant full-workbook text dump for XLSX; it does not run credit rules, make a report or call a provider. Candidate IDs/names and loan counts are stored in a per-session SQLite index and searched by indexed prefix with bounded pages rather than embedding every client in the session response. The user must select one detected borrower account before MTB processing when candidates exist. Processing scopes the underwriting graph/evidence to that selected account's explicitly linked loans, reports, responses and observations; no row-order/name joins are used. A structurally empty workbook still permits a diagnostic empty report. Generic non-MTB sessions retain their existing workflow, with local XLSX validation required before processing.
 
 Local `assistant/inspect` requests take a current-session loan ID and one allowlisted topic; results carry report ID, up to 12 prioritized rules and 12 source cells with exact lexical values. They persist as historical `local_assistant` messages, not fresh rule evidence. `assistant/process` requires `confirmed=true` and current `expected_updated_at`; it shares existing processing locks and rejects stale confirmation. The original bodyless process API remains supported. No model tool dispatch or automatic processing is added.
 
@@ -157,8 +161,10 @@ The MTB **Review mode** selector defaults missing legacy mode to PRODUCTION. It 
 | `POST /api/sessions` | JSON `{ "title": "Optional title", "mode": "TEST" }`; omitted mode defaults PRODUCTION |
 | `PUT /api/sessions/{id}/mode` | Exactly `{ "mode": "TEST" }` or `{ "mode": "PRODUCTION" }` |
 | `POST /api/sessions/{id}/documents` | Repeated multipart `files`; canonical XLSX contract below |
+| `GET /api/sessions/{id}/accounts?q=prefix&offset=0&limit=50` | Paginated, local account/client search; requires MTB preflight |
+| `PUT /api/sessions/{id}/account` | Exactly `{ "account_id": "..." }`; must be a discovered borrower candidate |
 | `POST /api/sessions/{id}/dataset` | Empty session only; copies fixed original Query 1/2/4 filenames, no server-path/config input |
-| `POST /api/sessions/{id}/process` | No body, returns 202; poll `GET /api/sessions/{id}` |
+| `POST /api/sessions/{id}/process` | No body, returns 202 after MTB validation/account-selection guard; poll `GET /api/sessions/{id}` |
 | `GET /api/sessions/{id}/underwriting?format=json` | Batch JSON; JSON is also the default without query parameter |
 | `GET /api/sessions/{id}/underwriting?format=csv` | One loan/row; nested amounts, rules, evidence and issues encoded as JSON strings |
 | `GET /api/sessions/{id}/report` | Escaped standalone HTML |

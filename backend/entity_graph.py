@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from copy import copy
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
@@ -102,7 +103,7 @@ class EntityGraph:
         return {account for loan, account, role, _ in self.associations if loan == loan_id and role == "borrower"}
 
 
-def build_entity_graph(documents: Iterable[Any], config: dict[str, Any]) -> EntityGraph:
+def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, selected_account_id: str | None = None) -> EntityGraph:
     """Build and validate all one-to-many relationships using the explicit manifest.
 
     A canonical Loan.borrower_account_id is an explicit direct borrower link;
@@ -111,6 +112,8 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any]) -> Enti
     """
     graph = EntityGraph()
     manifest = config["mapping_manifest"]
+    if selected_account_id is not None:
+        documents = _scope_documents_to_borrower(documents, manifest, selected_account_id)
     tables = manifest["tables"]
     canonical_aliases = manifest.get("canonical_table_aliases", {})
     for document_index, document in enumerate(documents):
@@ -248,6 +251,146 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any]) -> Enti
                     graph.issue("INVALID_OR_CONFLICTING_ROLE", row_evidence)
     _validate_relationships(graph, manifest)
     return graph
+
+
+def _scope_documents_to_borrower(documents: Iterable[Any], manifest: dict[str, Any], account_id: str) -> list[Any]:
+    """Keep only records explicitly connected to one borrower account.
+
+    The first pass finds the selected account's loan IDs and the second resolves
+    related accounts, responses, entities and analyses before retaining evidence
+    rows. No row-order or name-based relationships are used.
+    """
+    source_documents = list(documents)
+    tables = manifest["tables"]
+    aliases = manifest.get("canonical_table_aliases", {})
+
+    def mapped(table: str, sheet: Any, values: dict[str, Any]) -> dict[str, Any]:
+        canonical_table = aliases.get(sheet, sheet)
+        canonical = canonical_table in tables
+        mapping = tables.get(canonical_table) if canonical else manifest.get("flattened", {}).get(table)
+        if mapping is None:
+            return {}
+        raw_fields = mapping["fields"]
+        field_map = ({key: [key] for key in raw_fields} if isinstance(raw_fields, list)
+                     else {key: list(names) for key, names in raw_fields.items()})
+        names = {"id": mapping["id"]}
+        names.update(field_map)
+        result = {}
+        for key, candidates in names.items():
+            found = [values[name] for name in candidates if name in values and values[name] not in (None, "")]
+            if len({str(value) for value in found}) == 1 and found:
+                result[key] = found[0]
+        return result
+
+    rows = [(doc, record) for doc in source_documents
+            for record in doc.metadata.get("records", []) if isinstance(record, dict)]
+    loan_ids: set[str] = set()
+    for _, record in rows:
+        values = record.get("values")
+        if not isinstance(values, dict):
+            continue
+        sheet = record.get("sheet")
+        row_loan = mapped("Loan", sheet, values)
+        direct_account = row_loan.get("borrower_account_id")
+        if scalar_id(row_loan.get("id")) and scalar_id(direct_account) == account_id:
+            loan_ids.add(scalar_id(row_loan["id"]))
+        involvement = mapped("EntityInvolvement", sheet, values)
+        role = str(involvement.get("role", "")).strip().casefold()
+        if role == "borrower" and scalar_id(involvement.get("account_id")) == account_id:
+            loan_id = scalar_id(involvement.get("loan_id"))
+            if loan_id:
+                loan_ids.add(loan_id)
+        flat_role = next((values.get(key) for key in manifest.get("flattened_role_fields", [])
+                          if values.get(key) not in (None, "")), None)
+        flat_account = scalar_id(row_loan.get("borrower_account_id"))
+        flat_loan = scalar_id(row_loan.get("id"))
+        if (flat_role is not None and str(flat_role).strip().casefold() == "borrower"
+                and flat_account == account_id and flat_loan):
+            loan_ids.add(flat_loan)
+
+    related_accounts = {account_id}
+    response_ids: set[str] = set()
+    for _, record in rows:
+        values = record.get("values")
+        if not isinstance(values, dict):
+            continue
+        sheet = record.get("sheet")
+        loan = mapped("Loan", sheet, values)
+        if scalar_id(loan.get("id")) in loan_ids:
+            response_id = scalar_id(loan.get("response_id"))
+            if response_id:
+                response_ids.add(response_id)
+        involvement = mapped("EntityInvolvement", sheet, values)
+        if scalar_id(involvement.get("loan_id")) in loan_ids:
+            linked_account = scalar_id(involvement.get("account_id"))
+            if linked_account:
+                related_accounts.add(linked_account)
+        response = mapped("LCRESPONSE", sheet, values)
+        if scalar_id(response.get("loan_id")) in loan_ids:
+            response_id = scalar_id(response.get("id"))
+            if response_id:
+                response_ids.add(response_id)
+
+    entity_ids: set[str] = set()
+    for _, record in rows:
+        values = record.get("values")
+        if not isinstance(values, dict):
+            continue
+        entity = mapped("LCREntity", record.get("sheet"), values)
+        if (scalar_id(entity.get("response_id")) in response_ids
+                and scalar_id(entity.get("account_id")) in related_accounts):
+            entity_id = scalar_id(entity.get("id"))
+            if entity_id:
+                entity_ids.add(entity_id)
+
+    analysis_ids: set[str] = set()
+    for _, record in rows:
+        values = record.get("values")
+        if not isinstance(values, dict):
+            continue
+        analysis = mapped("DataSourceAnalysis", record.get("sheet"), values)
+        if scalar_id(analysis.get("entity_id")) in entity_ids:
+            analysis_id = scalar_id(analysis.get("id"))
+            if analysis_id:
+                analysis_ids.add(analysis_id)
+
+    def keep(record: dict[str, Any]) -> bool:
+        values = record.get("values")
+        if not isinstance(values, dict):
+            return False
+        sheet = record.get("sheet")
+        targets = (
+            ("Account", lambda data: scalar_id(data.get("id")) in related_accounts),
+            ("Loan", lambda data: scalar_id(data.get("id")) in loan_ids),
+            ("EntityInvolvement", lambda data: scalar_id(data.get("loan_id")) in loan_ids),
+            ("CreditReport", lambda data: scalar_id(data.get("account_id")) in related_accounts),
+            ("LoanExtension", lambda data: scalar_id(data.get("loan_id")) in loan_ids),
+            ("LCRESPONSE", lambda data: scalar_id(data.get("id")) in response_ids or scalar_id(data.get("loan_id")) in loan_ids),
+            ("LCREntity", lambda data: scalar_id(data.get("id")) in entity_ids),
+            ("DataSourceAnalysis", lambda data: scalar_id(data.get("id")) in analysis_ids),
+            ("Indicator", lambda data: scalar_id(data.get("analysis_id")) in analysis_ids),
+            ("Characteristic", lambda data: scalar_id(data.get("analysis_id")) in analysis_ids),
+            ("Regulation", lambda data: scalar_id(data.get("loan_id")) in loan_ids),
+        )
+        for table, predicate in targets:
+            if predicate(mapped(table, sheet, values)):
+                return True
+        # Flattened rows can encode several related entities in one source row.
+        loan_data = mapped("Loan", sheet, values)
+        involvement_data = mapped("EntityInvolvement", sheet, values)
+        if scalar_id(loan_data.get("id")) in loan_ids:
+            return True
+        return scalar_id(involvement_data.get("loan_id")) in loan_ids
+
+    scoped = []
+    for document in source_documents:
+        detached = copy(document)
+        detached.metadata = dict(document.metadata)
+        records = document.metadata.get("records", [])
+        if isinstance(records, list):
+            detached.metadata["records"] = [record for record in records if isinstance(record, dict) and keep(record)]
+        scoped.append(detached)
+    return scoped
 
 
 def _validate_relationships(graph: EntityGraph, manifest: dict[str, Any]) -> None:

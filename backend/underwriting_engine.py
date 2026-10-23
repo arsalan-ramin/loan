@@ -182,8 +182,9 @@ def evaluate_implementation_strategy(
 
     Every identity, eligibility, knockout, source and exception flag is supplied
     explicitly by the caller. Missing/invalid tree inputs fail closed. The
-    $100K/$100M conflict is retained and blocks only the affected 160-189
-    branch; no vehicle-only behavior is inferred when its flag is unknown.
+    The screenshot's 160-189 branch uses its explicit >$100K knockout-list
+    condition; the conflicting <=$100M tree label remains recorded as an
+    unresolved production-policy conflict. No operational outcome is issued.
     """
     conflicts = set(policy_conflicts) | REQUIRED_CONFLICTS
     stages: dict[str, str] = {
@@ -269,13 +270,10 @@ def evaluate_implementation_strategy(
             if fico_value >= 760:
                 branch, assessment = "SBSS_160_189_OWNERSHIP_LT_2_FICO_GE_760", "SIMULATED_APPROVAL_CANDIDATE"
             elif fico_value >= 650:
-                if "REQUEST_THRESHOLD_100M_VS_100K" in conflicts and amount_value > USD_100K:
-                    result["strategy_branch"] = "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_CONFLICT"
-                    return stop("POLICY_REVIEW", "POLICY_REVIEW", "strategy", "UNRESOLVED_REQUEST_THRESHOLD_CONFLICT")
-                if amount_value <= USD_100M:
-                    branch, assessment = "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_LE_100M", "SIMULATED_APPROVAL_CANDIDATE"
+                if amount_value <= USD_100K:
+                    branch, assessment = "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_LE_100K", "SIMULATED_APPROVAL_CANDIDATE"
                 else:
-                    branch, assessment = "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_GT_100M", "SIMULATED_DECLINE_CANDIDATE"
+                    branch, assessment = "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_GT_100K", "SIMULATED_DECLINE_CANDIDATE"
             else:
                 branch, assessment = "SBSS_160_189_OWNERSHIP_LT_2_FICO_LT_650", "SIMULATED_DECLINE_CANDIDATE"
     elif sbss_value < 200:
@@ -570,6 +568,19 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
     minimum = config["minimum_age"]
     features["minimum_age_met"] = age >= minimum if age is not None and minimum is not None else None
     check("MINIMUM_AGE", features["minimum_age_met"], "Draft under-18 knock-out candidate; explicit DOB and as-of date required.", ("dob", "as_of_date"), page=2)
+    public_record_code = _number(profile.get("max_delinquency_public_records"))
+    valid_public_record_code = (public_record_code is not None
+                                and public_record_code == public_record_code.to_integral_value()
+                                and public_record_code in {Decimal("0"), Decimal("1"), Decimal("2"), Decimal("3")})
+    features["public_record_knockout_candidate"] = (
+        public_record_code in {Decimal("1"), Decimal("2"), Decimal("3")}
+        if valid_public_record_code else None
+    )
+    check("MAX_DELINQUENCY_PUBLIC_RECORDS_KNOCKOUT_CANDIDATE",
+          None if features["public_record_knockout_candidate"] is None
+          else not features["public_record_knockout_candidate"],
+          "Screenshot diagnostic: public-record codes 1, 2, or 3 match a knockout candidate; explicit code 0 does not. Not a production lending decision.",
+          ("max_delinquency_public_records",))
     disposition = str(profile.get("ofac_disposition", "")).casefold()
     features["ofac_confirmed_match"] = True if disposition == "confirmed_match" else False if disposition == "cleared" else None
     check("OFAC_CONFIRMED_MATCH", not features["ofac_confirmed_match"] if features["ofac_confirmed_match"] is not None else None,
@@ -623,6 +634,7 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
         features["sbss_bucket"], features["fico_band"], features["ownership_at_least_2_years"],
         features["ebitda_nonnegative"], features["bankruptcy_discharge_at_least_5_years"],
         features["minimum_age_met"], features["naics_not_high_risk"],
+        features["public_record_knockout_candidate"],
         features["ofac_confirmed_match"], features["ofac_alert_clear"], features["credit_freeze_clear"],
     ))
     knockout_detected = None if not knockout_inputs_known else any((
@@ -631,6 +643,7 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
         features["ebitda_nonnegative"] is False,
         features["bankruptcy_discharge_at_least_5_years"] is False,
         features["minimum_age_met"] is False,
+        features["public_record_knockout_candidate"] is True,
     ))
     if quick:
         quick_app_eligible = (
@@ -684,7 +697,8 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
         "evidence_refs": sorted({ref for key in (
             "identity", "requested_path", "new_money", "tier_i", "sbss", "fico", "ownership_years",
             "requested_amount", "naics", "vehicle_only", "ebitda", "bankruptcy_count",
-            "bankruptcy_discharge_date", "dob", "ofac_disposition", "ofac_alert", "credit_freeze",
+            "bankruptcy_discharge_date", "dob", "max_delinquency_public_records",
+            "ofac_disposition", "ofac_alert", "credit_freeze",
         ) for ref in refs.get(key, [])}),
         "authorization": "NOT_ISSUED",
         "human_review_required": True,
@@ -711,6 +725,7 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
     required_amounts = ("requested_amount", "new_money", "tier_i", "tier_ii", "ebitda")
     required_features = ("sbss_bucket", "fico_band", "ownership_at_least_2_years", "minimum_age_met", "naics_not_high_risk", "bankruptcy_discharge_at_least_5_years")
     needs_review = not synthetic or any(value is None for value in criterion_results)
+    needs_review = needs_review or not knockout_inputs_known
     needs_review = needs_review or report_error is not None or response_error is not None
     needs_review = needs_review or any(item.startswith("guarantor_") for item in missing)
     needs_review = needs_review or any(amounts[key] is None for key in required_amounts)
@@ -760,7 +775,8 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
 
 
 def evaluate_underwriting(documents: Iterable[Any], mode: Mode = "PRODUCTION", *,
-                          policy_config: Mapping[str, Any] | None = None) -> UnderwritingBatch:
+                          policy_config: Mapping[str, Any] | None = None,
+                          selected_account_id: str | None = None) -> UnderwritingBatch:
     """Evaluate extracted documents, returning safe per-loan graph diagnostics.
 
     Strict uppercase mode, fresh config, no I/O except local config/PDF integrity
@@ -795,7 +811,11 @@ def evaluate_underwriting(documents: Iterable[Any], mode: Mode = "PRODUCTION", *
         )
     except OSError:
         expanded_spec_available = False
-    graph = build_entity_graph(documents, config)
+    if selected_account_id is not None:
+        if not isinstance(selected_account_id, str) or not selected_account_id.strip():
+            raise ValueError("selected_account_id must be a nonempty account ID")
+        selected_account_id = selected_account_id.strip()
+    graph = build_entity_graph(documents, config, selected_account_id=selected_account_id)
     if not graph.table("Loan"):
         graph.issue("NO_EXPLICIT_LOAN_RECORDS")
     results = [_evaluate_loan(graph, loan, mode, config, source_available, implementation_guide_available, expanded_spec_available)

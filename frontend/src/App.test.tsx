@@ -94,7 +94,8 @@ describe('Agent', () => {
     finish(response(loaded));
     for (const doc of loaded.documents) expect(await screen.findByText(doc.name)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Use 3 Excel files from data folder' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Process documents' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Process documents' })).toBeDisabled();
+    expect(screen.getByText(/Validate locally and select an account\/client before processing/)).toBeInTheDocument();
     const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST').map(([url]) => url);
     expect(posts).toEqual(existing ? ['/api/sessions/session-1/dataset'] : ['/api/sessions', '/api/sessions/session-1/dataset']);
   });

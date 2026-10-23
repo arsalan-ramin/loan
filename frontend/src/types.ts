@@ -184,11 +184,29 @@ export interface PreflightResult {
   missing_query_roles: number[];
   document_count: number;
   loan_count: number;
+  account_count: number;
+  account_index_version?: number;
   issue_count: number;
   priority_issues: string[];
   suggested_next_step: string;
   comparison: string;
   external_processing: false;
+}
+
+export interface AccountCandidate {
+  account_id: string;
+  name: string | null;
+  loan_count: number;
+  loan_ids: string[];
+}
+
+export interface AccountCandidatePage {
+  results: AccountCandidate[];
+  total: number;
+  offset: number;
+  limit: number;
+  account_count: number;
+  refreshed_preflight?: PreflightResult | null;
 }
 
 export interface ReviewNote {
@@ -205,6 +223,7 @@ export interface Session {
   id: string;
   title: string;
   mode?: Mode;
+  selected_account_id?: string | null;
   created_at: string;
   updated_at: string;
   status: 'awaiting_upload' | 'ready' | 'processing' | 'completed' | 'failed';

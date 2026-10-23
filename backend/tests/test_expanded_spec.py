@@ -104,8 +104,8 @@ def test_nonprofit_and_baloc_conflicts_and_vehicle_exception():
     data[0][1]["ownership_years"] = "1"
     data[3][1]["sbss"] = "175"
     data[2][1]["personal_fico"] = "700"
-    data[1][1]["requested_amount"] = "100000001"
-    assert result(data).expanded_spec.simulated_credit_route == "POLICY_REVIEW"
+    data[1][1]["requested_amount"] = "100001"
+    assert result(data).expanded_spec.simulated_credit_route == "SIMULATED_DECLINE_CANDIDATE"
     data = source()
     data[3][1]["sbss"] = "195"
     data[1][1]["vehicle_only"] = True

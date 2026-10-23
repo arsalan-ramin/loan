@@ -7,11 +7,11 @@ from datetime import date, datetime, time
 from openpyxl import load_workbook
 
 MAX_CELLS = 1_000_000
-MAX_TEXT = 10_000_000
+MAX_TEXT = 50_000_000
 MAX_EXPANDED_BYTES = 250 * 1024 * 1024
 
 
-def extract_excel(raw: bytes) -> tuple[str, dict]:
+def extract_excel(raw: bytes, *, include_text: bool = True) -> tuple[str, dict]:
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             expanded_size = sum(item.file_size for item in archive.infolist())
@@ -34,7 +34,8 @@ def extract_excel(raw: bytes) -> tuple[str, dict]:
             header_row = None
             data_rows = columns = 0
             is_reference = sheet.title.casefold().strip() in {"readme", "instructions", "guidelines"}
-            parts.append(f"Sheet: {sheet.title}")
+            if include_text:
+                parts.append(f"Sheet: {sheet.title}")
             for row in sheet.iter_rows():
                 cells_seen += len(row)
                 if cells_seen > MAX_CELLS:
@@ -65,20 +66,23 @@ def extract_excel(raw: bytes) -> tuple[str, dict]:
                             sources[key] = f"{sheet.title}!{cell.coordinate}"
                         records.append({"sheet": sheet.title, "row": nonempty[0].row,
                                         "values": record, "sources": sources})
-                values = []
                 for cell in nonempty:
-                    value = cell.value
-                    if isinstance(value, (datetime, date, time)):
-                        value = value.isoformat()
                     if cell.data_type == "f":
                         formula_count += 1
-                        value = f"FORMULA (not evaluated): {value}"
-                    values.append(f"{cell.coordinate}={value}")
-                line = f"[{sheet.title}!row {nonempty[0].row}] " + " | ".join(values)
-                text_length += len(line)
-                if text_length > MAX_TEXT:
-                    raise ValueError("XLSX extracted text exceeds the 10 million character limit.")
-                parts.append(line)
+                if include_text:
+                    values = []
+                    for cell in nonempty:
+                        value = cell.value
+                        if isinstance(value, (datetime, date, time)):
+                            value = value.isoformat()
+                        if cell.data_type == "f":
+                            value = f"FORMULA (not evaluated): {value}"
+                        values.append(f"{cell.coordinate}={value}")
+                    line = f"[{sheet.title}!row {nonempty[0].row}] " + " | ".join(values)
+                    text_length += len(line)
+                    if text_length > MAX_TEXT:
+                        raise ValueError("XLSX extracted text exceeds the 50 million character limit.")
+                    parts.append(line)
             sheets.append({"name": sheet.title, "headers": headers, "header_row": header_row,
                            "data_rows": data_rows, "columns": columns, "is_reference": is_reference})
         total_rows = sum(sheet["data_rows"] for sheet in sheets if not sheet["is_reference"])

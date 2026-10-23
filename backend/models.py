@@ -49,6 +49,22 @@ class LoanInspection(BaseModel):
     total_evidence: int
 
 
+class AccountCandidate(BaseModel):
+    account_id: str
+    name: str | None = None
+    loan_count: int = 0
+    loan_ids: list[str] = Field(default_factory=list)
+
+
+class AccountCandidatePage(BaseModel):
+    results: list[AccountCandidate]
+    total: int
+    offset: int
+    limit: int
+    account_count: int = 0
+    refreshed_preflight: "PreflightResult | None" = None
+
+
 class Message(BaseModel):
     id: str = Field(default_factory=uid)
     role: Literal["assistant", "user"]
@@ -165,6 +181,9 @@ class PreflightResult(BaseModel):
     missing_query_roles: list[int]
     document_count: int
     loan_count: int
+    account_count: int = 0
+    account_index_version: int = 0
+    account_candidates: list[AccountCandidate] = Field(default_factory=list, exclude=True)
     issue_count: int
     priority_issues: list[str]
     suggested_next_step: str
@@ -187,6 +206,7 @@ class Session(BaseModel):
     id: str = Field(default_factory=uid)
     title: str = "Untitled review"
     mode: Mode = "PRODUCTION"
+    selected_account_id: str | None = None
     created_at: str = Field(default_factory=now)
     updated_at: str = Field(default_factory=now)
     status: Literal["awaiting_upload", "ready", "processing", "completed", "failed"] = "awaiting_upload"
@@ -216,6 +236,11 @@ class CreateSession(BaseModel):
 class ModeRequest(BaseModel):
     model_config = {"extra": "forbid"}
     mode: Mode
+
+
+class AccountSelectionRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    account_id: str = Field(min_length=1, max_length=128)
 
 
 class ChatRequest(BaseModel):

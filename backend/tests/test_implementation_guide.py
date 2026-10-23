@@ -104,7 +104,8 @@ def test_unavailable_or_unpinned_guide_means_policy_review_not_tree_assertion():
         ("159", "760", "3", "50000", "541100", False, "SBSS_LT_160", "SIMULATED_DECLINE_CANDIDATE"),
         ("160", "649", "2", "50000", "541100", False, "SBSS_160_189_OWNERSHIP_GE_2", "SIMULATED_APPROVAL_CANDIDATE"),
         ("175", "760", "1", "50000", "541100", False, "SBSS_160_189_OWNERSHIP_LT_2_FICO_GE_760", "SIMULATED_APPROVAL_CANDIDATE"),
-        ("175", "700", "1", "100000", "541100", False, "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_LE_100M", "SIMULATED_APPROVAL_CANDIDATE"),
+        ("175", "700", "1", "100000", "541100", False, "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_LE_100K", "SIMULATED_APPROVAL_CANDIDATE"),
+        ("175", "700", "1", "100000.01", "541100", False, "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_GT_100K", "SIMULATED_DECLINE_CANDIDATE"),
         ("190", "600", "0", "50000", "541100", False, "SBSS_190_199", "SIMULATED_APPROVAL_CANDIDATE"),
         ("200", "600", "1", "50000", "541100", False, "SBSS_GE_200_OWNERSHIP_LT_2", "SIMULATED_APPROVAL_CANDIDATE"),
         ("200", "600", "2", "50000", "541100", False, "SBSS_GE_200_OWNERSHIP_GE_2_OTHER_NAICS", "SIMULATED_APPROVAL_CANDIDATE"),
@@ -121,11 +122,15 @@ def test_section8_explicit_decision_tree_branches(sbss, fico, ownership, amount,
     assert result["authorization"] == "NOT_ISSUED"
 
 
-def test_request_threshold_conflict_and_vehicle_override_unknown_fail_closed():
+def test_screenshot_100k_branch_and_vehicle_override_unknown_fail_closed():
     affected = strategy(sbss="175", fico="700", ownership_years="1", requested_amount="100000.01")
-    assert affected["credit_assessment"] == "POLICY_REVIEW"
-    assert affected["eligibility_route"] == "POLICY_REVIEW"
+    assert affected["credit_assessment"] == "SIMULATED_DECLINE_CANDIDATE"
+    assert affected["eligibility_route"] == "QUICK_APP"
+    assert affected["strategy_branch"].endswith("AMOUNT_GT_100K")
     assert "REQUEST_THRESHOLD_100M_VS_100K" in affected["unresolved_conflicts"]
+    at_limit = strategy(sbss="175", fico="700", ownership_years="1", requested_amount="100000")
+    assert at_limit["credit_assessment"] == "SIMULATED_APPROVAL_CANDIDATE"
+    assert at_limit["strategy_branch"].endswith("AMOUNT_LE_100K")
     vehicle = strategy(sbss="200", ownership_years="2", naics="236220", vehicle_only=None)
     assert vehicle["credit_assessment"] == "POLICY_REVIEW"
     assert vehicle["strategy_branch"] is None

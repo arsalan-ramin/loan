@@ -1,4 +1,4 @@
-import type { Mode, Rule, Session } from './types';
+import type { AccountCandidatePage, Mode, Rule, Session } from './types';
 
 const BASE = '/api';
 const segment = encodeURIComponent;
@@ -32,6 +32,12 @@ export const api = {
   loadDataset: (id: string) => request<Session>(`/sessions/${segment(id)}/dataset`, { method: 'POST' }),
   message: (id: string, content: string, loanId?: string) => request<Session>(`/sessions/${segment(id)}/messages`, json('POST', { content, ...(loanId ? { loan_id: loanId } : {}) })),
   preflight: (id: string) => request<Session>(`/sessions/${segment(id)}/preflight`, { method: 'POST' }),
+  accounts: (id: string, query = '', offset = 0, limit = 50) => request<AccountCandidatePage>(
+    `/sessions/${segment(id)}/accounts?q=${encodeURIComponent(query)}&offset=${offset}&limit=${limit}`,
+  ),
+  selectAccount: (id: string, accountId: string) => request<Session>(
+    `/sessions/${segment(id)}/account`, json('PUT', { account_id: accountId }),
+  ),
   inspectLoan: (id: string, loanId: string, topic: 'blockers' | 'rules' | 'evidence') => request<Session>(`/sessions/${segment(id)}/assistant/inspect`, json('POST', { loan_id: loanId, topic })),
   guidedProcess: (id: string, revision: string) => request<Session>(`/sessions/${segment(id)}/assistant/process`, json('POST', { confirmed: true, expected_updated_at: revision })),
   reviewNote: (id: string, reportId: string, loanId: string, text: string, kind: 'note' | 'acknowledgment') => request<Session>(`/sessions/${segment(id)}/assistant/notes`, json('POST', { report_id: reportId, loan_id: loanId, text, kind })),

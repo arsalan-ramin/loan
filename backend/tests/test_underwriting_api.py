@@ -82,6 +82,12 @@ def upload_three(client, mode=None, empty=False):
         ("files", (f"MTB_Query_{query}.xlsx", workbook(records, empty))) for query, records in groups
     ])
     assert response.status_code == 200
+    validation = client.post(f"/api/sessions/{sid}/preflight")
+    assert validation.status_code == 200
+    accounts = client.get(f"/api/sessions/{sid}/accounts").json()
+    if accounts["total"]:
+        selected = client.put(f"/api/sessions/{sid}/account", json={"account_id": accounts["results"][0]["account_id"]})
+        assert selected.status_code == 200
     return sid
 
 

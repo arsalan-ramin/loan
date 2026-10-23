@@ -44,7 +44,7 @@ class IntakeAgent:
 
 
 class ExtractionAgent:
-    def extract(self, document: Document, path: Path) -> None:
+    def extract(self, document: Document, path: Path, *, include_text: bool = True) -> None:
         raw = path.read_bytes()
         metadata: dict = {
             "filename": document.name, "extension": document.extension,
@@ -52,7 +52,7 @@ class ExtractionAgent:
             "extracted_at": datetime.now(timezone.utc).isoformat(),
         }
         if document.extension == ".xlsx":
-            content, excel_metadata = extract_excel(raw)
+            content, excel_metadata = extract_excel(raw, include_text=include_text)
             metadata.update(excel_metadata)
         elif document.extension == ".pdf":
             reader = PdfReader(io.BytesIO(raw))
@@ -111,7 +111,7 @@ class ExtractionAgent:
             raise ValueError(f"{document.name}: extracted text exceeds the 2 million character limit.")
         metadata["word_count"] = len(content.split())
         metadata["character_count"] = len(content)
-        if not content.strip():
+        if include_text and not content.strip():
             metadata["warning"] = "No readable text found. Scanned documents require OCR before upload."
         document.content = content
         document.metadata = metadata
@@ -212,7 +212,10 @@ class DecisionAgent:
                               f"{sum(f.status == 'pass' for f in findings)} checks passed, {reviews} need review, and {failed} failed. "
                               "This is a rule-based assessment, not a legal or professional determination.")
         if session.policy_rules:
-            report.underwriting = evaluate_underwriting(session.documents, session.mode)
+            report.underwriting = evaluate_underwriting(
+                session.documents, session.mode,
+                selected_account_id=session.selected_account_id,
+            )
             report.policy_evaluation = underwriting_policy_summary(report.underwriting, session)
             report.decision = "needs_review"
             report.summary = (f"Document checks completed for {len(session.documents)} file(s). "

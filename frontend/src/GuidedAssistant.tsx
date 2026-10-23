@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
-import type { LoanInspection, Session } from './types';
+import type { AccountCandidate, LoanInspection, Session } from './types';
 import './GuidedAssistant.css';
 
 interface Props {
@@ -42,14 +42,43 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   const [note, setNote] = useState('');
   const [kind, setKind] = useState<'note' | 'acknowledgment'>('note');
   const [feedback, setFeedback] = useState('');
+  const [accountCandidates, setAccountCandidates] = useState<AccountCandidate[]>([]);
+  const [accountTotal, setAccountTotal] = useState(0);
+  const [accountSearch, setAccountSearch] = useState('');
+  const [accountLoading, setAccountLoading] = useState(false);
   const resultPanel = useRef<HTMLDivElement>(null);
   const loans = session.report?.underwriting?.loan_results ?? [];
   const selectedLoan = loans.find((loan) => loan.loan_id === selected) ?? loans[0];
   const preflight = session.preflight;
+  const requiresAccountSelection = !!session.policy_rules?.length || preflight?.recognized_mtb === true
+    || session.documents.some((document) => /^MTB[ _-]+Query[ _-]+(1|2|4)(?=$|[ _().-]).*\.xlsx$/i.test(document.name));
+  const requiresWorkbookValidation = session.documents.some((document) => document.extension === '.xlsx') && !preflight;
   const latestInspection = [...session.messages].reverse().find((item) =>
     item.inspection?.loan_id === selectedLoan?.loan_id && item.inspection?.report_id === session.report?.id);
   useEffect(() => { setConfirmation(null); }, [session.id, session.updated_at]);
   useEffect(() => { setSelected(''); setNote(''); setFeedback(''); }, [session.id, session.report?.id]);
+  useEffect(() => {
+    let active = true;
+    if (preflight?.recognized_mtb) {
+      setAccountLoading(true);
+      const timer = setTimeout(() => {
+        void api.accounts(session.id, accountSearch).then((page) => {
+          if (active) {
+            setAccountCandidates(page.results);
+            setAccountTotal(page.total);
+            if (page.refreshed_preflight) {
+              onSession({ ...session, preflight: page.refreshed_preflight });
+            }
+          }
+        }).catch((cause) => {
+          if (active) setFeedback(cause instanceof Error ? cause.message : 'Could not load detected borrower accounts.');
+        }).finally(() => { if (active) setAccountLoading(false); });
+      }, accountSearch.trim() ? 250 : 0);
+      return () => { active = false; clearTimeout(timer); };
+    }
+    setAccountLoading(false);
+    return () => { active = false; };
+  }, [session.id, preflight?.input_fingerprint, preflight?.recognized_mtb, accountSearch]);
   useEffect(() => {
     if (latestInspection) {
       resultPanel.current?.focus({ preventScroll: true });
@@ -71,6 +100,19 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     });
   }
 
+  async function loadAccounts(offset = 0) {
+    setAccountLoading(true);
+    try {
+      const page = await api.accounts(session.id, accountSearch, offset);
+      setAccountCandidates((current) => offset ? [...current, ...page.results] : page.results);
+      setAccountTotal(page.total);
+    } catch (cause) {
+      setFeedback(cause instanceof Error ? cause.message : 'Could not search detected borrower accounts.');
+    } finally {
+      setAccountLoading(false);
+    }
+  }
+
   return <section className="guided-assistant" aria-label="Guided assistant actions">
     <span className="eyebrow">YOUR NEXT SAFE STEP</span>
     <h3>{session.status === 'processing' ? 'Your review is running' : session.report ? 'Let’s explore the evidence' : 'Let’s validate before reviewing'}</h3>
@@ -79,7 +121,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     <div className="guided-actions">
       <button type="button" className="button secondary" disabled={disabled || !session.documents.length} onClick={() => void run('Validating files locally', async () => onSession(await api.preflight(session.id)))}>Validate files locally</button>
       <button type="button" className="button secondary" disabled={disabled} onClick={onUpload}>Add corrected source files</button>
-      <button type="button" className="button primary" disabled={disabled || !session.documents.length} onClick={() => setConfirmation(session.updated_at)}>Prepare review</button>
+      <button type="button" className="button primary" disabled={disabled || !session.documents.length || requiresWorkbookValidation || accountLoading || (requiresAccountSelection && (!preflight?.recognized_mtb || ((accountTotal || preflight.account_count) > 0 && !session.selected_account_id)))} onClick={() => setConfirmation(session.updated_at)}>Prepare review</button>
       {session.report && <>
         <button type="button" className="button secondary" disabled={disabled} onClick={onReport}>Inspect full report</button>
         <button type="button" className="button secondary" disabled={disabled} onClick={onDownload}>Save HTML report</button>
@@ -89,6 +131,38 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
       <h4>Local validation summary</h4>
       <p>{preflight.document_count} files · {preflight.loan_count} explicit loans · {preflight.issue_count} diagnostic issues.</p>
       <p>{preflight.recognized_mtb ? `Recognized Query roles: ${preflight.query_roles.join(', ')}` : 'Generic documents — no underwriting relationship validation claimed.'}</p>
+      {preflight.recognized_mtb && <>
+        <p>{preflight.account_count} borrower accounts detected across {preflight.loan_count} explicit loans. Local validation indexes relationships; it does not evaluate every client's credit.</p>
+        <label>Search accounts or clients<input aria-label="Search accounts or clients" value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} placeholder="Account name or ID" /></label>
+        <div className="guided-actions">
+          <button type="button" className="button secondary" disabled={disabled || accountLoading} onClick={() => void loadAccounts(0)}>Search accounts</button>
+          <label>Choose account/client<select aria-label="Choose account/client" value={session.selected_account_id ?? ''} disabled={disabled || accountLoading || !(accountTotal || preflight.account_count)}
+            onChange={(event) => {
+              const accountId = event.target.value;
+              if (accountId) void run('Selecting borrower account', async () => onSession(await api.selectAccount(session.id, accountId)));
+            }}>
+            <option value="">Select a borrower account/client</option>
+            {session.selected_account_id && !accountCandidates.some((item) => item.account_id === session.selected_account_id)
+              && <option value={session.selected_account_id}>{session.selected_account_id} · selected</option>}
+            {accountCandidates.map((item) => <option key={item.account_id} value={item.account_id}>
+              {item.name ? `${item.name} · ${item.account_id}` : item.account_id} · {item.loan_count} {item.loan_count === 1 ? 'loan' : 'loans'}
+              {accountSearch.trim() && item.loan_ids.some((loanId) => loanId.toLowerCase().startsWith(accountSearch.trim().toLowerCase()))
+                ? ` · matched loan ${item.loan_ids.find((loanId) => loanId.toLowerCase().startsWith(accountSearch.trim().toLowerCase()))}` : ''}
+            </option>)}
+          </select></label>
+          {accountSearch.trim() && accountCandidates.length > 0 && <ul aria-label="Matching borrower accounts">
+            {accountCandidates.map((item) => <li key={item.account_id}>
+              <button type="button" className="text-button" disabled={disabled || accountLoading}
+                onClick={() => void run('Selecting borrower account', async () => onSession(await api.selectAccount(session.id, item.account_id)))}>
+                Select {item.name ? `${item.name} · ` : ''}{item.account_id}
+              </button>
+              {item.loan_ids.length ? ` — linked loan${item.loan_ids.length === 1 ? '' : 's'}: ${item.loan_ids.join(', ')}` : ''}
+            </li>)}
+          </ul>}
+          {accountCandidates.length < accountTotal && <button type="button" className="button secondary" disabled={disabled || accountLoading} onClick={() => void loadAccounts(accountCandidates.length)}>Load more accounts</button>}
+        </div>
+        {requiresAccountSelection && !session.selected_account_id && <small>{accountLoading ? 'Loading borrower accounts…' : accountTotal || preflight.account_count ? 'Select an account/client before preparing the review.' : 'No borrower accounts are indexed yet. Re-run local validation or check the explicit Account/Loan relationships.'}</small>}
+      </>}
       {!!preflight.missing_query_roles.length && <p>Missing Query roles: {preflight.missing_query_roles.join(', ')}</p>}
       <h5>Priority blockers · first {preflight.priority_issues.length} of {preflight.issue_count}</h5>
       <ul>{preflight.priority_issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>

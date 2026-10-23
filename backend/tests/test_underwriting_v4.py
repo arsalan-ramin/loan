@@ -123,6 +123,32 @@ def test_explicit_personal_fico_candidate_boundaries(score, status):
     assert rule(evaluate(source), "PERSONAL_FICO_650_CANDIDATE").status == status
 
 
+@pytest.mark.parametrize("code,status", [("0", "PASS"), ("1", "FAIL"), ("2", "FAIL"), ("3", "FAIL")])
+def test_screenshot_public_record_codes_match_knockout_candidate(code, status):
+    source = rows()
+    source[0][1].update(identity_verified=True, income_verified=True, ownership_years="1", naics="541100")
+    source[1][1].update(requested_amount="100000", new_money="100000", tier_i="250000",
+                        tier_ii="250000", secured=False, product="express_baloc", requested_path="quick_app")
+    source[2][1].update(report_category="personal", report_role="borrower", report_date="2026-10-19",
+                        ofac_disposition="cleared", ofac_alert=False, credit_freeze=False,
+                        bankruptcy_count="0")
+    source[3][1]["sbss"] = "175"
+    source[3][1]["score_date"] = "2026-10-19"
+    source[2][1]["max_delinquency_public_records"] = code
+
+    result = evaluate(source, mode="PRODUCTION")
+    diagnostic = next(item for item in result.expanded_spec.rule_results if item.rule_id == "KO-07")
+    v4_check = rule(result, "MAX_DELINQUENCY_PUBLIC_RECORDS_KNOCKOUT_CANDIDATE")
+
+    assert diagnostic.status == status
+    assert v4_check.status == status
+    assert result.expanded_spec.simulated_credit_route == (
+        "SIMULATED_DECLINE_CANDIDATE" if code in {"1", "2", "3"} else "SBA_APPROVAL_CANDIDATE"
+    )
+    assert result.final_action == "MANUAL_REVIEW"
+    assert result.recommendation_path == "POLICY_REVIEW_REQUIRED"
+
+
 @pytest.mark.parametrize("score,path,status", [("159", "KNOCKOUT_CANDIDATE", "FAIL"), ("160", "UNSPECIFIED_OWNERSHIP_FICO_AMOUNT", "PASS"), ("189", "UNSPECIFIED_OWNERSHIP_FICO_AMOUNT", "PASS"), ("190", "SBA_CANDIDATE", "PASS"), ("199", "SBA_CANDIDATE", "PASS"), ("200", "OWNERSHIP_NAICS_CANDIDATE", "PASS")])
 def test_sbss_candidate_routes_are_not_approvals(score, path, status):
     source = rows()

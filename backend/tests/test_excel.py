@@ -74,6 +74,28 @@ def test_excel_extraction_accepts_text_above_previous_limit(tmp_path):
     assert document.content.count(long_text) == 70
 
 
+def test_excel_extraction_accepts_text_above_previous_10m_limit(tmp_path):
+    book = Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.title = "Loans"
+    sheet.append(["Description"])
+    long_text = "y" * 32_767
+    for _ in range(320):
+        sheet.append([long_text])
+    buffer = io.BytesIO()
+    book.save(buffer)
+    book.close()
+
+    path = tmp_path / "very-large.xlsx"
+    path.write_bytes(buffer.getvalue())
+    document = Document(name="very-large.xlsx", extension=".xlsx", size=path.stat().st_size)
+    ExtractionAgent().extract(document, path)
+
+    assert document.metadata["character_count"] > 10_000_000
+    assert document.content.count(long_text) == 320
+
+
 def test_excel_extraction_accepts_more_than_previous_cell_limit(tmp_path):
     book = Workbook()
     sheet = book.active

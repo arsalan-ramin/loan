@@ -11,16 +11,19 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 
 from .agents import SUPPORTED, DecisionAgent, ExtractionAgent, IntakeAgent, MemoryAgent, RulesAgent
 from .assistant_workflow import (
-    GuidedProcessRequest, InspectRequest, ReviewNoteRequest, inspect_loan, preflight, require_loan,
+    ACCOUNT_INDEX_VERSION, GuidedProcessRequest, InspectRequest, ReviewNoteRequest,
+    inspect_loan, preflight, require_loan,
 )
 from .llm import LLMError
-from .models import AGENTS, ChatRequest, CreateSession, Document, Message, ModeRequest, RulesRequest, Session, Step, ReviewNote, default_rules
+from .models import (AGENTS, AccountCandidate, AccountCandidatePage, AccountSelectionRequest,
+                     ChatRequest, CreateSession, Document, Message, ModeRequest,
+                     RulesRequest, Session, Step, ReviewNote, default_rules)
 from .reports import render_report
 from .storage import Store
 from .underwriting_models import UnderwritingBatch
@@ -41,11 +44,13 @@ def editable(session: Session) -> None:
         raise HTTPException(409, "Wait for the current review to finish before changing files or rules.")
 
 
-def invalidate(session: Session) -> None:
+def invalidate(session: Session, *, clear_selection: bool = True) -> None:
     session.report = None
     if session.preflight is not None:
         session.previous_preflight = session.preflight
     session.preflight = None
+    if clear_selection:
+        session.selected_account_id = None
     session.error = None
     session.status = "ready" if session.documents else "awaiting_upload"
     session.steps = [Step(agent=agent) for agent in AGENTS]
@@ -128,7 +133,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         application.state.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="folio")
         # In-process jobs cannot survive a restart. Make interrupted reviews explicitly retryable.
         for session in store.list():
-            if session.policy_rules:
+            if session.policy_rules or (session.preflight is not None and session.preflight.recognized_mtb):
                 # Remove only exact bundled examples; retain all user-authored or modified checks.
                 cleaned = [rule for rule in session.rules if rule not in default_rules()]
                 stale_generic_report = session.report is not None and session.report.policy_evaluation is None
@@ -241,6 +246,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     new_documents.append(document)
                 store.forget_documents(session.id)
                 session.documents.extend(new_documents)
+                store.forget_account_candidates(session.id)
                 if session.policy_rules:
                     session.rules = [rule for rule in session.rules if rule not in default_rules()]
                 if session.title == "Untitled review":
@@ -295,6 +301,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if not any(doc.id == document_id for doc in session.documents):
                 raise HTTPException(404, "Document not found.")
             store.forget_documents(session.id)
+            store.forget_account_candidates(session.id)
             session.documents = [doc for doc in session.documents if doc.id != document_id]
             invalidate(session)
             store.save(session)
@@ -337,12 +344,75 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if latest.updated_at != snapshot.updated_at:
                 raise HTTPException(409, "Session changed during validation. Validate the current files again.")
             latest.preflight = result
+            store.replace_account_candidates(latest.id, result.account_candidates)
+            if latest.selected_account_id and not store.has_account_candidate(latest.id, latest.selected_account_id):
+                latest.selected_account_id = None
             latest.messages.append(Message(role="assistant", origin="local_assistant", content=(
                 f"Local validation complete: {result.document_count} files, {result.loan_count} explicit loans, "
                 f"{result.issue_count} diagnostic issues. No Anthropic request or lending decision was made. "
                 + result.suggested_next_step)))
             store.save(latest)
         return latest
+
+    @application.get("/api/sessions/{session_id}/accounts", response_model=AccountCandidatePage)
+    def search_accounts(request: Request, session_id: str, q: str = Query("", max_length=128),
+                        offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
+        store: Store = request.app.state.store
+        session = require_session(store, session_id)
+        if session.preflight is None or not session.preflight.recognized_mtb:
+            raise HTTPException(409, "Run local validation before searching detected borrower accounts.")
+        refreshed_preflight = None
+        if session.preflight.account_index_version < ACCOUNT_INDEX_VERSION:
+            snapshot_revision = session.updated_at
+            refreshed_preflight = preflight(session, store.root)
+            refreshed_preflight.comparison = "Account directory refreshed using the current explicit relationship mappings."
+            refreshed_preflight.suggested_next_step = (
+                "Select the detected borrower account/client to scope processing. "
+                "This local index refresh is not credit clearance."
+            )
+            with store.lock:
+                latest = require_session(store, session_id)
+                editable(latest)
+                if latest.updated_at != snapshot_revision:
+                    raise HTTPException(409, "Session changed during account index refresh. Validate the current files again.")
+                latest.preflight = refreshed_preflight
+                store.replace_account_candidates(session_id, refreshed_preflight.account_candidates)
+                if latest.selected_account_id and not store.has_account_candidate(session_id, latest.selected_account_id):
+                    latest.selected_account_id = None
+                latest.messages.append(Message(
+                    role="assistant", origin="local_assistant",
+                    content=(f"Account directory refreshed: {refreshed_preflight.account_count} borrower accounts "
+                             f"for {refreshed_preflight.loan_count} explicit loans. Search by account/client name, "
+                             "account ID, or linked loan ID, then select the borrower account. No credit evaluation "
+                             "or lending decision was made."),
+                ))
+                store.save(latest)
+                session = latest
+        rows, total = store.account_candidates(session_id, q, offset, limit)
+        return AccountCandidatePage(
+            results=[AccountCandidate(account_id=row[0], name=row[1], loan_count=row[2],
+                                      loan_ids=row[3].split(chr(31)) if row[3] else []) for row in rows],
+            total=total, offset=offset, limit=limit,
+            account_count=session.preflight.account_count if session.preflight else 0,
+            refreshed_preflight=refreshed_preflight,
+        )
+
+    @application.put("/api/sessions/{session_id}/account", response_model=Session)
+    def select_account(request: Request, session_id: str, body: AccountSelectionRequest):
+        store: Store = request.app.state.store
+        with store.lock:
+            session = require_session(store, session_id)
+            editable(session)
+            if session.preflight is None or not session.preflight.recognized_mtb:
+                raise HTTPException(409, "Run local validation before selecting a borrower account.")
+            if not store.has_account_candidate(session_id, body.account_id):
+                raise HTTPException(404, "This account was not found among the validated borrower accounts.")
+            session.selected_account_id = body.account_id
+            session.report = None
+            session.status = "ready"
+            session.steps = [Step(agent=agent) for agent in AGENTS]
+            store.save(session)
+        return session
 
     @application.post("/api/sessions/{session_id}/assistant/inspect", response_model=Session)
     def assistant_inspect(request: Request, session_id: str, body: InspectRequest):
@@ -383,11 +453,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             editable(session)
             if expected_updated_at is not None and session.updated_at != expected_updated_at:
                 raise HTTPException(409, "Session changed after confirmation was prepared. Inspect the current inputs and confirm again.")
+            if any(document.extension == ".xlsx" for document in session.documents) and session.preflight is None:
+                raise HTTPException(409, "Run local validation on XLSX files before starting the review.")
+            recognized_mtb = bool(session.preflight and session.preflight.recognized_mtb)
+            if session.policy_rules and not recognized_mtb:
+                raise HTTPException(409, "Validate the uploaded workbooks before starting the account-scoped review.")
+            if recognized_mtb and session.preflight and session.preflight.account_count and (
+                not session.selected_account_id
+                or not store.has_account_candidate(session.id, session.selected_account_id)
+            ):
+                raise HTTPException(409, "Select a detected borrower account/client before starting the review.")
             try:
                 IntakeAgent().check(session)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
-            invalidate(session)
+            invalidate(session, clear_selection=False)
             session.status = "processing"
             store.save(session)
             request.app.state.executor.submit(process_session, store, session.id)

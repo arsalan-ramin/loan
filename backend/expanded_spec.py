@@ -143,6 +143,13 @@ def evaluate_expanded_spec(*, graph: EntityGraph, loan: EntityNode, profile: dic
     known["IDENTITY_VERIFICATION"] = flag(profile.get("identity_verified"))
     known["INCOME_VERIFICATION"] = flag(profile.get("income_verified"))
     known["INCOMPLETE_APPLICATION"] = flag(profile.get("application_complete"))
+    public_record_code = n("max_delinquency_public_records")
+    valid_public_record_code = (public_record_code is not None
+                                and public_record_code == public_record_code.to_integral_value()
+                                and public_record_code in {Decimal("0"), Decimal("1"), Decimal("2"), Decimal("3")})
+    known["DEROGATORY_PERSONAL"] = (
+        public_record_code == 0 if valid_public_record_code else None
+    )
     formation = iso_date(profile.get("business_formation_date"))
     if formation and as_of and formation <= as_of:
         anniversary = (formation.replace(year=formation.year + 2, day=28 if formation.month == 2 and formation.day == 29 else formation.day)
@@ -213,11 +220,13 @@ def evaluate_expanded_spec(*, graph: EntityGraph, loan: EntityNode, profile: dic
         "EL-03": ("REVIEW" if baloc and increase is not False else "NOT_EVALUATED", "Six/twelve-month BALOC increase conflict; neither period is selected."),
         "KO-01": ("FAIL" if features.get("ofac_alert_clear") is False or features.get("ofac_confirmed_match") is True else "PASS" if features.get("ofac_alert_clear") is True and features.get("ofac_confirmed_match") is False else "REVIEW", "Possible match requires compliance review; no substantiated sanction inferred."),
         "KO-02": ("PASS" if features.get("credit_freeze_clear") is True else "FAIL" if features.get("credit_freeze_clear") is False else "REVIEW", "Freeze requires manual review; absent report is not clear."),
-        "KO-03": ("REVIEW" if guarantors or fico is None else "PASS" if fico >= 650 else "FAIL", "Borrower/guarantor average population and aggregation are unresolved; no convenient score substitution."),
+        "KO-03": ("REVIEW" if fico is None else "PASS" if fico >= 650 else "FAIL", "Screenshot interpretation: use the selected borrower's explicitly typed personal FICO only; do not average guarantors or substitute other scores."),
+        "KO-07": ("FAIL" if valid_public_record_code and public_record_code in {Decimal("1"), Decimal("2"), Decimal("3")}
+                  else "PASS" if valid_public_record_code and public_record_code == 0 else "REVIEW",
+                  "Screenshot diagnostic: maximum-delinquency public-record codes 1, 2, or 3 match a knockout candidate; zero does not match this candidate. This is not a production decision or clearance."),
         "KO-04": ("REVIEW" if sbss is None else "PASS" if sbss >= 160 else "FAIL", "Selected explicitly loan-scoped SBSS only."),
         "KO-05": (lookup["EXPENSES_EXCEED_INCOME"].status, lookup["EXPENSES_EXCEED_INCOME"].detail),
         "KO-06": (lookup["BANKRUPTCY"].status, "Five-calendar-year diagnostic; approved date policy remains unverified."),
-        "KO-07": ("REVIEW", "Public-record/delinquency codes 1/2/3 and zero investigation have no verified semantics."),
         "KO-08": ("REVIEW", "Age diagnostic retained; applicability to business applicant versus individuals/guarantors unresolved."),
         "STR-01": ("PASS" if strategy.get("strategy_branch") and strategy.get("credit_assessment") == "SIMULATED_APPROVAL_CANDIDATE" else "FAIL" if strategy.get("credit_assessment") == "SIMULATED_DECLINE_CANDIDATE" else "REVIEW", "Section 19 candidate only; vehicle override and request-boundary conflict remain unresolved."),
         "CR-01": ("REVIEW", "Party-specific judgments/collections/liens lack approved age, amount and code definitions."),
@@ -288,13 +297,11 @@ def evaluate_expanded_spec(*, graph: EntityGraph, loan: EntityNode, profile: dic
         eligibility, route = "DATA_REVIEW", "DATA_REVIEW"
     elif baloc and increase is True:
         eligibility, route = "POLICY_REVIEW", "POLICY_REVIEW"
-    elif strategy.get("strategy_branch") == "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_CONFLICT":
-        eligibility, route = "POLICY_REVIEW", "POLICY_REVIEW"
     elif guarantors:
         route = "POLICY_REVIEW"
     elif product_issues:
         eligibility, route = "PRODUCT_REVIEW", "MANUAL_REVIEW"
-    elif any(by_id[key].status == "FAIL" for key in ("KO-03", "KO-04", "KO-05", "KO-06")):
+    elif any(by_id[key].status == "FAIL" for key in ("KO-03", "KO-04", "KO-05", "KO-06", "KO-07")):
         route = "SIMULATED_DECLINE_CANDIDATE"
     elif not earnings_period:
         route = "DATA_REVIEW"

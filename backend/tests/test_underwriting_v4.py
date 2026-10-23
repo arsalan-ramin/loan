@@ -126,15 +126,18 @@ def test_explicit_personal_fico_candidate_boundaries(score, status):
 @pytest.mark.parametrize("code,status", [("0", "PASS"), ("1", "FAIL"), ("2", "FAIL"), ("3", "FAIL")])
 def test_screenshot_public_record_codes_match_knockout_candidate(code, status):
     source = rows()
-    source[0][1].update(identity_verified=True, income_verified=True, ownership_years="1", naics="541100")
+    source[0][1].update(identity_verified=True, income_verified=True, ownership_years="1", naics="541100",
+                        ebitda="190000", financial_period_start="2025-01-01", financial_period_end="2025-12-31")
     source[1][1].update(requested_amount="100000", new_money="100000", tier_i="250000",
-                        tier_ii="250000", secured=False, product="express_baloc", requested_path="quick_app")
+                        tier_ii="250000", secured=False, product="express_baloc", requested_path="quick_app",
+                        vehicle_only=False)
     source[2][1].update(report_category="personal", report_role="borrower", report_date="2026-10-19",
-                        ofac_disposition="cleared", ofac_alert=False, credit_freeze=False,
+                        personal_fico="700", ofac_disposition="cleared", ofac_alert=False, credit_freeze=False,
                         bankruptcy_count="0")
     source[3][1]["sbss"] = "175"
     source[3][1]["score_date"] = "2026-10-19"
     source[2][1]["max_delinquency_public_records"] = code
+    source.append(("EntityInvolvement", {"Id": "IV1", "loan_id": "L1", "account_id": "A1", "role": "borrower"}))
 
     result = evaluate(source, mode="PRODUCTION")
     diagnostic = next(item for item in result.expanded_spec.rule_results if item.rule_id == "KO-07")

@@ -100,7 +100,24 @@ class EntityGraph:
         return [node for node in self.table(table).values() if node.fields.get(key) == value]
 
     def borrowers(self, loan_id: str) -> set[str]:
-        return {account for loan, account, role, _ in self.associations if loan == loan_id and role == "borrower"}
+        linked = {account for loan, account, role, _ in self.associations
+                  if loan == loan_id and role == "borrower"}
+        direct = self.table("Loan").get(loan_id)
+        if direct is not None:
+            account_id = direct.fields.get("borrower_account_id")
+            if account_id in self.table("Account"):
+                linked.add(account_id)
+        return linked
+
+    def loan_accounts(self, loan_id: str) -> set[str]:
+        """All accounts explicitly linked to a loan through direct FK or junction."""
+        accounts = {account for loan, account, _, _ in self.associations if loan == loan_id}
+        direct = self.table("Loan").get(loan_id)
+        if direct is not None:
+            account_id = direct.fields.get("borrower_account_id")
+            if account_id in self.table("Account"):
+                accounts.add(account_id)
+        return accounts
 
 
 def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, selected_account_id: str | None = None) -> EntityGraph:
@@ -426,10 +443,11 @@ def _validate_relationships(graph: EntityGraph, manifest: dict[str, Any]) -> Non
         if len(extensions) > 1:
             graph.issue("MULTIPLE_LOAN_EXTENSIONS", (e.id for node in extensions for e in node.evidence))
     for node in graph.table("EntityInvolvement").values():
-        role = manifest["roles"].get(str(node.fields.get("role", "")).strip().casefold())
-        if role is None:
-            graph.issue("MISSING_OR_INVALID_JUNCTION_ROLE", (e.id for e in node.evidence))
-        elif node.fields.get("loan_id") in graph.table("Loan") and node.fields.get("account_id") in graph.table("Account"):
+        raw_role = node.fields.get("role")
+        role = manifest["roles"].get(str(raw_role).strip().casefold()) if raw_role is not None else None
+        if raw_role is not None and role is None:
+            graph.issue("INVALID_JUNCTION_ROLE", (e.id for e in node.evidence))
+        elif role is not None and node.fields.get("loan_id") in graph.table("Loan") and node.fields.get("account_id") in graph.table("Account"):
             graph.associations.append((node.fields["loan_id"], node.fields["account_id"], role, [e.id for e in node.evidence]))
     for loan in graph.table("Loan").values():
         if len(graph.borrowers(loan.id)) > 1:
@@ -438,6 +456,20 @@ def _validate_relationships(graph: EntityGraph, manifest: dict[str, Any]) -> Non
         response = graph.table("LCRESPONSE").get(explicit)
         if response and response.fields.get("loan_id") not in (None, loan.id):
             graph.issue("RESPONSE_LOAN_MISMATCH", (e.id for e in response.evidence))
+    for entity in graph.table("LCREntity").values():
+        involvement_id = entity.fields.get("entity_involvement_id")
+        if not involvement_id:
+            continue
+        involvement = graph.table("EntityInvolvement").get(involvement_id)
+        response = graph.table("LCRESPONSE").get(entity.fields.get("response_id"))
+        linked_loan = response.fields.get("loan_id") if response else None
+        mismatch = (
+            involvement is None
+            or involvement.fields.get("account_id") != entity.fields.get("account_id")
+            or (linked_loan is not None and involvement.fields.get("loan_id") != linked_loan)
+        )
+        if mismatch:
+            graph.issue("MISMATCHED_LCR_ENTITY_INVOLVEMENT", (e.id for e in entity.evidence))
     for table in ("Indicator", "Characteristic"):
         seen: dict[tuple[str, str], EntityNode] = {}
         for node in graph.table(table).values():

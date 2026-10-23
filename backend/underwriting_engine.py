@@ -324,16 +324,33 @@ def _select_report(graph: EntityGraph, account_id: str, as_of: date | None,
     return selected[0], None
 
 
+def _linked_loan_reports(graph: EntityGraph, loan: EntityNode, as_of: date | None,
+                         config: dict) -> tuple[list[tuple[str, EntityNode]], list[str]]:
+    """Select one independently account-scoped report for each linked loan party."""
+    selected: list[tuple[str, EntityNode]] = []
+    missing: list[str] = []
+    for account_id in sorted(graph.loan_accounts(loan.id)):
+        report, error = _select_report(graph, account_id, as_of, config)
+        if error:
+            missing.append(f"account_{account_id}:{error}")
+        elif report is not None:
+            selected.append((account_id, report))
+    return selected, missing
+
+
 def _select_response(graph: EntityGraph, loan: EntityNode, borrower: str | None) -> tuple[EntityNode | None, str | None]:
     applicable = loan.fields.get("response_id")
     if applicable:
         candidates = [graph.table("LCRESPONSE")[applicable]] if applicable in graph.table("LCRESPONSE") else []
     else:
         candidates = graph.related("LCRESPONSE", "loan_id", loan.id)
-        # Explicit LCREntity account/response links may identify a response, but
-        # an explicit loan relation is still necessary to prevent cross-loan use.
+        if len(candidates) > 1:
+            dated = [(response, iso_date(response.fields.get("score_date"))) for response in candidates]
+            if all(score_date is not None for _, score_date in dated):
+                latest = max(score_date for _, score_date in dated if score_date is not None)
+                candidates = [response for response, score_date in dated if score_date == latest]
     if len(candidates) != 1:
-        return None, "unique_response_or_applicable_response_id"
+        return None, "unique_latest_response_or_applicable_response_id"
     response = candidates[0]
     if response.fields.get("loan_id") not in (None, loan.id):
         return None, "response_loan_mismatch"

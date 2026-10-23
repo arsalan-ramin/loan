@@ -526,6 +526,36 @@ def test_screenshot_er_diagram_labels_map_characteristics_and_relationships():
     assert graph.table("CreditReport")["R1"].fields["judgment_count"] == "2"
 
 
+def test_erd_canonical_loan_account_id_links_one_account_to_many_loans():
+    source = [
+        ("Account", {"Id": "A1"}),
+        ("Loan", {"Id": "L1", "ACCOUNT_ID": "A1", "as_of_date": "2026-10-20"}),
+        ("Loan", {"Id": "L2", "ACCOUNT_ID": "A1", "as_of_date": "2026-10-20"}),
+        ("LCRESPONSE", {"Id": "S1", "loan_id": "L1", "sbss": "200", "score_date": "2026-10-19"}),
+        ("LCRESPONSE", {"Id": "S2", "loan_id": "L1", "sbss": "210", "score_date": "2026-10-20"}),
+    ]
+
+    batch = evaluate_underwriting([document(source)])
+
+    assert [loan.loan_id for loan in batch.loan_results] == ["L1", "L2"]
+    assert all(loan.borrower_account_id == "A1" for loan in batch.loan_results)
+    loan_one = next(loan for loan in batch.loan_results if loan.loan_id == "L1")
+    assert loan_one.normalized_data["selected_response_id"] == "S2"
+    assert loan_one.normalized_data["sbss"] == "210"
+
+
+def test_erd_entity_involvement_link_must_match_lcr_entity_account_and_response_loan():
+    source = rows() + [
+        ("EntityInvolvement", {"Id": "IV1", "loan_id": "L1", "account_id": "A1", "role": "borrower"}),
+        ("LCREntity", {"Id": "E1", "account_id": "A2", "response_id": "S1", "entity_involvement_id": "IV1"}),
+        ("Account", {"Id": "A2"}),
+    ]
+
+    graph = build_entity_graph([document(source)], load_underwriting_config())
+
+    assert any("MISMATCHED_LCR_ENTITY_INVOLVEMENT" in issue for issue in graph.issues)
+
+
 def test_screenshot_er_diagram_labels_map_in_flattened_mtb_rows():
     source = [("Data", {
         "Loan_Request_Id": "L1", "borrower_account_id": "A1", "borrower_role": "Borrower",

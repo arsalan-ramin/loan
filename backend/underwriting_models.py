@@ -224,6 +224,9 @@ class UnderwritingBatch(ContractModel):
     expanded_spec_source_sha256: str = EXPANDED_SPEC_SHA256
     expanded_spec_available: bool = False
     data_quality_issues: list[str] = Field(default_factory=list)
+    mapping_warnings: list[str] = Field(default_factory=list)
+    unmapped_source_fields: list[str] = Field(default_factory=list)
+    unavailable_inputs: list[str] = Field(default_factory=list)
     loan_results: list[LoanRecommendation] = Field(default_factory=list)
 
     @model_validator(mode="after")

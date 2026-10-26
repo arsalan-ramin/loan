@@ -114,6 +114,9 @@ def render_report(session: Session) -> str:
                              '<p>Exact actual USD dollars. Verified draft evidence does not confer lending authority. '
                              'Claude commentary is aggregate only; every per-loan explanation remains deterministic.</p>'
                              f'<h3>Batch data quality</h3><ul>{items(batch.data_quality_issues)}</ul>'
+                             f'<h3>Unmapped source columns</h3><ul>{items(batch.unmapped_source_fields)}</ul>'
+                             f'<h3>Canonical inputs unavailable in source files</h3><ul>{items(batch.unavailable_inputs)}</ul>'
+                             f'<h3>Unresolved source relationships</h3><ul>{items(batch.mapping_warnings)}</ul>'
                              f'{"".join(loans) or "<p>No explicit loan records. No loans were fabricated from source rows or empty templates.</p>"}</section>')
     decision_label = "DOCUMENT CHECKS — HUMAN REVIEW REQUIRED" if report.policy_evaluation or report.underwriting is not None else report.decision.replace('_', ' ').upper()
     return f'''<!doctype html>

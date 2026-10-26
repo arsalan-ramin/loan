@@ -13,7 +13,7 @@ from typing import Literal
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from .agents import SUPPORTED, DecisionAgent, ExtractionAgent, IntakeAgent, MemoryAgent, RulesAgent
 from .assistant_workflow import (
@@ -222,6 +222,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 editable(session)
                 if not files or len(files) + len(session.documents) > 20:
                     raise HTTPException(400, "Upload between 1 and 20 documents per conversation.")
+                incoming_xlsx = any(Path(file.filename or "").suffix.casefold() == ".xlsx" for file in files)
+                existing_xlsx = any(document.extension == ".xlsx" for document in session.documents)
+                if incoming_xlsx or existing_xlsx:
+                    total_xlsx = sum(document.extension == ".xlsx" for document in session.documents) + sum(
+                        Path(file.filename or "").suffix.casefold() == ".xlsx" for file in files
+                    )
+                    if total_xlsx > 3 or any(Path(file.filename or "").suffix.casefold() != ".xlsx" for file in files):
+                        raise HTTPException(400, "An MTB review accepts three XLSX source workbooks only: Query 1, Query 2 and Query 4. Other files cannot be mixed in.")
+                    if any(document.extension != ".xlsx" for document in session.documents):
+                        raise HTTPException(400, "An MTB workbook set cannot be mixed with other document files.")
                 directory = store.root / "uploads" / session.id
                 directory.mkdir(exist_ok=True)
                 new_documents = []
@@ -267,14 +277,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @application.post("/api/sessions/{session_id}/dataset", response_model=Session)
     def load_dataset(request: Request, session_id: str):
-        """Import only the three allowlisted workbook names; never accept server paths."""
+        """Import only the three fixed original query workbooks; IDs link them, never row order."""
         store: Store = request.app.state.store
         names = ("MTB_Query_1.xlsx", "MTB_Query_2.xlsx", "MTB_Query_4.xlsx")
         with store.lock:
             session = require_session(store, session_id)
             editable(session)
             if session.documents:
-                raise HTTPException(409, "Use a new, empty session to load the three Excel files.")
+                raise HTTPException(409, "Use a new empty session to load all three source workbooks.")
             max_bytes = int(os.getenv("FOLIO_MAX_XLSX_MB", "50")) * 1024 * 1024
             files = []
             try:
@@ -307,6 +317,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             store.save(session)
             (store.root / "uploads" / session.id / document_id).unlink(missing_ok=True)
         return session
+
+    @application.get("/api/sessions/{session_id}/documents/{document_id}/download")
+    def download_document(request: Request, session_id: str, document_id: str):
+        store: Store = request.app.state.store
+        session = require_session(store, session_id)
+        document = next((item for item in session.documents if item.id == document_id), None)
+        if document is None:
+            raise HTTPException(404, "Document not found in this session.")
+        path = store.root / "uploads" / session.id / document.id
+        if not path.is_file() or path.is_symlink():
+            raise HTTPException(404, "Uploaded document is no longer available.")
+        media_type = ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                      if document.extension == ".xlsx" else "application/octet-stream")
+        return FileResponse(path, media_type=media_type, filename=document.name,
+                            headers={"X-Content-Type-Options": "nosniff"})
 
     @application.put("/api/sessions/{session_id}/rules", response_model=Session)
     def update_rules(request: Request, session_id: str, body: RulesRequest):
@@ -458,6 +483,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             recognized_mtb = bool(session.preflight and session.preflight.recognized_mtb)
             if session.policy_rules and not recognized_mtb:
                 raise HTTPException(409, "Validate the uploaded workbooks before starting the account-scoped review.")
+            if recognized_mtb and (len(session.documents) != 3
+                                   or not session.preflight.query_file_set_valid
+                                   or session.preflight.query_roles != [1, 2, 4]
+                                   or session.preflight.missing_query_roles
+                                   or session.preflight.duplicate_query_roles):
+                raise HTTPException(409, "Upload exactly one workbook each for Query 1, Query 2 and Query 4 before processing.")
             if recognized_mtb and session.preflight and session.preflight.account_count and (
                 not session.selected_account_id
                 or not store.has_account_candidate(session.id, session.selected_account_id)
@@ -498,7 +529,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                  "eligibility_route", "credit_assessment", "authorization", "strategy_branch", "implementation_guide_diagnostics",
                  "recommendation_path", "final_action", "human_review_required", "normalized_amounts_usd",
                  "rule_results", "source_evidence", "missing_inputs", "conflicts", "explanation",
-                 "data_quality_issues", "source_document", "source_available",
+                 "data_quality_issues", "mapping_warnings", "unmapped_source_fields", "unavailable_inputs",
+                 "source_document", "source_available",
                  "implementation_guide_source_document", "implementation_guide_source_sha256",
                  "implementation_guide_available", "expanded_spec", "expanded_spec_available",
                  "expanded_spec_source_document", "expanded_spec_source_sha256"])
@@ -518,7 +550,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 loan.recommendation_path, loan.final_action, loan.human_review_required,
                                 *[json.dumps(data[key], ensure_ascii=False) for key in
                                     ("normalized_amounts_usd", "rule_results", "source_evidence", "missing_inputs", "conflicts")],
-                                loan.explanation, json.dumps(batch.data_quality_issues), batch.source_document, batch.source_available,
+                                loan.explanation, json.dumps(batch.data_quality_issues),
+                                json.dumps(batch.mapping_warnings), json.dumps(batch.unmapped_source_fields),
+                                json.dumps(batch.unavailable_inputs), batch.source_document, batch.source_available,
                                 batch.implementation_guide_source_document, batch.implementation_guide_source_sha256,
                                 batch.implementation_guide_available,
                                 loan.expanded_spec.model_dump_json() if loan.expanded_spec is not None else "null",

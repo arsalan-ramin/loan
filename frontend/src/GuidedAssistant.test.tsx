@@ -37,9 +37,11 @@ describe('Guided assistant workflow', () => {
 
   it('requires local validation and an explicit borrower selection for MTB processing', async () => {
     const active = session();
-    active.documents = [{ id: 'd1', name: 'MTB_Query_1.xlsx', size: 10, extension: '.xlsx', metadata: {} }];
+    active.documents = [1, 2, 4].map((role) => ({ id: `d${role}`, name: `MTB_Query_${role}.xlsx`, size: 10, extension: '.xlsx', metadata: {} }));
     active.preflight = { created_at: 'now', input_fingerprint: 'hash', recognized_mtb: true, query_roles: [1, 2, 4],
-      missing_query_roles: [], document_count: 3, loan_count: 2, account_count: 1, issue_count: 0,
+      missing_query_roles: [], duplicate_query_roles: [], query_file_set_valid: true,
+      document_count: 3, attribute_count: 2, attributes: ['Id', 'Loan_ID'],
+      loan_count: 2, account_count: 1, issue_count: 0,
       priority_issues: [], suggested_next_step: 'Select account', comparison: 'First', external_processing: false };
     const selected = { ...active, selected_account_id: 'A1' };
     const fetchMock = vi.fn(async (url: string) => {
@@ -76,14 +78,55 @@ describe('Guided assistant workflow', () => {
   it('shows escaped priority blockers and comparison without claiming approval', () => {
     const active = session();
     active.preflight = { created_at: 'now', input_fingerprint: 'hash', recognized_mtb: true, query_roles: [1],
-      missing_query_roles: [2, 4], document_count: 1, loan_count: 0, account_count: 0, issue_count: 20,
+      missing_query_roles: [2, 4], duplicate_query_roles: [], query_file_set_valid: false,
+      document_count: 1, attribute_count: 2, attributes: ['Id', 'Loan_ID'],
+      loan_count: 0, account_count: 0, issue_count: 20,
       priority_issues: ['<script>missing borrower</script>'], suggested_next_step: 'Replace source', comparison: 'Previous issue count 30; current 20', external_processing: false };
     const { container } = render(<GuidedAssistant {...props(active)} />);
     expect(screen.getByText('<script>missing borrower</script>')).toBeInTheDocument();
     expect(screen.getByText(/first 1 of 20/)).toBeInTheDocument();
     expect(screen.getByText(/Previous issue count 30/)).toBeInTheDocument();
-    expect(screen.getByText(/Missing Query roles: 2, 4/)).toBeInTheDocument();
+    expect(screen.queryByText(/Missing Query roles/)).not.toBeInTheDocument();
     expect(container.querySelector('script')).toBeNull();
+  });
+
+  it('renders older persisted preflight results with missing optional fields', () => {
+    const active = session();
+    active.documents = [1, 2, 4].map((role) => ({ id: `d${role}`, name: `MTB_Query_${role}.xlsx`, size: 10, extension: '.xlsx', metadata: {} }));
+    active.preflight = {
+      created_at: 'now', input_fingerprint: 'legacy-hash', recognized_mtb: true, query_roles: [1, 2, 4],
+      document_count: 3, loan_count: 0, account_count: 0, issue_count: 0,
+      suggested_next_step: 'Review source files', comparison: 'Legacy validation', external_processing: false,
+    } as NonNullable<Session['preflight']>;
+
+    render(<GuidedAssistant {...props(active)} />);
+
+    expect(screen.getByText('0 distinct column attributes extracted.')).toBeInTheDocument();
+    expect(screen.getByText('Priority blockers · first 0 of 0')).toBeInTheDocument();
+    expect(screen.getByText('Legacy validation')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Prepare review' })).toBeInTheDocument();
+  });
+
+  it('separates unmapped source headers from canonical inputs absent from the export', () => {
+    const active = session();
+    active.preflight = {
+      created_at: 'now', input_fingerprint: 'coverage-hash', recognized_mtb: true,
+      query_roles: [1, 2, 4], missing_query_roles: [], duplicate_query_roles: [], query_file_set_valid: true,
+      document_count: 3, attribute_count: 4, attributes: ['Id', 'LLC_BI__Loan__c', 'Unknown_Field__c', 'nFUSE__Account__c'],
+      unmapped_attribute_count: 1, unmapped_attributes: ['Unknown_Field__c'],
+      unavailable_inputs: ['Explicit EBITDA (EBIT is not interchangeable)', 'Credit report date'],
+      mapping_warnings: ['UNMAPPED_RELATION:Indicator:analysis_id'],
+      loan_count: 1, account_count: 1, issue_count: 0, priority_issues: [],
+      suggested_next_step: 'Select account', comparison: 'First', external_processing: false,
+    };
+
+    render(<GuidedAssistant {...props(active)} />);
+
+    expect(screen.getByText(/1 source columns currently unmapped/)).toBeInTheDocument();
+    expect(screen.getAllByText('Unknown_Field__c')).toHaveLength(2);
+    expect(screen.getByText('Explicit EBITDA (EBIT is not interchangeable)')).toBeInTheDocument();
+    expect(screen.getByText('Credit report date')).toBeInTheDocument();
+    expect(screen.getByText('UNMAPPED_RELATION:Indicator:analysis_id')).toBeInTheDocument();
   });
 
   it('disables local actions during processing and shows step progress', () => {

@@ -75,8 +75,8 @@ def test_section21_branch_candidates(score, ownership, fico, naics, expected):
 
 
 @pytest.mark.parametrize("change,expected", [
-    ({"credit_freeze": "Y"}, "MANUAL_REVIEW"),
-    ({"ofac_alert": "Y"}, "COMPLIANCE_REVIEW"),
+    ({"credit_freeze": "Y"}, "CONVENTIONAL_APPROVAL_CANDIDATE"),
+    ({"ofac_alert": "Y"}, "CONVENTIONAL_APPROVAL_CANDIDATE"),
     ({"report_date": None}, "DATA_REVIEW"),
     ({"bankruptcy_count": "1", "bankruptcy_discharge_date": "2022-10-20"}, "SIMULATED_DECLINE_CANDIDATE"),
 ])
@@ -96,20 +96,22 @@ def test_no_borrower_junction_or_score_timestamp_never_candidate():
 def test_nonprofit_and_baloc_conflicts_and_vehicle_exception():
     data = source()
     data[0][1]["is_nfp"] = True
-    assert result(data).expanded_spec.simulated_credit_route == "FULL_UNDERWRITING"
+    assert result(data).eligibility_route == "QUICK_APP"
+    assert result(data).expanded_spec.simulated_credit_route == "CONVENTIONAL_APPROVAL_CANDIDATE"
     data = source()
     data[1][1].update(is_increase=True, account_opened="2026-02-20")
-    assert result(data).expanded_spec.simulated_credit_route == "POLICY_REVIEW"
+    assert result(data).eligibility_route == "QUICK_APP"
+    assert result(data).expanded_spec.simulated_credit_route == "CONVENTIONAL_APPROVAL_CANDIDATE"
     data = source()
     data[0][1]["ownership_years"] = "1"
     data[3][1]["sbss"] = "175"
     data[2][1]["personal_fico"] = "700"
     data[1][1]["requested_amount"] = "100001"
-    assert result(data).expanded_spec.simulated_credit_route == "SIMULATED_DECLINE_CANDIDATE"
+    assert result(data).expanded_spec.simulated_credit_route == "POLICY_REVIEW"
     data = source()
     data[3][1]["sbss"] = "195"
     data[1][1]["vehicle_only"] = True
-    assert result(data).expanded_spec.simulated_credit_route == "POLICY_REVIEW"
+    assert result(data).expanded_spec.simulated_credit_route == "CONVENTIONAL_APPROVAL_CANDIDATE"
 
 
 def test_guarantor_low_score_requires_aggregation_review_not_borrower_substitution():
@@ -119,9 +121,10 @@ def test_guarantor_low_score_requires_aggregation_review_not_borrower_substituti
         ("CreditReport", {"Id": "GR", "account_id": "G1", "status": "completed", "report_date": "2026-10-19", "personal_fico": "600"}),
     ]
     loan = result(data)
-    assert loan.normalized_data["fico"] == "760"
-    assert loan.expanded_spec.simulated_credit_route == "POLICY_REVIEW"
-    assert "approved_personal_fico_aggregation" in loan.expanded_spec.missing_inputs
+    assert loan.normalized_data["fico"] == "680"
+    assert loan.normalized_data["personal_fico_scores_for_average"] == ["760", "600"]
+    assert loan.expanded_spec.simulated_credit_route == "CONVENTIONAL_APPROVAL_CANDIDATE"
+    assert "approved_personal_fico_aggregation" not in loan.expanded_spec.missing_inputs
 
 
 @pytest.mark.parametrize("code", [item[0] for item in REASONS])
@@ -146,7 +149,7 @@ def test_financial_review_inputs_and_no_ebit_substitution():
     for key in ("WORKING_CAPITAL", "LIMITED_CREDIT", "OPERATING_HISTORY"):
         assert reasons[key].status == "FAIL"
         assert reasons[key].evidence_refs
-    assert loan.expanded_spec.simulated_credit_route == "MANUAL_REVIEW"
+    assert loan.expanded_spec.simulated_credit_route == "CONVENTIONAL_APPROVAL_CANDIDATE"
     data = source()
     del data[0][1]["ebitda"]
     data[0][1]["SBSS7__earn_before_int_and_taxes__c"] = "100"
@@ -218,7 +221,8 @@ def test_underage_is_eligibility_review_not_operational_denial():
     data = source()
     data[0][1]["dob"] = "2010-01-01"
     spec = result(data).expanded_spec
-    assert spec.simulated_credit_route == spec.eligibility_route == "DATA_REVIEW"
+    assert spec.simulated_credit_route == "SIMULATED_DECLINE_CANDIDATE"
+    assert spec.eligibility_route == "QUICK_APP"
 
 
 def test_direct_and_scoped_thin_file_disagreement_is_a_data_conflict():
@@ -244,7 +248,7 @@ def test_missing_earnings_period_cannot_yield_expanded_approval_candidate():
     data = source()
     del data[0][1]["financial_period_start"]
     spec = result(data).expanded_spec
-    assert spec.simulated_credit_route == "DATA_REVIEW"
+    assert spec.simulated_credit_route == "CONVENTIONAL_APPROVAL_CANDIDATE"
     assert "verified_ebitda_period" in spec.missing_inputs
 
 

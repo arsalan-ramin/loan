@@ -7,7 +7,9 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from backend.agents import DecisionAgent, RulesAgent
-from backend.datasets import SIGNATURES, mtb_query_ids
+from backend.datasets import (SIGNATURES, account_reference_headers,
+                              borrower_role_headers, loan_reference_headers,
+                              mtb_query_ids)
 from backend.llm import AnthropicLLM, LLMError
 from backend.main import create_app, process_session
 from backend.models import Document, Report, Session
@@ -17,9 +19,10 @@ from backend.storage import Store
 
 @pytest.mark.parametrize("name,expected", [
     ("MTB_Query_1.xlsx", {1}), ("MTB_Query_1_Sample_Data.xlsx", {1}),
-    ("MTB_Query_2_Sample_Data.xlsx", {2}), ("MTB_Query_4_Sample_Data.xlsx", {4}),
+    ("MTB_Query_2_Sample_Data.xlsx", {2}), ("MTB_Query_3_Sample_Data.xlsx", {3}),
+    ("MTB_Query_4_Sample_Data.xlsx", {4}),
     ("mtb query 4 (copy).XLSX", {4}), ("MTB-Query-2-test.xlsx", {2}),
-    ("MTB_Query_14.xlsx", set()), ("MTB_Query_3.xlsx", set()),
+    ("MTB_Query_14.xlsx", set()),
     ("MTB_Query_1.txt", set()), ("MTB_Query_1.xlsm", set()), ("report.xlsx", set()),
 ])
 def test_sample_names_and_unrelated_files(name, expected):
@@ -37,6 +40,26 @@ def test_renamed_workbook_detected_from_sheet_or_headers(query):
 def test_query_one_bureau_columns_not_misclassified_as_query_four():
     metadata = {"sheets": [{"name": "Data", "headers": list(SIGNATURES[1] | SIGNATURES[4])}]}
     assert mtb_query_ids("renamed.xlsx", metadata) == {1}
+
+
+@pytest.mark.parametrize("header", [
+    "ACCOUNT_ID", "Account ID", "Account-ID", "Account Column", "Account ID Column",
+    "LLC_BI__Account__c", "LLC_BI__Account__r.Id", "nFUSE__Account__c",
+])
+def test_account_reference_header_variants_are_explicitly_normalized(header):
+    assert account_reference_headers([header]) == [header]
+
+
+def test_account_names_and_generic_ids_are_not_account_relationship_keys():
+    assert account_reference_headers(["Name", "Account Name", "Id", "Record_ID"]) == []
+
+
+def test_namespaced_soql_loan_and_borrower_relationship_headers_are_explicit():
+    prefix = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
+    loan_header = prefix + "LLC_BI__Loan__c"
+    role_header = prefix + "LLC_BI__Borrower_Type__c"
+    assert loan_reference_headers([loan_header, "Unrelated_Loan_Description__c", "Id"]) == [loan_header]
+    assert borrower_role_headers([role_header, "Borrower_Name__c", "Name"]) == [role_header]
 
 
 def test_sample_report_runs_guideline_not_word_count(monkeypatch):

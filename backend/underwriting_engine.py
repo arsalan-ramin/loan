@@ -39,6 +39,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .datasets import soql_unavailable_inputs
 from .entity_graph import EntityGraph, EntityNode, build_entity_graph, iso_date
 from .expanded_spec import evaluate_expanded_spec
 from .underwriting_models import (
@@ -146,6 +147,14 @@ def fico_band(value: Any) -> str | None:
     return "LT_650" if score < 650 else "650_759" if score < 760 else "GE_760"
 
 
+def fico_average_band(value: Any) -> str | None:
+    """Screenshot average can be fractional; source scores remain integer validated."""
+    score = _number(value)
+    if score is None or not 300 <= score <= 850:
+        return None
+    return "LT_650" if score < 650 else "650_759" if score < 760 else "GE_760"
+
+
 def calendar_anniversary(original: date, years: int) -> date:
     """Calendar-year anniversary; Feb 29 becomes Feb 28 in a non-leap year."""
     year = original.year + years
@@ -180,21 +189,22 @@ def evaluate_implementation_strategy(
 ) -> dict[str, Any]:
     """Apply the guide's Section 8 tree as a pure, non-authorizing diagnostic.
 
-    Every identity, eligibility, knockout, source and exception flag is supplied
-    explicitly by the caller. Missing/invalid tree inputs fail closed. The
-    The screenshot's 160-189 branch uses its explicit >$100K knockout-list
-    condition; the conflicting <=$100M tree label remains recorded as an
-    unresolved production-policy conflict. No operational outcome is issued.
+    Only the supplied screenshot's knockout list and ordered SBSS decision tree
+    determine the simulated candidate. Source integrity and explicit identity
+    remain required data guards. Other product/compliance/Quick App diagnostics
+    do not alter this screenshot candidate. Conflicting screenshot request
+    boundaries stay in review; no operational outcome is issued.
     """
     conflicts = set(policy_conflicts) | REQUIRED_CONFLICTS
     stages: dict[str, str] = {
         "source": "PASS" if source_available else "UNKNOWN",
         "identity": "PASS" if identity_valid is True else "FAIL" if identity_valid is False else "UNKNOWN",
-        "quick_app_eligibility": "PASS" if quick_app_eligible is True else "FAIL" if quick_app_eligible is False else "UNKNOWN",
-        "knockouts": "PASS" if knockouts_completed and knockout_detected is not None else "UNKNOWN",
+        "quick_app_eligibility": "NOT_A_SCREENSHOT_CRITERION",
+        "knockouts": ("CANDIDATE_MATCH" if knockouts_completed and knockout_detected is True else
+                  "PASS" if knockouts_completed and knockout_detected is False else "UNKNOWN"),
         "stage_0_schema_identity": "PASS" if identity_valid is True else "FAIL" if identity_valid is False else "UNKNOWN",
         "stage_1_policy_approval_and_mode": "DRAFT_UNAPPROVED_SIMULATION_ONLY",
-        "stage_2_product_eligibility_and_completeness": "PASS" if quick_app_eligible is True else "FAIL" if quick_app_eligible is False else "UNKNOWN",
+        "stage_2_product_eligibility_and_completeness": "NOT_USED_BY_SCREENSHOT_FLOW",
         "stage_3_hard_knockouts": "PASS" if knockouts_completed and knockout_detected is False else "CANDIDATE_MATCH" if knockouts_completed and knockout_detected is True else "UNKNOWN",
         "stage_4_credit_strategy": "PENDING",
         "stage_5_non_operational_route": "PENDING",
@@ -214,6 +224,8 @@ def evaluate_implementation_strategy(
         result["eligibility_route"] = eligibility
         result["credit_assessment"] = assessment
         stages[stage] = outcome
+        if stage == "strategy":
+            stages["stage_4_credit_strategy"] = outcome
         stages["stage_5_non_operational_route"] = assessment
         return result
 
@@ -222,21 +234,11 @@ def evaluate_implementation_strategy(
         return stop("POLICY_REVIEW", "POLICY_REVIEW", "policy", "UNKNOWN")
     if identity_valid is not True:
         return stop("DATA_REVIEW", "DATA_REVIEW", "identity", stages["identity"])
-    if quick_app_eligible is False:
-        return stop("FULL_UNDERWRITING", "MANUAL_REVIEW", "quick_app_eligibility", "FAIL")
-    if quick_app_eligible is not True:
-        return stop("DATA_REVIEW", "DATA_REVIEW", "quick_app_eligibility", "UNKNOWN")
     result["eligibility_route"] = "QUICK_APP"
-    if product_review_required:
-        return stop("PRODUCT_REVIEW", "MANUAL_REVIEW", "product", "REVIEW_REQUIRED")
-    if compliance_review_required:
-        return stop("QUICK_APP", "COMPLIANCE_REVIEW", "compliance", "REVIEW_REQUIRED")
-    if manual_review_required:
-        return stop("QUICK_APP", "MANUAL_REVIEW", "stop_conditions", "REVIEW_REQUIRED")
+    if knockout_detected is True:
+        return stop("QUICK_APP", "SIMULATED_DECLINE_CANDIDATE", "knockouts", "CANDIDATE_MATCH")
     if not knockouts_completed or knockout_detected is None:
         return stop("DATA_REVIEW", "DATA_REVIEW", "knockouts", "UNKNOWN")
-    if knockout_detected:
-        return stop("QUICK_APP", "SIMULATED_DECLINE_CANDIDATE", "knockouts", "CANDIDATE_MATCH")
 
     sbss_value = _number(sbss)
     fico_value = _number(fico)
@@ -245,49 +247,74 @@ def evaluate_implementation_strategy(
     naics_value = naics if isinstance(naics, str) and re.fullmatch(r"\d{2,6}", naics) else None
     scores_valid = (sbss_value is not None and sbss_value == sbss_value.to_integral_value()
                     and 0 <= sbss_value <= 300)
-    fico_valid = (fico_value is not None and fico_value == fico_value.to_integral_value()
-                  and 300 <= fico_value <= 850)
+    # The screenshot uses an average of valid integer source scores, which may
+    # be fractional; validate the exact Decimal average by range, not integer-ness.
+    fico_valid = fico_value is not None and 300 <= fico_value <= 850
     ownership_valid = ownership_value is not None and ownership_value >= 0
     amount_valid = amount_value is not None and amount_value >= 0
-    if not scores_valid or not fico_valid or not ownership_valid or not amount_valid or naics_value is None:
-        return stop("DATA_REVIEW", "DATA_REVIEW", "strategy", "REQUIRED_INPUT_UNKNOWN")
-    # The checks above establish these values before any ordered branch tests.
-    assert sbss_value is not None and ownership_value is not None and amount_value is not None
+    if not scores_valid or not fico_valid:
+        return stop("DATA_REVIEW", "DATA_REVIEW", "strategy", "REQUIRED_SCORE_UNKNOWN")
+    assert sbss_value is not None and fico_value is not None
 
     high_risk = tuple(code for code in high_risk_naics if isinstance(code, str))
-    is_high_risk = bool(high_risk) and any(naics_value.startswith(code) for code in high_risk)
+    is_high_risk = bool(high_risk) and naics_value is not None and any(naics_value.startswith(code) for code in high_risk)
     branch: str
     assessment: str
+    sba_candidate = False
     if sbss_value < 160:
         branch, assessment = "SBSS_LT_160", "SIMULATED_DECLINE_CANDIDATE"
     elif sbss_value < 190:
+        if not ownership_valid:
+            return stop("DATA_REVIEW", "DATA_REVIEW", "strategy", "OWNERSHIP_YEARS_UNKNOWN")
+        assert ownership_value is not None
         if ownership_value >= 2:
             branch, assessment = "SBSS_160_189_OWNERSHIP_GE_2", "SIMULATED_APPROVAL_CANDIDATE"
-        elif not fico_valid:
-            return stop("DATA_REVIEW", "DATA_REVIEW", "strategy", "REQUIRED_FICO_UNKNOWN")
+            sba_candidate = True
         else:
-            assert fico_value is not None
             if fico_value >= 760:
                 branch, assessment = "SBSS_160_189_OWNERSHIP_LT_2_FICO_GE_760", "SIMULATED_APPROVAL_CANDIDATE"
+                sba_candidate = True
             elif fico_value >= 650:
+                if not amount_valid:
+                    return stop("DATA_REVIEW", "DATA_REVIEW", "strategy", "REQUESTED_AMOUNT_UNKNOWN")
+                assert amount_value is not None
                 if amount_value <= USD_100K:
                     branch, assessment = "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_LE_100K", "SIMULATED_APPROVAL_CANDIDATE"
+                    sba_candidate = True
+                elif amount_value <= USD_100M:
+                    branch, assessment = "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_REQUEST_THRESHOLD_CONFLICT", "POLICY_REVIEW"
                 else:
-                    branch, assessment = "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_GT_100K", "SIMULATED_DECLINE_CANDIDATE"
+                    branch, assessment = "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_GT_100M", "SIMULATED_DECLINE_CANDIDATE"
             else:
                 branch, assessment = "SBSS_160_189_OWNERSHIP_LT_2_FICO_LT_650", "SIMULATED_DECLINE_CANDIDATE"
     elif sbss_value < 200:
         branch, assessment = "SBSS_190_199", "SIMULATED_APPROVAL_CANDIDATE"
-    elif ownership_value < 2:
-        branch, assessment = "SBSS_GE_200_OWNERSHIP_LT_2", "SIMULATED_APPROVAL_CANDIDATE"
-    elif is_high_risk:
-        # The guide mentions a vehicle-only override but does not define enough
-        # criteria to implement it safely; do not infer or apply that override.
-        if vehicle_only is not False:
-            return stop("POLICY_REVIEW", "POLICY_REVIEW", "strategy", "VEHICLE_OVERRIDE_UNKNOWN")
-        branch, assessment = "SBSS_GE_200_OWNERSHIP_GE_2_HIGH_RISK_NAICS", "SIMULATED_APPROVAL_CANDIDATE"
+        sba_candidate = True
     else:
-        branch, assessment = "SBSS_GE_200_OWNERSHIP_GE_2_OTHER_NAICS", "SIMULATED_APPROVAL_CANDIDATE"
+        if not ownership_valid:
+            return stop("DATA_REVIEW", "DATA_REVIEW", "strategy", "OWNERSHIP_YEARS_UNKNOWN")
+        assert ownership_value is not None
+        if ownership_value < 2:
+            branch, assessment = "SBSS_GE_200_OWNERSHIP_LT_2", "SIMULATED_APPROVAL_CANDIDATE"
+            sba_candidate = True
+        else:
+            if naics_value is None:
+                return stop("DATA_REVIEW", "DATA_REVIEW", "strategy", "NAICS_UNKNOWN")
+            if is_high_risk:
+                # The screenshot's vehicle-only SBA override lacks a complete
+                # conventional route definition in approved policy; hold it.
+                if vehicle_only is not False:
+                    if vehicle_only is None:
+                        return stop("POLICY_REVIEW", "POLICY_REVIEW", "strategy", "VEHICLE_OVERRIDE_UNKNOWN")
+                branch, assessment = "SBSS_GE_200_OWNERSHIP_GE_2_HIGH_RISK_NAICS", "SIMULATED_APPROVAL_CANDIDATE"
+                sba_candidate = True
+            else:
+                branch, assessment = "SBSS_GE_200_OWNERSHIP_GE_2_OTHER_NAICS", "SIMULATED_APPROVAL_CANDIDATE"
+
+    if sba_candidate and vehicle_only is None:
+        return stop("DATA_REVIEW", "DATA_REVIEW", "strategy", "VEHICLE_ONLY_FLAG_UNKNOWN_FOR_SCREENSHOT_OVERRIDE")
+    if sba_candidate and vehicle_only is True:
+        branch += "_VEHICLE_ONLY_CONVENTIONAL_OVERRIDE"
 
     result["strategy_branch"] = branch
     result["credit_assessment"] = assessment
@@ -416,6 +443,16 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
     profile = dict(loan.fields)
     rules: list[UnderwritingRuleResult] = []
 
+    # Preserve input/mapping blockers in human-readable form. Keep unresolved
+    # policy gates in conflicts rather than claiming they are absent customer
+    # data, and distinguish a poisoned source value from an unmapped header.
+    for issue in graph.issues:
+        issue_code = issue.split(" [ev-", 1)[0]
+        if issue_code.startswith("CONFLICTING_DUPLICATE:CreditReport:fico"):
+            conflicts.append("CREDIT_REPORT_FICO_CONFLICT:Query 1 nested score and Query 4 root score disagree for the same report ID; no score selected.")
+        elif issue_code.startswith("CONFLICTING_DUPLICATE:") or issue_code.startswith("CONFLICTING_ALIASES:"):
+            conflicts.append("SOURCE_DATA_CONFLICT:" + issue_code)
+
     def include(node: EntityNode | None, merge: bool = False) -> None:
         if node is None:
             return
@@ -441,7 +478,7 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
         evidence_refs = sorted({item for key in fields for item in refs.get(key, [])})
         rules.append(UnderwritingRuleResult(rule_id=rule_id, status=status, detail=detail, evidence_refs=evidence_refs,
                                            page=page, policy_reference=f"{SOURCE_DOCUMENT} p.{page}" if page else None))
-        if status == "UNKNOWN":
+        if status == "UNKNOWN" and not rule_id.endswith("_POLICY") and rule_id != "REQUEST_THRESHOLD_POLICY":
             missing.append(rule_id)
         # No loan/account IDs, values, names or free-text details in logs.
         LOGGER.info("underwriting rule_id=%s status=%s provenance=%s", rule_id, status, ",".join(evidence_refs))
@@ -468,12 +505,62 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
     report, report_error = _select_report(graph, borrower, as_of, config) if borrower else (None, "borrower_credit_identity")
     if report_error:
         missing.append(report_error)
-    include(report, True)
-    # Only the selected account/role-scoped report may establish personal FICO.
-    profile["fico"] = personal_fico(report)
-    refs["fico"] = (report.field_refs.get("personal_fico", report.field_refs.get("fico", []))
-                    if report else [])
+    if report is not None:
+        include(report, True)
+    elif borrower:
+        # Keep the source values visible when selection is blocked, while
+        # refusing to merge any candidate report into the decision profile.
+        candidate_reports = graph.related("CreditReport", "account_id", borrower)
+        for candidate_report in candidate_reports:
+            include(candidate_report)
+        refs["fico"] = sorted({
+            ref for candidate_report in candidate_reports
+            for field_name in ("personal_fico", "fico")
+            for ref in candidate_report.field_refs.get(field_name, [])
+        })
+    # The supplied screenshot explicitly evaluates average personal FICO when
+    # multiple parties are linked. For a sole borrower, use that explicitly
+    # typed personal score unchanged. Never use unrelated accounts, business
+    # scores, or a partial average when a linked party is missing.
+    party_scores: list[Decimal] = []
+    fico_refs: list[str] = list(refs.get("fico", []))
+    borrower_score = _number(personal_fico(report))
+    if borrower_score is not None:
+        party_scores.append(borrower_score)
+        fico_refs.extend(report.field_refs.get("personal_fico", report.field_refs.get("fico", [])))
+    else:
+        missing.append("borrower_personal_fico_for_screenshot_average")
+    for guarantor_id in guarantors:
+        guarantor_report, guarantor_error = _select_report(graph, guarantor_id, as_of, config)
+        if guarantor_error or guarantor_report is None:
+            missing.append(f"guarantor_fico_average:{guarantor_id}:{guarantor_error or 'personal_fico'}")
+            continue
+        guarantor_score = _number(personal_fico(guarantor_report, "guarantor"))
+        if guarantor_score is None:
+            missing.append(f"guarantor_fico_average:{guarantor_id}:personal_fico")
+            continue
+        party_scores.append(guarantor_score)
+        fico_refs.extend(guarantor_report.field_refs.get(
+            "personal_fico", guarantor_report.field_refs.get("fico", [])))
+    average_complete = borrower_score is not None and not any(
+        item.startswith("guarantor_fico_average:") for item in missing
+    )
+    profile["fico"] = (
+        borrower_score if average_complete and len(party_scores) == 1 else
+        sum(party_scores, Decimal(0)) / Decimal(len(party_scores))
+        if average_complete and party_scores else None
+    )
+    refs["fico"] = sorted(set(fico_refs))
+    profile["personal_fico_scores_for_average"] = [str(score) for score in party_scores] if average_complete else None
     response, response_error = _select_response(graph, loan, borrower)
+    if response_error and profile.get("sbss") is not None:
+        # SOQL may select the scalar SBSS score through an explicit
+        # Loan -> EntityInvolvement -> Account -> LCResponse relationship but
+        # omit the response record Id. The score is still explicitly scoped to
+        # this loan, so use it with its source-cell provenance and do not invent
+        # a response ID. Dated-response freshness remains a separate unknown.
+        missing.append("sbss_response_id_not_exported")
+        response_error = None
     if response_error:
         missing.append(response_error)
     include(response, True)
@@ -521,7 +608,7 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
                      "selected_response_id": response.id if response else None,
                      "identity_valid": identity,
                      "sbss_bucket": sbss_bucket(profile.get("sbss")),
-                     "fico_band": fico_band(profile.get("fico"))})
+                     "fico_band": fico_average_band(profile.get("fico"))})
     # Keep all nonmoney numeric fields lexical and avoid accidentally allowing
     # a response/report from another account to provide a replacement score.
     features["sbss"] = str(profile["sbss"]) if features["sbss_bucket"] else None
@@ -564,7 +651,18 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
               "Calendar-month diagnostic only; six-versus-twelve-month conflict remains unresolved.",
               ("account_opened", "as_of_date", "is_increase"), baloc and increase is not False)
     check("SBSS_BUCKET_DIAGNOSTIC", True if features["sbss_bucket"] else None, "Score bucket only; no SBSS/FICO conjunction is inferred.", ("sbss",))
-    check("FICO_BAND_DIAGNOSTIC", True if features["fico_band"] else None, "FICO band only; no SBSS/FICO conjunction is inferred.", ("fico",))
+    fico_conflict = any(issue.startswith("CONFLICTING_DUPLICATE:CreditReport:fico")
+                        for issue in graph.issues)
+    if features["fico_band"] is not None:
+        fico_detail = "Screenshot average personal FICO is available from selected, account-scoped typed reports."
+    elif fico_conflict:
+        fico_detail = ("FICO is UNKNOWN: the same CreditReport ID has conflicting Query 1 nested and Query 4 root scores; "
+                       "neither value is selected. Report-date/as-of selection requirements are also applied.")
+    elif report_error:
+        fico_detail = f"FICO is UNKNOWN: no report was selected ({report_error}); account-scoped report and as-of dates are required."
+    else:
+        fico_detail = "FICO is UNKNOWN: required typed personal score evidence is not available for every linked party."
+    check("FICO_BAND_DIAGNOSTIC", True if features["fico_band"] else None, fico_detail, ("fico",))
     ownership = _number(profile.get("ownership_years"))
     features["ownership_at_least_2_years"] = ownership >= 2 if ownership is not None and ownership >= 0 else None
     check("OWNERSHIP_2_YEARS_DIAGNOSTIC", features["ownership_at_least_2_years"], "Two-year ownership diagnostic requires explicit ownership years.", ("ownership_years",))
@@ -628,7 +726,7 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
     check("POLICY_SOURCE_V4", True if source_available else None, "Missing/unpinned v4 PDF cannot be substituted with the older draft.")
     fico_score, sbss_score = _number(features["fico"]), _number(features["sbss"])
     check("PERSONAL_FICO_650_CANDIDATE", fico_score >= 650 if fico_score is not None else None,
-          "Draft personal FICO knock-out candidate. Personal score only; multi-owner averaging is not inferred.", ("fico",), page=2)
+            "Screenshot knockout candidate: exact average of typed personal FICO across explicitly linked borrower/guarantor parties below 650. Any unavailable linked-party score leaves the average UNKNOWN.", ("fico",), page=2)
     check("SBSS_160_CANDIDATE", sbss_score >= 160 if sbss_score is not None else None,
           "Draft SBSS below 160 knock-out candidate, not an operational denial.", ("sbss",), page=2)
     bucket = features["sbss_bucket"]
@@ -645,23 +743,31 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
                  "BANKRUPTCY_POLICY", "GROUP_EXPOSURE_POLICY", "INCREASE_WAIT_POLICY"):
         check(gate, None, "Verified draft candidates do not resolve policy conflicts or authorize production decisions.", page=2)
 
-    # The implementation guide is independently pinned. Its Section 8 tree is
-    # only a diagnostic and never changes recommendation_path/final_action.
-    knockout_inputs_known = all(value is not None for value in (
-        features["sbss_bucket"], features["fico_band"], features["ownership_at_least_2_years"],
-        features["ebitda_nonnegative"], features["bankruptcy_discharge_at_least_5_years"],
-        features["minimum_age_met"], features["naics_not_high_risk"],
-        features["public_record_knockout_candidate"],
-        features["ofac_confirmed_match"], features["ofac_alert_clear"], features["credit_freeze_clear"],
-    ))
-    knockout_detected = None if not knockout_inputs_known else any((
-        sbss_score is not None and sbss_score < 160,
-        fico_score is not None and fico_score < 650,
-        features["ebitda_nonnegative"] is False,
-        features["bankruptcy_discharge_at_least_5_years"] is False,
-        features["minimum_age_met"] is False,
-        features["public_record_knockout_candidate"] is True,
-    ))
+    # The screenshot's ordered knockout list is the only knockout source for
+    # the candidate branch. Unrelated OFAC/freeze/product checks remain visible
+    # diagnostics but do not silently become screenshot criteria.
+    screenshot_knockout_ids = (
+        "MAX_DELINQUENCY_PUBLIC_RECORDS_KNOCKOUT_CANDIDATE",
+        "EBITDA_NONNEGATIVE_DIAGNOSTIC",
+        "BANKRUPTCY_5_CALENDAR_YEARS_DIAGNOSTIC",
+        "MINIMUM_AGE",
+        "PERSONAL_FICO_650_CANDIDATE",
+        "SBSS_160_CANDIDATE",
+    )
+    screenshot_knockout_results = {item.rule_id: item.status for item in rules
+                                   if item.rule_id in screenshot_knockout_ids}
+    screenshot_knockout_matches = [rule_id for rule_id in screenshot_knockout_ids
+                                   if screenshot_knockout_results.get(rule_id) == "FAIL"]
+    screenshot_knockout_unknowns = [rule_id for rule_id in screenshot_knockout_ids
+                                    if screenshot_knockout_results.get(rule_id) == "UNKNOWN"]
+    knockout_inputs_known = not screenshot_knockout_unknowns and len(screenshot_knockout_results) == len(screenshot_knockout_ids)
+    knockout_detected = (True if screenshot_knockout_matches else
+                         None if screenshot_knockout_unknowns or not knockout_inputs_known else False)
+    features["screenshot_knockout_results"] = [
+        {"rule_id": rule_id, "status": screenshot_knockout_results.get(rule_id, "UNKNOWN")}
+        for rule_id in screenshot_knockout_ids
+    ]
+    features["personal_fico_scores_for_average"] = profile.get("personal_fico_scores_for_average")
     if quick:
         quick_app_eligible = (
             False if nfp is True else
@@ -738,9 +844,18 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
             criterion_feature = criterion.get("feature") if isinstance(criterion, dict) else None
             check(safe_id, outcome, detail, (criterion_feature,) if isinstance(criterion_feature, str) else ())
             criterion_results.append(outcome)
-    data_hold = bool(graph.issues) or not identity or any(item.startswith(("CONFLICTING_", "UNSUPPORTED_INDICATOR")) for item in conflicts)
+    # Graph defects remain a conservative data-quality hold. They do not alter
+    # the screenshot branch itself, but no unresolved source conflict may be
+    # hidden by a TEST fixture criterion.
+    data_hold = bool(graph.issues) or not identity or any(
+        item.startswith(("CONFLICTING_", "UNSUPPORTED_INDICATOR")) for item in conflicts
+    )
+    # These are non-decision completeness/compliance holds. They never change
+    # the screenshot branch or its candidate classification, but prevent a
+    # developer synthetic fixture from masking missing required evidence.
     required_amounts = ("requested_amount", "new_money", "tier_i", "tier_ii", "ebitda")
-    required_features = ("sbss_bucket", "fico_band", "ownership_at_least_2_years", "minimum_age_met", "naics_not_high_risk", "bankruptcy_discharge_at_least_5_years")
+    required_features = ("sbss_bucket", "fico_band", "ownership_at_least_2_years", "minimum_age_met",
+                         "naics_not_high_risk", "bankruptcy_discharge_at_least_5_years")
     needs_review = not synthetic or any(value is None for value in criterion_results)
     needs_review = needs_review or not knockout_inputs_known
     needs_review = needs_review or report_error is not None or response_error is not None
@@ -750,21 +865,159 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
     needs_review = needs_review or not supported or not profile.get("requested_path") or nfp is None
     needs_review = needs_review or features["ofac_confirmed_match"] is not False
     needs_review = needs_review or features["ofac_alert_clear"] is not True or features["credit_freeze_clear"] is not True
+    needs_review = needs_review or strategy["credit_assessment"] in {"DATA_REVIEW", "POLICY_REVIEW"}
     if data_hold:
         path = "SIMULATED_REVIEW" if mode == "TEST" else "DATA_QUALITY_HOLD"
     elif mode == "PRODUCTION":
         path = "POLICY_REVIEW_REQUIRED"
     elif needs_review:
         path = "SIMULATED_REVIEW"
+    elif knockout_detected is True or strategy["credit_assessment"] == "SIMULATED_DECLINE_CANDIDATE":
+        path = "SIMULATED_DECLINE_PATH"
     elif any(value is False for value in criterion_results):
         path = "SIMULATED_DECLINE_PATH"
     else:
         path = "SIMULATED_APPROVE_PATH"
+    # Expose the ordered, deterministic checks to reviewers so each branch can
+    # be independently validated against the input evidence. These remain draft
+    # diagnostics; they never confer approval/denial authority.
+    def flow_step(stage: str, status: str, summary: str, fields: Iterable[str] = ()) -> dict[str, Any]:
+        return {
+            "stage": stage,
+            "status": status,
+            "summary": summary,
+            "evidence_refs": sorted({ref for key in fields for ref in refs.get(key, [])}),
+        }
+
+    source_workbooks = sorted({item.workbook for item in evidence.values()})
+    report_score_conflict = any(item == "CONFLICTING_DUPLICATE:CreditReport:fico"
+                                or item.startswith("CONFLICTING_DUPLICATE:CreditReport:fico ")
+                                for item in graph.issues)
+    report_reconciliation = (
+        "The linked Query 1 and Query 4 rows use the same CreditReport ID but their FICO values conflict; neither score is selected."
+        if report_score_conflict else
+        "The linked report score is not selected because an explicit ISO as-of date and report date are required."
+        if report_error is not None else
+        "A unique account-scoped completed report was selected using explicit dates."
+    )
+    flow: list[dict[str, Any]] = [flow_step(
+        "Account and relationship validation",
+        "PASS" if identity else "FAIL",
+        (f"Unique borrower Account {borrower} is explicitly linked to Loan {loan.id}." if identity
+         else "A unique, existing borrower Account-to-Loan relationship could not be validated."),
+        ("identity", "borrower_account_id"),
+    )]
+    flow.append(flow_step(
+        "Query 1 / Query 2 / Query 4 source reconciliation",
+        "CONFLICT" if report_score_conflict else "PASS" if report is not None else "UNKNOWN",
+        f"Loan {loan.id} and Account {borrower} were assembled from explicit source keys; source workbooks: "
+        f"{', '.join(source_workbooks) if source_workbooks else 'none identified'}. {report_reconciliation}",
+        ("borrower_account_id", "loan_id", "response_id", "fico", "report_date", "as_of_date"),
+    ))
+    guide_source_ok = implementation_guide_available and source_available
+    flow.append(flow_step(
+        "Draft source verification",
+        "PASS" if guide_source_ok else "UNKNOWN",
+        ("Pinned v4 policy and implementation-guide source files verified; they remain drafts, not approved policy."
+         if guide_source_ok else "One or more pinned draft source files are unavailable or do not match; page-dependent logic is not validated."),
+        ("identity",),
+    ))
+    knockout_labels = {
+        "MAX_DELINQUENCY_PUBLIC_RECORDS_KNOCKOUT_CANDIDATE":
+            f"maximum-delinquency public-record code {profile.get('max_delinquency_public_records')} (1, 2, or 3)",
+        "EBITDA_NONNEGATIVE_DIAGNOSTIC": f"negative explicit EBITDA ({amounts['ebitda']} USD)",
+        "BANKRUPTCY_5_CALENDAR_YEARS_DIAGNOSTIC":
+            f"bankruptcy not discharged at least five years before as-of ({profile.get('bankruptcy_discharge_date')})",
+        "MINIMUM_AGE": f"applicant under 18 on as-of date ({features.get('age_years')} years)",
+        "PERSONAL_FICO_650_CANDIDATE": f"screenshot average typed personal FICO below 650 ({features.get('fico')})",
+        "SBSS_160_CANDIDATE": f"SBSS below 160 ({features.get('sbss')})",
+    }
+    matched_knockouts = [knockout_labels[rule_id] for rule_id in screenshot_knockout_matches]
+    unknown_knockouts = [
+        label for rule_id, label in (
+            ("MAX_DELINQUENCY_PUBLIC_RECORDS_KNOCKOUT_CANDIDATE", "public-record code"),
+            ("EBITDA_NONNEGATIVE_DIAGNOSTIC", "explicit EBITDA"),
+            ("BANKRUPTCY_5_CALENDAR_YEARS_DIAGNOSTIC", "bankruptcy count/discharge date"),
+            ("MINIMUM_AGE", "applicant DOB/as-of age"),
+            ("PERSONAL_FICO_650_CANDIDATE", "typed personal FICO"),
+            ("SBSS_160_CANDIDATE", "SBSS score"),
+        ) if rule_id in screenshot_knockout_unknowns
+    ]
+    knockout_status = ("CANDIDATE_MATCH" if knockout_detected is True else
+                       "UNKNOWN" if knockout_detected is None else "NO_LISTED_CANDIDATE_MATCH")
+    flow.append(flow_step(
+        "Screenshot knockout criteria",
+        knockout_status,
+        ("Matched screenshot decline-candidate criterion/criteria: " + "; ".join(matched_knockouts) + "."
+         if matched_knockouts else
+         "Cannot rule out a listed criterion because these inputs are unknown: " + ", ".join(unknown_knockouts) + "."
+         if unknown_knockouts else
+         "All six listed knockout criteria were checked and none matched. This is not policy clearance."),
+        ("sbss", "fico", "ebitda", "bankruptcy_count", "bankruptcy_discharge_date",
+         "dob", "as_of_date", "max_delinquency_public_records"),
+    ))
+    branch_status = ("POLICY_CONFLICT" if strategy["credit_assessment"] == "POLICY_REVIEW" else
+                     "CANDIDATE_MATCH" if strategy["strategy_branch"] else "NOT_REACHED_OR_REVIEW")
+    branch_reasons = {
+        "SBSS_LT_160": f"SBSS {features['sbss']} is below 160.",
+        "SBSS_160_189_OWNERSHIP_GE_2":
+            f"SBSS {features['sbss']} is in [160, 190) and ownership is {profile.get('ownership_years')} years (at least 2).",
+        "SBSS_160_189_OWNERSHIP_LT_2_FICO_GE_760":
+            f"SBSS {features['sbss']} is in [160, 190), ownership is under 2 years, and the screenshot average personal FICO {features['fico']} is at least 760.",
+        "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_LE_100K":
+            f"SBSS {features['sbss']} is in [160, 190), ownership is under 2 years, average personal FICO {features['fico']} is in [650, 760), and requested amount ${amounts['requested_amount']} is at most $100,000.",
+        "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_REQUEST_THRESHOLD_CONFLICT":
+            f"SBSS {features['sbss']} is in [160, 190), ownership is under 2 years, and average personal FICO {features['fico']} is in [650, 760); requested amount ${amounts['requested_amount']} is above the knockout-list $100,000 threshold but at or below the chart's $100,000,000 threshold, so the screenshot conflicts and this branch remains review.",
+        "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_GT_100M":
+            f"SBSS {features['sbss']} is in [160, 190), ownership is under 2 years, average personal FICO {features['fico']} is in [650, 760), and requested amount ${amounts['requested_amount']} exceeds both displayed thresholds ($100,000 and $100,000,000).",
+        "SBSS_160_189_OWNERSHIP_LT_2_FICO_LT_650":
+            f"SBSS {features['sbss']} is in [160, 190), ownership is under 2 years, and average personal FICO {features['fico']} is below 650.",
+        "SBSS_190_199": f"SBSS {features['sbss']} is in [190, 200), which the screenshot routes to an SBA candidate.",
+        "SBSS_GE_200_OWNERSHIP_LT_2":
+            f"SBSS {features['sbss']} is at least 200 and ownership is under 2 years; the screenshot routes to an SBA candidate.",
+        "SBSS_GE_200_OWNERSHIP_GE_2_HIGH_RISK_NAICS":
+            f"SBSS {features['sbss']} is at least 200, ownership is at least 2 years, and NAICS {profile.get('naics')} matches a listed high-risk prefix; screenshot route is SBA candidate.",
+        "SBSS_GE_200_OWNERSHIP_GE_2_OTHER_NAICS":
+            f"SBSS {features['sbss']} is at least 200, ownership is at least 2 years, and NAICS {profile.get('naics')} does not match a listed high-risk prefix; screenshot route is conventional candidate.",
+    }
+    strategy_branch = strategy["strategy_branch"]
+    if isinstance(strategy_branch, str) and strategy_branch.endswith("_VEHICLE_ONLY_CONVENTIONAL_OVERRIDE"):
+        base_branch = strategy_branch.removesuffix("_VEHICLE_ONLY_CONVENTIONAL_OVERRIDE")
+        branch_reason = (branch_reasons.get(base_branch, base_branch)
+                         + " The screenshot's explicit vehicle-only note overrides this SBA candidate to conventional.")
+    else:
+        branch_reason = branch_reasons.get(strategy_branch, strategy_branch)
+    branch_text = (f"{branch_reason} "
+                   f"Screenshot simulation classification: {strategy['credit_assessment']}."
+                   if strategy["strategy_branch"] else
+                   "The screenshot strategy tree was not entered because a knockout candidate matched: "
+                   + "; ".join(matched_knockouts) + ". This is a simulated decline candidate, not an actual rejection."
+                   if knockout_detected is True else
+                   f"No screenshot strategy branch was selected: {strategy['credit_assessment']}. "
+                   "The flow stopped because source/identity/evidence is unknown, an exception is unresolved, or required screenshot inputs are missing.")
+    if strategy["credit_assessment"] == "SIMULATED_APPROVAL_CANDIDATE":
+        branch_text += " This is not an actual approval or offer."
+    elif strategy["credit_assessment"] == "SIMULATED_DECLINE_CANDIDATE":
+        branch_text += " This is not an actual rejection or adverse action."
+    flow.append(flow_step(
+        "SBSS / ownership / FICO / amount / NAICS strategy",
+        branch_status,
+        branch_text,
+        ("sbss", "ownership_years", "fico", "requested_amount", "naics", "vehicle_only"),
+    ))
+    flow.append(flow_step(
+        "Authorization and final action",
+        "REVIEW_REQUIRED",
+        f"Path={path}; eligibility={strategy['eligibility_route']}; credit assessment={strategy['credit_assessment']}; "
+        f"authorization=NOT_ISSUED; final action={'MANUAL_REVIEW' if mode == 'PRODUCTION' else 'NO_OPERATIONAL_ACTION'}. "
+        "This diagnostic does not issue a lending approval or denial.",
+    ))
+    features["decision_flow"] = flow
     # A missing input cannot be hidden behind criteria that only select one good
     # score: TEST fixtures must explicitly require their necessary features.
-    explanation = ("Synthetic TEST fixture recommendation only; not business policy or an operational lending decision. "
-                   if path.startswith("SIMULATED_") else "No operational lending decision. ")
-    explanation += "Authorized human review is always required; v4 policy evidence and unresolved conflicts remain separate from deterministic diagnostics."
+    explanation = ("Synthetic TEST fixture diagnostics only. " if mode == "TEST" else "Production review diagnostics only. ")
+    explanation += " ".join(f"{item['stage']}: {item['summary']}" for item in flow)
+    explanation += " This explanation applies only the supplied screenshot flow. It is a simulated candidate/review, never an actual approval, rejection, offer, or adverse action. Authorized human review is always required."
     # Ensure JSON-compatible nonmoney data without float financial leakage.
     def lexical(value: Any) -> Any:
         if isinstance(value, (Decimal, date)):
@@ -842,4 +1095,8 @@ def evaluate_underwriting(documents: Iterable[Any], mode: Mode = "PRODUCTION", *
                              implementation_guide_source_sha256=IMPLEMENTATION_GUIDE_SHA256,
                              implementation_guide_available=implementation_guide_available,
                              expanded_spec_available=expanded_spec_available,
-                             data_quality_issues=graph.issues, loan_results=results)
+                             data_quality_issues=graph.issues,
+                             mapping_warnings=sorted(set(graph.mapping_warnings)),
+                             unmapped_source_fields=sorted(graph.unmapped_source_fields)[:500],
+                             unavailable_inputs=soql_unavailable_inputs(graph.mapped_fields) if graph.has_soql_exports else [],
+                             loan_results=results)

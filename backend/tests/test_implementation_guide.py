@@ -105,7 +105,9 @@ def test_unavailable_or_unpinned_guide_means_policy_review_not_tree_assertion():
         ("160", "649", "2", "50000", "541100", False, "SBSS_160_189_OWNERSHIP_GE_2", "SIMULATED_APPROVAL_CANDIDATE"),
         ("175", "760", "1", "50000", "541100", False, "SBSS_160_189_OWNERSHIP_LT_2_FICO_GE_760", "SIMULATED_APPROVAL_CANDIDATE"),
         ("175", "700", "1", "100000", "541100", False, "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_LE_100K", "SIMULATED_APPROVAL_CANDIDATE"),
-        ("175", "700", "1", "100000.01", "541100", False, "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_GT_100K", "SIMULATED_DECLINE_CANDIDATE"),
+        ("175", "700", "1", "100000.01", "541100", False, "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_REQUEST_THRESHOLD_CONFLICT", "POLICY_REVIEW"),
+        ("175", "700", "1", "100000000", "541100", False, "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_REQUEST_THRESHOLD_CONFLICT", "POLICY_REVIEW"),
+        ("175", "700", "1", "100000000.01", "541100", False, "SBSS_160_189_OWNERSHIP_LT_2_FICO_650_759_AMOUNT_GT_100M", "SIMULATED_DECLINE_CANDIDATE"),
         ("190", "600", "0", "50000", "541100", False, "SBSS_190_199", "SIMULATED_APPROVAL_CANDIDATE"),
         ("200", "600", "1", "50000", "541100", False, "SBSS_GE_200_OWNERSHIP_LT_2", "SIMULATED_APPROVAL_CANDIDATE"),
         ("200", "600", "2", "50000", "541100", False, "SBSS_GE_200_OWNERSHIP_GE_2_OTHER_NAICS", "SIMULATED_APPROVAL_CANDIDATE"),
@@ -122,21 +124,24 @@ def test_section8_explicit_decision_tree_branches(sbss, fico, ownership, amount,
     assert result["authorization"] == "NOT_ISSUED"
 
 
-def test_screenshot_100k_branch_and_vehicle_override_unknown_fail_closed():
+def test_screenshot_conflicting_amount_interval_and_vehicle_only_override():
     affected = strategy(sbss="175", fico="700", ownership_years="1", requested_amount="100000.01")
-    assert affected["credit_assessment"] == "SIMULATED_DECLINE_CANDIDATE"
+    assert affected["credit_assessment"] == "POLICY_REVIEW"
     assert affected["eligibility_route"] == "QUICK_APP"
-    assert affected["strategy_branch"].endswith("AMOUNT_GT_100K")
+    assert affected["strategy_branch"].endswith("REQUEST_THRESHOLD_CONFLICT")
     assert "REQUEST_THRESHOLD_100M_VS_100K" in affected["unresolved_conflicts"]
     at_limit = strategy(sbss="175", fico="700", ownership_years="1", requested_amount="100000")
     assert at_limit["credit_assessment"] == "SIMULATED_APPROVAL_CANDIDATE"
     assert at_limit["strategy_branch"].endswith("AMOUNT_LE_100K")
+    over_both = strategy(sbss="175", fico="700", ownership_years="1", requested_amount="100000000.01")
+    assert over_both["credit_assessment"] == "SIMULATED_DECLINE_CANDIDATE"
+    assert over_both["strategy_branch"].endswith("AMOUNT_GT_100M")
     vehicle = strategy(sbss="200", ownership_years="2", naics="236220", vehicle_only=None)
     assert vehicle["credit_assessment"] == "POLICY_REVIEW"
     assert vehicle["strategy_branch"] is None
     vehicle = strategy(sbss="200", ownership_years="2", naics="236220", vehicle_only=True)
-    assert vehicle["credit_assessment"] == "POLICY_REVIEW"
-    assert vehicle["strategy_branch"] is None
+    assert vehicle["credit_assessment"] == "SIMULATED_APPROVAL_CANDIDATE"
+    assert vehicle["strategy_branch"].endswith("VEHICLE_ONLY_CONVENTIONAL_OVERRIDE")
 
 
 def test_unresolved_baloc_increase_window_routes_to_product_review():
@@ -144,19 +149,21 @@ def test_unresolved_baloc_increase_window_routes_to_product_review():
     source[1][1].update(is_increase="Y", account_opened="2026-04-20")
     result = evaluate(source)
     assert "INCREASE_WAIT_6_VS_12_MONTHS" in result.conflicts
-    assert result.eligibility_route == "PRODUCT_REVIEW"
-    assert result.credit_assessment == "MANUAL_REVIEW"
+    assert result.eligibility_route == "QUICK_APP"
+    assert result.credit_assessment == "SIMULATED_APPROVAL_CANDIDATE"
+    assert "INCREASE_WAIT_6_VS_12_MONTHS" in result.conflicts
 
 
 def test_strategy_requires_identity_eligibility_and_completed_knockouts():
     assert strategy(identity_valid=None)["eligibility_route"] == "DATA_REVIEW"
-    assert strategy(quick_app_eligible=None)["credit_assessment"] == "DATA_REVIEW"
-    assert strategy(quick_app_eligible=False)["eligibility_route"] == "FULL_UNDERWRITING"
+    # Quick App/product/compliance flags are outside the screenshot tree and
+    # cannot override its simulated candidate classification.
+    assert strategy(quick_app_eligible=None)["credit_assessment"] == "SIMULATED_APPROVAL_CANDIDATE"
+    assert strategy(quick_app_eligible=False, product_review_required=True,
+                    compliance_review_required=True, manual_review_required=True)["credit_assessment"] == "SIMULATED_APPROVAL_CANDIDATE"
     assert strategy(knockouts_completed=False)["credit_assessment"] == "DATA_REVIEW"
     assert strategy(knockout_detected=True)["credit_assessment"] == "SIMULATED_DECLINE_CANDIDATE"
     assert strategy(fico=None)["credit_assessment"] == "DATA_REVIEW"
-    assert strategy(product_review_required=True)["eligibility_route"] == "PRODUCT_REVIEW"
-    assert strategy(compliance_review_required=True)["credit_assessment"] == "COMPLIANCE_REVIEW"
 
 
 def test_nonprofit_y_n_flags_and_implementation_outputs_are_separate():
@@ -165,14 +172,16 @@ def test_nonprofit_y_n_flags_and_implementation_outputs_are_separate():
     source[2][1]["credit_freeze"] = "N"
     result = evaluate(source)
     assert result.normalized_data["quick_app_nfp_eligible"] is False
-    assert result.eligibility_route == "FULL_UNDERWRITING"
+    assert result.eligibility_route == "QUICK_APP"
+    assert result.credit_assessment == "SIMULATED_APPROVAL_CANDIDATE"
     assert result.authorization == "NOT_ISSUED"
 
     source = rows()
     source[2][1]["credit_freeze"] = "Y"
     frozen = evaluate(source)
     assert frozen.normalized_data["credit_freeze_clear"] is False
-    assert frozen.credit_assessment == "MANUAL_REVIEW"
+    assert frozen.credit_assessment == "SIMULATED_APPROVAL_CANDIDATE"
+    assert frozen.recommendation_path == "SIMULATED_REVIEW"
 
 
 def test_model_authorization_is_fixed_not_issued():

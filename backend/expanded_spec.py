@@ -78,7 +78,7 @@ REGISTRY = (
     ("EL-03", 2, 12, "baloc_increase", "BALOC increase six/twelve-month conflict is unresolved", ("is_increase", "account_opened", "as_of_date"), "POLICY_REVIEW", ("INCREASE_WINDOW",)),
     ("KO-01", 3, 12, "compliance", "Possible or confirmed OFAC match => compliance review, never automatic denial", ("ofac_alert", "ofac_disposition"), "COMPLIANCE_REVIEW", ()),
     ("KO-02", 3, 12, "credit_freeze", "Frozen or absent bureau evidence cannot be treated as clear", ("credit_freeze",), "MANUAL_REVIEW", ()),
-    ("KO-03", 3, 13, "personal_fico", "Personal FICO >=650; multi-party aggregation remains unresolved", ("fico",), "POLICY_REVIEW", ()),
+    ("KO-03", 3, 13, "personal_fico", "Screenshot average of typed personal FICO for explicitly linked borrower/guarantor accounts >=650; any missing linked-party score makes the average unknown", ("fico",), "DATA_REVIEW", ()),
     ("KO-04", 3, 13, "sbss", "Selected SBSS >=160", ("sbss",), "DATA_REVIEW", ()),
     ("KO-05", 3, 13, "earnings", "Explicit EBITDA >=0 in a defined period; EBIT is NOT EBITDA", ("ebitda", "financial_period_start", "financial_period_end"), "POLICY_REVIEW", ("EXPENSES_EXCEED_INCOME",)),
     ("KO-06", 3, 13, "bankruptcy", "Verified discharge at least five calendar years before as-of, or explicit zero bankruptcies", ("bankruptcy_count", "bankruptcy_discharge_date", "as_of_date"), "DATA_REVIEW", ("BANKRUPTCY",)),
@@ -220,7 +220,7 @@ def evaluate_expanded_spec(*, graph: EntityGraph, loan: EntityNode, profile: dic
         "EL-03": ("REVIEW" if baloc and increase is not False else "NOT_EVALUATED", "Six/twelve-month BALOC increase conflict; neither period is selected."),
         "KO-01": ("FAIL" if features.get("ofac_alert_clear") is False or features.get("ofac_confirmed_match") is True else "PASS" if features.get("ofac_alert_clear") is True and features.get("ofac_confirmed_match") is False else "REVIEW", "Possible match requires compliance review; no substantiated sanction inferred."),
         "KO-02": ("PASS" if features.get("credit_freeze_clear") is True else "FAIL" if features.get("credit_freeze_clear") is False else "REVIEW", "Freeze requires manual review; absent report is not clear."),
-        "KO-03": ("REVIEW" if fico is None else "PASS" if fico >= 650 else "FAIL", "Screenshot interpretation: use the selected borrower's explicitly typed personal FICO only; do not average guarantors or substitute other scores."),
+        "KO-03": ("REVIEW" if fico is None else "PASS" if fico >= 650 else "FAIL", "Screenshot criterion uses the exact arithmetic average of typed personal FICO for explicitly linked borrower/guarantor parties; unknown party scores prevent an average."),
         "KO-07": ("FAIL" if valid_public_record_code and public_record_code in {Decimal("1"), Decimal("2"), Decimal("3")}
                   else "PASS" if valid_public_record_code and public_record_code == 0 else "REVIEW",
                   "Screenshot diagnostic: maximum-delinquency public-record codes 1, 2, or 3 match a knockout candidate; zero does not match this candidate. This is not a production decision or clearance."),
@@ -282,42 +282,19 @@ def evaluate_expanded_spec(*, graph: EntityGraph, loan: EntityNode, profile: dic
     eligibility = strategy["eligibility_route"]
     route = strategy["credit_assessment"]
     if route == "SIMULATED_APPROVAL_CANDIDATE":
-        route = "CONVENTIONAL_APPROVAL_CANDIDATE" if strategy.get("strategy_branch") == "SBSS_GE_200_OWNERSHIP_GE_2_OTHER_NAICS" else "SBA_APPROVAL_CANDIDATE"
+        route = ("CONVENTIONAL_APPROVAL_CANDIDATE"
+                 if strategy.get("strategy_branch") == "SBSS_GE_200_OWNERSHIP_GE_2_OTHER_NAICS"
+                 or str(strategy.get("strategy_branch", "")).endswith("VEHICLE_ONLY_CONVENTIONAL_OVERRIDE")
+                 else "SBA_APPROVAL_CANDIDATE")
     if not source_available:
         eligibility, route = "POLICY_REVIEW", "POLICY_REVIEW"
     elif not identity or not dated:
         eligibility, route = "DATA_REVIEW", "DATA_REVIEW"
-    elif strategy.get("eligibility_route") == "FULL_UNDERWRITING":
-        route = "FULL_UNDERWRITING"
-    elif by_id["KO-01"].status == "FAIL":
-        route = "COMPLIANCE_REVIEW"
-    elif by_id["KO-02"].status != "PASS":
-        route = "MANUAL_REVIEW"
-    elif features.get("minimum_age_met") is False:
-        eligibility, route = "DATA_REVIEW", "DATA_REVIEW"
-    elif baloc and increase is True:
-        eligibility, route = "POLICY_REVIEW", "POLICY_REVIEW"
-    elif guarantors:
-        route = "POLICY_REVIEW"
-    elif product_issues:
-        eligibility, route = "PRODUCT_REVIEW", "MANUAL_REVIEW"
-    elif any(by_id[key].status == "FAIL" for key in ("KO-03", "KO-04", "KO-05", "KO-06", "KO-07")):
-        route = "SIMULATED_DECLINE_CANDIDATE"
-    elif not earnings_period:
-        route = "DATA_REVIEW"
-    elif route == "SBA_APPROVAL_CANDIDATE" and flag(profile.get("vehicle_only")) is not False:
-        route = "POLICY_REVIEW"
-    elif lookup["IDENTITY_VERIFICATION"].status == "FAIL" or lookup["INCOME_VERIFICATION"].status == "FAIL" or lookup["INCOMPLETE_APPLICATION"].status == "FAIL":
-        route = "DATA_REVIEW"
-    elif any(item.status == "FAIL" and item.disposition == "MANUAL_REVIEW" for item in reasons):
-        route = "MANUAL_REVIEW"
     missing = sorted({key for item in results if item.status == "REVIEW" for key in item.required_inputs if profile.get(key) is None})
     if not explicit_junction:
         missing.append("explicit_borrower_entity_involvement")
     if not earnings_period:
         missing.append("verified_ebitda_period")
-    if guarantors:
-        missing.append("approved_personal_fico_aggregation")
     safe_input = {"profile": profile, "guarantors": guarantors, "graph_issues": graph.issues,
                   "strategy_branch": strategy.get("strategy_branch"), "reason_outcomes": known}
     fingerprint = hashlib.sha256(json.dumps(safe_input, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()

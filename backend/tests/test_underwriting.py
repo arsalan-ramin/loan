@@ -40,9 +40,9 @@ def rows():
                   "product": "express_baloc", "requested_path": "quick_app",
                   "requested_amount": "100000.00", "new_money": "100000", "tier_i": "250000",
                   "tier_ii": "249999.99", "secured": False, "is_startup": False,
-                  "is_investment_re": False, "is_increase": False}),
+                  "is_investment_re": False, "is_increase": False, "vehicle_only": False}),
         ("CreditReport", {"Id": "R1", "account_id": "A1", "status": "completed", "report_date": "2026-10-19",
-                          "personal_fico": "760", "ofac_disposition": "cleared", "ofac_alert": False,
+                          "personal_fico": "760", "report_role": "borrower", "ofac_disposition": "cleared", "ofac_alert": False,
                           "credit_freeze": False, "bankruptcy_count": "0", "past_due": "0",
                           "max_delinquency_public_records": "0"}),
         ("LCRESPONSE", {"Id": "S1", "loan_id": "L1", "sbss": "200"}),
@@ -310,7 +310,7 @@ def test_one_account_many_loans_and_many_guarantors():
         source.extend([
             ("Account", {"Id": f"G{index}"}),
             ("EntityInvolvement", {"Id": f"J{index}", "account_id": f"G{index}", "loan_id": "L1", "role": "Guarantor"}),
-            ("CreditReport", {"Id": f"GR{index}", "account_id": f"G{index}", "status": "completed", "report_date": "2026-10-19", "fico": "650"}),
+                    ("CreditReport", {"Id": f"GR{index}", "account_id": f"G{index}", "status": "completed", "report_date": "2026-10-19", "personal_fico": "650", "report_role": "guarantor"}),
         ])
     batch = evaluate_underwriting([document(source)])
     assert len(batch.loan_results) == 2
@@ -318,9 +318,23 @@ def test_one_account_many_loans_and_many_guarantors():
     first, second = batch.loan_results
     assert first.borrower_account_id == second.borrower_account_id == "A1"
     assert first.normalized_data["guarantor_account_ids"] == ["G1", "G2"]
-    assert first.normalized_data["fico_band"] == "GE_760"
+    assert first.normalized_data["fico"] == "686.6666666666666666666666667"
+    assert first.normalized_data["fico_band"] == "650_759"
     assert first.normalized_data["sbss_bucket"] == "GE_200"
     assert second.normalized_data["sbss_bucket"] == "LT_160"
+
+
+def test_screenshot_average_fico_is_unknown_when_any_linked_party_score_is_missing():
+    source = rows()
+    source.append(("EntityInvolvement", {"Id": "J1", "account_id": "G1", "loan_id": "L1", "role": "guarantor"}))
+    source.append(("Account", {"Id": "G1"}))
+
+    result = evaluate(source)
+
+    assert result.normalized_data["fico"] is None
+    assert result.normalized_data["fico_band"] is None
+    assert any(item.startswith("guarantor_fico_average:G1:") for item in result.missing_inputs)
+    assert result.recommendation_path == "SIMULATED_REVIEW"
 
 
 @pytest.mark.parametrize("role,valid", [("Borrower", True), ("BORROWER", True), ("borrower", True), ("Owner", False), (None, False)])
@@ -372,6 +386,48 @@ def test_flattened_aliases_and_direct_id_not_guessed():
     batch = evaluate_underwriting([document([("Data", fields)], "MTB_Query_1.xlsx")])
     assert not batch.loan_results
     assert "NO_EXPLICIT_LOAN_RECORDS" in batch.data_quality_issues
+
+
+@pytest.mark.parametrize("account_header", [
+    "ACCOUNT_ID", "Account ID", "Account-ID", "LLC_BI__Account__c",
+    "LLC_BI__Account__r.Id", "nFUSE__Account__c", "AccountId__c",
+])
+def test_account_reference_header_variants_link_across_query_files(account_header):
+    source_documents = [
+        document([("Account", {"Id": "A1", "ownership_years": "2", "naics": "541100", "ebitda": "0"})],
+                 "MTB_Query_1.xlsx", "q1"),
+        document([("Loan", {"Id": "L1", account_header: "A1", "as_of_date": "2026-10-20",
+                             "product": "express_baloc", "requested_path": "quick_app"})],
+                 "MTB_Query_1.xlsx", "q1-loan"),
+        document([("LCRESPONSE", {"Id": "S1", "loan_id": "L1", "sbss": "200", "score_date": "2026-10-19"})],
+                 "MTB_Query_2.xlsx", "q2"),
+        document([("CreditReport", {"Id": "R1", account_header: "A1", "status": "completed",
+                                    "report_date": "2026-10-19", "personal_fico": "760",
+                                    "report_category": "personal", "report_role": "borrower"})],
+                 "MTB_Query_4.xlsx", "q4"),
+    ]
+
+    # Query 1 holds account and loan sheets in the same physical workbook.
+    source_documents[0].metadata["records"].extend(source_documents[1].metadata["records"])
+    source_documents = [source_documents[0], source_documents[2], source_documents[3]]
+    result = evaluate_underwriting(source_documents).loan_results[0]
+
+    assert result.borrower_account_id == "A1"
+    assert result.normalized_data["sbss"] == "200"
+    assert result.normalized_data["fico_band"] == "GE_760"
+
+
+def test_conflicting_account_reference_aliases_do_not_choose_preferred_column():
+    source = document([("Account", {"Id": "A1"}),
+                       ("Loan", {"Id": "L1", "ACCOUNT_ID": "A1", "LLC_BI__Account__c": "A2"})],
+                      "MTB_Query_1.xlsx")
+
+    batch = evaluate_underwriting([source])
+
+    assert len(batch.loan_results) == 1
+    assert batch.loan_results[0].borrower_account_id is None
+    assert batch.loan_results[0].recommendation_path == "DATA_QUALITY_HOLD"
+    assert any("CONFLICTING_ALIASES:Loan:borrower_account_id" in issue for issue in batch.data_quality_issues)
 
 
 @pytest.mark.parametrize("response_id,expected", [("S1", "GE_200"), ({"Id": "S1"}, None), ("{'Id': 'S1'}", None), ("[object Object]", None)])
@@ -526,6 +582,22 @@ def test_screenshot_er_diagram_labels_map_characteristics_and_relationships():
     assert graph.table("CreditReport")["R1"].fields["judgment_count"] == "2"
 
 
+def test_salesforce_legal_entity_junction_links_account_and_loan_explicitly():
+    source = [
+        ("Account", {"Id": "A1", "name": "Synthetic borrower"}),
+        ("Loan", {"Id": "L1", "as_of_date": "2026-10-20"}),
+        ("LLC_BI__LEGAL_ENTITIES__C", {
+            "Id": "J1", "LLC_BI__Loan__c": "L1", "LLC_BI__Account__c": "A1",
+            "LLC_BI__Borrower_Type__c": "Borrower",
+        }),
+    ]
+
+    graph = build_entity_graph([document(source, name="MTB_Query_2.xlsx")], load_underwriting_config())
+
+    assert graph.borrowers("L1") == {"A1"}
+    assert not graph.issues
+
+
 def test_erd_canonical_loan_account_id_links_one_account_to_many_loans():
     source = [
         ("Account", {"Id": "A1"}),
@@ -542,6 +614,138 @@ def test_erd_canonical_loan_account_id_links_one_account_to_many_loans():
     loan_one = next(loan for loan in batch.loan_results if loan.loan_id == "L1")
     assert loan_one.normalized_data["selected_response_id"] == "S2"
     assert loan_one.normalized_data["sbss"] == "210"
+
+
+def test_three_query_files_link_entities_by_explicit_account_column_variants():
+    query1 = document([
+        ("Account", {"Id": "A1", "ownership_years": "2", "naics": "541100", "ebitda": "0"}),
+        ("Loan", {"Id": "L1", "Account Column": "A1", "as_of_date": "2026-10-20",
+                  "product": "express_baloc", "requested_path": "quick_app"}),
+    ], "MTB_Query_1.xlsx", "q1")
+    query2 = document([
+        ("LCRESPONSE", {"Id": "S1", "loan_id": "L1", "sbss": "200", "score_date": "2026-10-19"}),
+        ("EntityInvolvement", {"Id": "J1", "loan_id": "L1", "LLC_BI__Account__c": "A1", "role": "borrower"}),
+        ("LCREntity", {"Id": "E1", "Account ID": "A1", "response_id": "S1"}),
+        ("DataSourceAnalysis", {"Id": "D1", "entity_id": "E1"}),
+        ("Characteristic", {"Id": "C1", "analysis_id": "D1", "key": "FLAG", "value": "Y"}),
+    ], "MTB_Query_2.xlsx", "q2")
+    query4 = document([
+        ("CreditReport", {"Id": "R1", "nFUSE__Account__c": "A1", "status": "completed",
+                          "report_date": "2026-10-19", "personal_fico": "760",
+                          "report_category": "personal", "report_role": "borrower"}),
+    ], "MTB_Query_4.xlsx", "q4")
+
+    batch = evaluate_underwriting([query1, query2, query4])
+
+    assert [loan.loan_id for loan in batch.loan_results] == ["L1"]
+    loan = batch.loan_results[0]
+    assert loan.borrower_account_id == "A1"
+    assert loan.normalized_data["sbss"] == "200"
+    assert loan.normalized_data["fico_band"] == "GE_760"
+    assert loan.normalized_data["characteristics"][0]["key"] == "FLAG"
+    assert not any("QUERY_FILE_SET_INCOMPLETE" in issue for issue in batch.data_quality_issues)
+
+
+def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields():
+    junction = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
+    loan = junction + "LLC_BI__Loan__c"
+    account = junction + "LLC_BI__Account__c"
+    role = junction + "LLC_BI__Borrower_Type__c"
+    q1 = junction + "LLC_BI__Loan__r."
+    q1_account = junction + "LLC_BI__Account__r."
+    q1_report = junction + "nFUSE__Credit_Report__r."
+    q2_response = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__LCResponse__r."
+    q1doc = document([("MTB Query 1", {
+        "Id": "C1", loan: "L1", account: "A1", role: "Borrower",
+        q1 + "LLC_BI__Product__c": "Express BALOC",
+        q1 + "LLC_BI__Product_Type__c": "Express BALOC",
+        q1 + "LLC_BI__Amount__c": "50000.00",
+        q1_account + "Birth_Date__c": "1980-01-01",
+        q1_account + "Number_of_Years_as_Current_Owner__c": "3",
+        q1_account + "NAICS_Code_Formula__c": "541100",
+        q1_report + "Id": "R1",
+        q1_report + "nFUSE__Status__c": "Completed",
+        q1_report + "nFUSE__Report_Category__c": "Personal",
+        q1_report + "nFUSE__Credit_Score__c": "620",
+        "SCOC__CharacteristicKey__c": "numCollection",
+        "SCOC__CharacteristicValue__c": "0",
+    })], "MTB_Query_1_Validated_Revision_SOQL.xlsx", "q1-soql")
+    q2doc = document([("MTB Query 2", {
+        "Id": "I1", loan: "L1", account: "A1", role: "Borrower",
+        q2_response + "SCOC__SBSS7Score__c": "175",
+        "SCOC__IndicatorKey__c": "thinFileIndicator",
+        "SCOC__IndicatorValue__c": "N",
+    })], "MTB_Query_2_Validated_Revision_SOQL.xlsx", "q2-soql")
+    q4doc = document([("MTB Query 4", {
+        "Id": "R1", "nFUSE__Account__c": "A1",
+        "nFUSE__Credit_Score__c": "740", "nFUSE__Status__c": "Completed",
+        "nFUSE__Report_Category__c": "Personal",
+    })], "MTB_Query_4_Validated_Revision_SOQL.xlsx", "q4-soql")
+    for source_doc in (q1doc, q2doc, q4doc):
+        record = source_doc.metadata["records"][0]
+        source_doc.metadata["sheets"] = [{
+            "name": record["sheet"], "headers": list(record["values"]), "is_reference": False,
+        }]
+
+    graph = build_entity_graph([q1doc, q2doc, q4doc], load_underwriting_config())
+
+    assert set(graph.table("Loan")) == {"L1"}
+    assert set(graph.table("Account")) == {"A1"}
+    assert set(graph.table("CreditReport")) == {"R1"}
+    assert set(graph.table("EntityInvolvement")) == {"C1"}
+    assert len(graph.table("Characteristic")) == 1
+    assert next(iter(graph.table("Characteristic"))).startswith("observation:")
+    assert set(graph.table("Indicator")) == {"I1"}
+    assert graph.borrowers("L1") == {"A1"}
+    assert graph.table("EntityInvolvement")["C1"].fields == {
+        "loan_id": "L1", "account_id": "A1", "role": "Borrower",
+    }
+    assert graph.table("Loan")["L1"].fields["product"] == "express_baloc"
+    assert graph.table("Loan")["L1"].fields["sbss"] == "175"
+    assert graph.table("Account")["A1"].fields["dob"] == "1980-01-01"
+    assert graph.table("Account")["A1"].fields["ownership_years"] == "3"
+    assert graph.table("Account")["A1"].fields["naics"] == "541100"
+    assert graph.table("CreditReport")["R1"].fields["report_role"] == "Borrower"
+    assert graph.table("CreditReport")["R1"].fields["report_category"] == "Personal"
+    assert graph.table("CreditReport")["R1"].fields["fico"] is None
+    assert any(issue.startswith("CONFLICTING_DUPLICATE:CreditReport:fico") for issue in graph.issues)
+    assert not any(issue.startswith(("MISSING_OR_INVALID_ID", "ORPHAN_RELATION")) for issue in graph.issues)
+    assert "UNMAPPED_RELATION:Indicator:analysis_id" in graph.mapping_warnings
+    assert "UNMAPPED_RELATION:Characteristic:analysis_id" in graph.mapping_warnings
+
+    batch = evaluate_underwriting([q1doc, q2doc, q4doc], mode="TEST")
+    recommendation, = batch.loan_results
+    assert recommendation.normalized_amounts_usd["loan_requested_amount_usd"] == Decimal("50000.00")
+    assert recommendation.normalized_data["product"] == "express_baloc"
+    assert recommendation.normalized_data["ownership_years"] == "3"
+    assert recommendation.normalized_data["sbss"] == "175"
+    # Query 4 has no report date, so a mapped generic score is not promoted to
+    # selected personal FICO or used for a decision branch.
+    assert recommendation.normalized_data["fico"] is None
+    assert "report_completion_status_missing_or_unknown" not in recommendation.missing_inputs
+    assert "explicit_iso_as_of_date" in recommendation.missing_inputs
+    assert "report_selection_requires_explicit_as_of_date" in recommendation.missing_inputs
+    assert any(item.field == "nFUSE__Credit_Score__c" for item in recommendation.source_evidence)
+    reconciliation = next(step for step in recommendation.normalized_data["decision_flow"]
+                          if step["stage"] == "Query 1 / Query 2 / Query 4 source reconciliation")
+    assert reconciliation["status"] == "CONFLICT"
+    assert "neither score is selected" in reconciliation["summary"]
+    fico_rule = rule(recommendation, "FICO_BAND_DIAGNOSTIC")
+    assert fico_rule.status == "UNKNOWN"
+    assert "same CreditReport ID has conflicting Query 1 nested and Query 4 root scores" in fico_rule.detail
+    assert len(fico_rule.evidence_refs) == 2
+    assert not any(item.endswith("_POLICY") for item in recommendation.missing_inputs)
+    assert rule(recommendation, "FICO_BAND_DIAGNOSTIC").status == "UNKNOWN"
+    assert rule(recommendation, "FICO_BAND_DIAGNOSTIC").evidence_refs
+    assert recommendation.recommendation_path == "SIMULATED_REVIEW"
+    assert "Credit report date" in batch.unavailable_inputs
+
+    # The same CreditReport Id in Query 1's nested relationship and Query 4's
+    # root export must agree. Conflicting source scores stay poisoned/held.
+    q4doc.metadata["records"][0]["values"]["nFUSE__Credit_Score__c"] = "705"
+    conflicting = build_entity_graph([q1doc, q2doc, q4doc], load_underwriting_config())
+    assert conflicting.table("CreditReport")["R1"].fields["fico"] is None
+    assert any(issue.startswith("CONFLICTING_DUPLICATE:CreditReport:fico") for issue in conflicting.issues)
 
 
 def test_erd_entity_involvement_link_must_match_lcr_entity_account_and_response_loan():

@@ -70,7 +70,7 @@ def workbook(records, empty=False):
     return stream.getvalue()
 
 
-def upload_three(client, mode=None, empty=False):
+def upload_three(client, mode="PRODUCTION", empty=False):
     response = client.post("/api/sessions", json={} if mode is None else {"mode": mode})
     assert response.status_code == 201
     sid = response.json()["id"]
@@ -101,10 +101,12 @@ def finish(client, sid):
 
 
 def test_mode_defaults_validation_and_not_ready(client):
-    assert Session().mode == CreateSession().mode == "PRODUCTION"
+    assert Session().mode == CreateSession().mode == "TEST"
     assert Report(decision="needs_review", summary="legacy", findings=[], document_count=0).underwriting is None
     sid = client.post("/api/sessions", json={}).json()["id"]
-    assert client.get(f"/api/sessions/{sid}").json()["mode"] == "PRODUCTION"
+    assert client.get(f"/api/sessions/{sid}").json()["mode"] == "TEST"
+    production_sid = client.post("/api/sessions", json={"mode": "PRODUCTION"}).json()["id"]
+    assert client.get(f"/api/sessions/{production_sid}").json()["mode"] == "PRODUCTION"
     assert client.get(f"/api/sessions/{sid}/underwriting").status_code == 409
     assert client.get("/api/sessions/missing/underwriting").status_code == 404
     for bad in ("test", "APPROVE", "", None, 1):
@@ -114,6 +116,47 @@ def test_mode_defaults_validation_and_not_ready(client):
         assert client.put(f"/api/sessions/{sid}/mode", json={"mode": "TEST", extra: {}}).status_code == 422
         assert client.post("/api/sessions", json={"mode": "TEST", extra: {}}).status_code == 422
     assert client.put(f"/api/sessions/{sid}/mode", json={}).status_code == 422
+
+
+def test_mtb_upload_contract_accepts_three_source_workbooks_and_rejects_four(client):
+    sid = client.post("/api/sessions", json={}).json()["id"]
+    source = rows()
+    groups = [(1, source[:2]), (2, source[3:]), (4, source[2:3])]
+    response = client.post(f"/api/sessions/{sid}/documents", files=[
+        ("files", (f"MTB_Query_{query}.xlsx", workbook(records))) for query, records in groups
+    ])
+    assert response.status_code == 200
+    assert len(response.json()["documents"]) == 3
+
+    another = client.post(f"/api/sessions/{sid}/documents", files=[
+        ("files", ("extra.xlsx", workbook([("Account", {"Id": "A2"})])))
+    ])
+    assert another.status_code == 400
+    assert "three XLSX source workbooks only" in another.json()["detail"]
+
+
+def test_uploaded_source_workbook_download_is_session_scoped(client):
+    sid = client.post("/api/sessions", json={}).json()["id"]
+    original = workbook([("CreditReport", {"Id": "R1", "account_id": "A1"})])
+    uploaded = client.post(f"/api/sessions/{sid}/documents", files=[
+        ("files", ("MTB_Query_4_Screenshot_SOQL.xlsx", original)),
+    ])
+    assert uploaded.status_code == 200
+    document = uploaded.json()["documents"][0]
+    endpoint = f"/api/sessions/{sid}/documents/{document['id']}/download"
+
+    downloaded = client.get(endpoint)
+    assert downloaded.status_code == 200
+    assert downloaded.content == original
+    assert downloaded.headers["content-disposition"].endswith(
+        'filename="MTB_Query_4_Screenshot_SOQL.xlsx"'
+    )
+    assert downloaded.headers["x-content-type-options"] == "nosniff"
+
+    other_session = client.post("/api/sessions", json={}).json()["id"]
+    assert client.get(f"/api/sessions/{other_session}/documents/{document['id']}/download").status_code == 404
+    client.app.state.store.root.joinpath("uploads", sid, document["id"]).unlink()
+    assert client.get(endpoint).status_code == 404
 
 
 def test_production_real_upload_exact_json_csv_html_and_trace(client, provider, caplog):
@@ -158,6 +201,7 @@ def test_production_real_upload_exact_json_csv_html_and_trace(client, provider, 
         "recommendation_path", "eligibility_route", "final_action", "human_review_required", "explanation",
         "credit_assessment", "authorization", "strategy_branch", "implementation_guide_diagnostics",
         "implementation_guide_source_document", "implementation_guide_source_sha256", "implementation_guide_available",
+        "mapping_warnings", "unmapped_source_fields", "unavailable_inputs",
     }
     assert required_csv_fields <= set(csv_reader.fieldnames or [])
     table = list(csv_reader)
@@ -176,7 +220,8 @@ def test_production_real_upload_exact_json_csv_html_and_trace(client, provider, 
     for value in (batch["implementation_guide_source_document"], IMPLEMENTATION_GUIDE_SHA256,
                   "Eligibility route", "Credit assessment candidate", "Authorization", "NOT_ISSUED",
                   "stage_0_schema_identity", "stage_6_explanation_and_audit", "input_fingerprint_sha256",
-                  "NOT_EVALUATED"):
+                  "NOT_EVALUATED", "Unmapped source columns", "Canonical inputs unavailable in source files",
+                  "Unresolved source relationships"):
         assert value in html
     assert "<script" not in html
     assert "Complete decline-reason inventory" in html
@@ -241,7 +286,7 @@ def test_empty_templates_and_unidentified_rows_never_fabricate_loans(client):
     {"confidence": 0.9}, {"final_action": "APPROVE"}, {"recommendation_path": "SIMULATED_APPROVE_PATH"},
 ])
 def test_invalid_commentary_never_loses_or_mutates_results(monkeypatch, change):
-    session = Session(documents=[Document(name="MTB_Query_1.xlsx", extension=".xlsx", size=1,
+    session = Session(mode="PRODUCTION", documents=[Document(name="MTB_Query_1.xlsx", extension=".xlsx", size=1,
                                          metadata=document(rows()).metadata)])
     expected = evaluate_underwriting(session.documents).model_dump_json()
 

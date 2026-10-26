@@ -18,7 +18,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Iterable
 
-from .datasets import mtb_query_ids
+from .datasets import (account_reference_headers, borrower_role_headers,
+                       loan_reference_headers, mtb_query_ids,
+                       soql_field_headers, soql_root_table,
+                       soql_mapping_coverage, soql_tables_for_role)
 from .underwriting_models import AMOUNT_NAMES, SourceEvidence, exact_decimal
 
 MONEY_FIELDS = set(AMOUNT_NAMES) - {"effective_tgc"}
@@ -50,6 +53,20 @@ def iso_date(value: Any) -> date | None:
         return None
 
 
+def _canonical_soql_product(value: Any) -> Any:
+    """Map only known SOQL product labels; leave all other labels untouched."""
+    if not isinstance(value, str):
+        return value
+    return {
+        "express baloc": "express_baloc",
+        "sba baloc": "sba_baloc",
+        "conventional baloc": "conventional_baloc",
+        "bil": "bil",
+        "sba bil": "sba_bil",
+        "term loan": "term_loan",
+    }.get(value.strip().casefold(), value)
+
+
 @dataclass
 class EntityNode:
     table: str
@@ -64,6 +81,10 @@ class EntityNode:
 class EntityGraph:
     nodes: dict[str, dict[str, EntityNode]] = field(default_factory=dict)
     issues: list[str] = field(default_factory=list)
+    mapping_warnings: list[str] = field(default_factory=list)
+    unmapped_source_fields: set[str] = field(default_factory=set)
+    mapped_fields: set[str] = field(default_factory=set)
+    has_soql_exports: bool = False
     # Explicit relationship observations, including flattened borrower roles.
     associations: list[tuple[str, str, str, list[str]]] = field(default_factory=list)
 
@@ -128,6 +149,7 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
     IDs are opaque explicit scalars (synthetic IDs are allowed in test fixtures).
     """
     graph = EntityGraph()
+    documents = list(documents)
     manifest = config["mapping_manifest"]
     if selected_account_id is not None:
         documents = _scope_documents_to_borrower(documents, manifest, selected_account_id)
@@ -135,12 +157,28 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
     canonical_aliases = manifest.get("canonical_table_aliases", {})
     for document_index, document in enumerate(documents):
         metadata = document.metadata
-        recognized = bool(mtb_query_ids(document.name, metadata))
+        query_roles = mtb_query_ids(document.name, metadata)
+        recognized = bool(query_roles)
+        soql_role = next(iter(query_roles)) if len(query_roles) == 1 else None
         records = metadata.get("records", [])
         if not isinstance(records, list):
             graph.issue("INVALID_RECORDS_CONTAINER")
             continue
         reference = {sheet.get("name") for sheet in metadata.get("sheets", []) if sheet.get("is_reference")}
+        sheet_headers = {item.get("name"): item.get("headers", [])
+                 for item in metadata.get("sheets", []) if isinstance(item, dict)}
+        if soql_role in {1, 2, 4}:
+            for sheet_name, headers in sheet_headers.items():
+                root_table_for_sheet = soql_root_table(soql_role, headers)
+                if root_table_for_sheet:
+                    graph.has_soql_exports = True
+                mapped_headers, mapped_targets = soql_mapping_coverage(
+                    soql_role, headers, manifest, AMOUNT_NAMES,
+                )
+                graph.unmapped_source_fields.update(
+                    header for header in headers if isinstance(header, str) and header not in mapped_headers
+                )
+                graph.mapped_fields.update(mapped_targets)
         if recognized and not records:
             graph.issue("EMPTY_RECOGNIZED_WORKBOOK")
         for index, record in enumerate(records):
@@ -158,13 +196,33 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                 graph.issue("INVALID_RECORD_SHAPE")
                 continue
             prefix = f"{document_index}:{document.id}:{sheet}:{row}:{index}"
-            mappings = {canonical_table: tables[canonical_table]} if canonical else manifest["flattened"]
+            headers = sheet_headers.get(sheet, [])
+            root_table = soql_root_table(soql_role, headers) if not canonical else None
+            if canonical:
+                mappings = {canonical_table: tables[canonical_table]}
+            elif soql_role in {1, 2, 4} and root_table:
+                allowed_tables = soql_tables_for_role(soql_role)
+                mappings = {table: manifest["flattened"][table]
+                            for table in allowed_tables if table in manifest["flattened"]}
+            else:
+                mappings = manifest["flattened"]
             row_nodes: dict[str, EntityNode] = {}
             row_evidence: list[str] = []
             for table, mapping in mappings.items():
+                mapping = dict(mapping)
+                mapping["id"] = list(mapping["id"])
+                if table == "Loan":
+                    mapping["id"].extend(loan_reference_headers(values.keys()))
+                if table == "Account":
+                    mapping["id"].extend(account_reference_headers(values.keys()))
                 raw_fields = mapping["fields"]
                 field_map = ({key: [key] for key in raw_fields} if isinstance(raw_fields, list)
                              else {key: list(aliases) for key, aliases in raw_fields.items()})
+                if not canonical and root_table:
+                    mapping["id"].extend(soql_field_headers(table, "id", headers, root_table=root_table))
+                    for key, aliases in field_map.items():
+                        aliases.extend(soql_field_headers(table, key, headers, root_table=root_table))
+                        field_map[key] = list(dict.fromkeys(aliases))
                 # Expanded screenshot names are unverified. New fields are
                 # accepted only as exact canonical columns on canonical sheets.
                 if canonical:
@@ -176,6 +234,9 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                     for key in ("personal_fico", "report_category", "report_role"):
                         field_map.setdefault(key, [key])
                 for key, aliases in field_map.items():
+                    if table != "Account" and key in {"account_id", "borrower_account_id"}:
+                        aliases.extend(account_reference_headers(values.keys()))
+                        field_map[key] = list(dict.fromkeys(aliases))
                     if key in AMOUNT_NAMES:
                         aliases.append(AMOUNT_NAMES[key])
                     if key == "tier_i" and manifest.get("group_credit_tier1_scope_confirmed") is not True:
@@ -217,6 +278,8 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                             graph.issue(f"INVALID_RELATION_ID:{table}:{key}", refs.get(key, []))
                             continue
                         value = scalar_id(value)
+                    if not canonical and table == "Loan" and key == "product":
+                        value = _canonical_soql_product(value)
                     fields[key] = value
                 # A shared flattened currency/scale applies to this row, not to
                 # other rows with the same entity ID.
@@ -233,8 +296,9 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                     except ValueError:
                         fields[key] = None
                         graph.issue(f"INVALID_USD_AMOUNT:{table}:{key}", refs.get(key, []))
-                if node_id is None and table in {"Indicator", "Characteristic"} and fields.get("analysis_id") and fields.get("key"):
-                    # Observation key, explicitly not an invented source record ID.
+                if node_id is None and table in {"Indicator", "Characteristic"} and fields.get("key"):
+                    # Local provenance storage key only; it is not a Salesforce
+                    # ID and never supplies a missing analysis relationship.
                     storage_id = "observation:" + prefix + ":" + table
                 else:
                     storage_id = scalar_id(node_id)
@@ -242,6 +306,8 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                 # missing report/response entities. Entity-specific data must exist.
                 specific = set(fields) - {"currency", "amount_scale", "account_id", "loan_id", "response_id", "entity_id", "analysis_id"}
                 if storage_id is None:
+                    if not canonical and table == "EntityInvolvement" and root_table != "EntityInvolvement":
+                        continue
                     if canonical or node_id is not None or specific:
                         graph.issue(f"MISSING_OR_INVALID_ID:{table}", (e.id for e in evidence))
                     continue
@@ -250,11 +316,18 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                 node = graph.add(table, storage_id, fields, evidence, refs)
                 row_nodes[table] = node
                 row_evidence.extend(e.id for e in evidence)
+                if table in {"Indicator", "Characteristic"} and not fields.get("analysis_id"):
+                    warning = f"UNMAPPED_RELATION:{table}:analysis_id"
+                    if warning not in graph.mapping_warnings:
+                        graph.mapping_warnings.append(warning)
             if not canonical and "Loan" in row_nodes and "Account" in row_nodes:
-                roles = [values[key] for key in manifest["flattened_role_fields"] if values.get(key) is not None]
+                role_headers = list(dict.fromkeys([
+                    *manifest["flattened_role_fields"], *borrower_role_headers(values.keys())
+                ]))
+                roles = [values[key] for key in role_headers if values.get(key) is not None]
                 approved = {manifest["roles"].get(str(role).strip().casefold()) for role in roles}
                 if len(approved) == 1 and None not in approved:
-                    for key in manifest["flattened_role_fields"]:
+                    for key in role_headers:
                         if key not in values or values[key] is None:
                             continue
                         evidence_id = "ev-" + hashlib.sha256(f"{prefix}:{key}".encode()).hexdigest()[:24]
@@ -290,7 +363,18 @@ def _scope_documents_to_borrower(documents: Iterable[Any], manifest: dict[str, A
         raw_fields = mapping["fields"]
         field_map = ({key: [key] for key in raw_fields} if isinstance(raw_fields, list)
                      else {key: list(names) for key, names in raw_fields.items()})
-        names = {"id": mapping["id"]}
+        id_headers = list(mapping["id"])
+        if table == "Loan":
+            id_headers.extend(loan_reference_headers(values.keys()))
+        if table == "Account":
+            id_headers.extend(account_reference_headers(values.keys()))
+        if table != "Account":
+            for key in ("account_id", "borrower_account_id"):
+                if key in field_map:
+                    field_map[key] = list(dict.fromkeys(
+                        [*field_map[key], *account_reference_headers(values.keys())]
+                    ))
+        names = {"id": list(dict.fromkeys(id_headers))}
         names.update(field_map)
         result = {}
         for key, candidates in names.items():
@@ -309,7 +393,20 @@ def _scope_documents_to_borrower(documents: Iterable[Any], manifest: dict[str, A
         sheet = record.get("sheet")
         row_loan = mapped("Loan", sheet, values)
         direct_account = row_loan.get("borrower_account_id")
-        if scalar_id(row_loan.get("id")) and scalar_id(direct_account) == account_id:
+        canonical_table = aliases.get(sheet, sheet)
+        is_canonical_loan = canonical_table == "Loan"
+        direct_borrower_id = scalar_id(values.get("borrower_account_id"))
+        if is_canonical_loan:
+            direct_borrower_id = scalar_id(direct_account)
+        role_headers = list(dict.fromkeys([
+            *manifest.get("flattened_role_fields", []), *borrower_role_headers(values.keys())
+        ]))
+        flat_role = next((values.get(key) for key in role_headers
+                          if values.get(key) not in (None, "")), None)
+        explicit_borrower_role = (flat_role is not None
+                                  and str(flat_role).strip().casefold() == "borrower")
+        if (scalar_id(row_loan.get("id")) and direct_borrower_id == account_id
+                and (is_canonical_loan or explicit_borrower_role)):
             loan_ids.add(scalar_id(row_loan["id"]))
         involvement = mapped("EntityInvolvement", sheet, values)
         role = str(involvement.get("role", "")).strip().casefold()
@@ -317,11 +414,9 @@ def _scope_documents_to_borrower(documents: Iterable[Any], manifest: dict[str, A
             loan_id = scalar_id(involvement.get("loan_id"))
             if loan_id:
                 loan_ids.add(loan_id)
-        flat_role = next((values.get(key) for key in manifest.get("flattened_role_fields", [])
-                          if values.get(key) not in (None, "")), None)
         flat_account = scalar_id(row_loan.get("borrower_account_id"))
         flat_loan = scalar_id(row_loan.get("id"))
-        if (flat_role is not None and str(flat_role).strip().casefold() == "borrower"
+        if (explicit_borrower_role
                 and flat_account == account_id and flat_loan):
             loan_ids.add(flat_loan)
 
@@ -429,6 +524,13 @@ def _validate_relationships(graph: EntityGraph, manifest: dict[str, Any]) -> Non
         for node in graph.table(table).values():
             for key, target in relations.items():
                 value = node.fields.get(key)
+                if table in {"Indicator", "Characteristic"} and key == "analysis_id" and value is None:
+                    # Keep the source observation/evidence, but never invent an
+                    # analysis ID or treat an unscoped value as a rule input.
+                    warning = f"UNMAPPED_RELATION:{table}:analysis_id"
+                    if warning not in graph.mapping_warnings:
+                        graph.mapping_warnings.append(warning)
+                    continue
                 optional = (table == "Loan" or (table == "LCRESPONSE" and key == "loan_id")
                             or (table == "LCREntity" and key == "entity_involvement_id"))
                 if value is None and optional:
@@ -473,6 +575,11 @@ def _validate_relationships(graph: EntityGraph, manifest: dict[str, Any]) -> Non
     for table in ("Indicator", "Characteristic"):
         seen: dict[tuple[str, str], EntityNode] = {}
         for node in graph.table(table).values():
+            # Repeated flattened SOQL keys without an Analysis FK are not
+            # comparable observations: their scope is unknown, so preserve
+            # them rather than claiming they conflict or combining them.
+            if not node.fields.get("analysis_id") or not node.fields.get("key"):
+                continue
             key = (node.fields.get("analysis_id"), node.fields.get("key"))
             previous = seen.get(key)
             if previous and str(previous.fields.get("value")) != str(node.fields.get("value")):

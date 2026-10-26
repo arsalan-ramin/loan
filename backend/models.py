@@ -179,7 +179,15 @@ class PreflightResult(BaseModel):
     recognized_mtb: bool
     query_roles: list[int]
     missing_query_roles: list[int]
+    duplicate_query_roles: list[int] = Field(default_factory=list)
+    query_file_set_valid: bool = False
     document_count: int
+    attribute_count: int = 0
+    attributes: list[str] = Field(default_factory=list)
+    mapping_warnings: list[str] = Field(default_factory=list)
+    unmapped_attribute_count: int = 0
+    unmapped_attributes: list[str] = Field(default_factory=list)
+    unavailable_inputs: list[str] = Field(default_factory=list)
     loan_count: int
     account_count: int = 0
     account_index_version: int = 0
@@ -205,7 +213,7 @@ class ReviewNote(BaseModel):
 class Session(BaseModel):
     id: str = Field(default_factory=uid)
     title: str = "Untitled review"
-    mode: Mode = "PRODUCTION"
+    mode: Mode = "TEST"
     selected_account_id: str | None = None
     created_at: str = Field(default_factory=now)
     updated_at: str = Field(default_factory=now)
@@ -230,7 +238,7 @@ class Session(BaseModel):
 class CreateSession(BaseModel):
     model_config = {"extra": "forbid"}
     title: str = Field(default="Untitled review", min_length=1, max_length=120)
-    mode: Mode = "PRODUCTION"
+    mode: Mode = "TEST"
 
 
 class ModeRequest(BaseModel):

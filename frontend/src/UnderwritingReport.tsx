@@ -68,8 +68,11 @@ function LoanCard({ loan }: { loan: LoanRecommendation }) {
   const guideDiagnostics = guide && typeof guide === 'object' ? guide as Record<string, unknown> : {};
   const stages = guideDiagnostics.stages && typeof guideDiagnostics.stages === 'object'
     ? guideDiagnostics.stages as Record<string, unknown> : {};
+  const decisionFlow = Array.isArray(loan.normalized_data.decision_flow)
+    ? loan.normalized_data.decision_flow as Array<{ stage: string; status: string; summary: string; evidence_refs: string[] }>
+    : [];
   const diagnosticFeatures = Object.entries(loan.normalized_data).filter(([key]) =>
-    key !== 'implementation_guide_diagnostics' && key !== 'out_of_scope_diagnostics');
+    key !== 'implementation_guide_diagnostics' && key !== 'out_of_scope_diagnostics' && key !== 'decision_flow');
   return <article className="underwriting-loan" aria-label={`Loan ${loan.loan_id}`}>
     <h4>Loan {loan.loan_id}</h4>
     <dl className="policy-source">
@@ -83,6 +86,16 @@ function LoanCard({ loan }: { loan: LoanRecommendation }) {
       <div><dt>Human review required</dt><dd>{loan.human_review_required ? 'Yes — authorized human review required' : 'Not reported'}</dd></div>
       <div><dt>Mode / policy version</dt><dd>{loan.mode} / {loan.policy_version}</dd></div>
     </dl>
+    <section aria-label="Ordered decision-flow validation">
+      <h5>Screenshot decision-flow validation</h5>
+      <p className="muted">The simulated branch uses only the supplied screenshot's criteria. A simulated candidate is not an actual approval or rejection. Each stage shows its result and source-cell evidence; unknown means not validated, not passed.</p>
+      {!decisionFlow.length && <p>No ordered decision-flow trace was returned.</p>}
+      {decisionFlow.map((step, index) => <div className="policy-result" key={`${step.stage}-${index}`}>
+        <h6>{index + 1}. {step.stage} · <span className="underwriting-status">{step.status}</span></h6>
+        <p>{step.summary}</p>
+        <p>Evidence references: {step.evidence_refs?.join(', ') || 'No source-cell references supplied'}</p>
+      </div>)}
+    </section>
     <details className="underwriting-trace">
       <summary>Implementation guide diagnostics · stages and normalized features</summary>
       <p className="muted">Guide diagnostics and candidate features are not credited rule outcomes or operational decisions.</p>
@@ -166,6 +179,9 @@ export default function UnderwritingReport({ batch }: { batch: UnderwritingBatch
     </dl>
     <p className="muted">Both PDFs are draft evidence and do not confer lending authority. Eligibility routes and credit-assessment candidates are separate from authorization, which is always NOT_ISSUED. This report performs no lending approval or denial.</p>
     <IssueList title="Batch data quality issues" items={batch.data_quality_issues} />
+    <IssueList title="Unmapped source columns" items={batch.unmapped_source_fields ?? []} />
+    <IssueList title="Canonical inputs unavailable in source files" items={batch.unavailable_inputs ?? []} />
+    <IssueList title="Unresolved source relationships" items={batch.mapping_warnings ?? []} />
     <p>{batch.loan_results.length} explicit loan records</p>
     {!batch.loan_results.length && <p className="document-warning">No explicit loan records. No loans were fabricated from source rows or empty templates.</p>}
     {batch.loan_results.map((loan, index) => <LoanCard key={`${loan.loan_id}-${index}`} loan={loan} />)}

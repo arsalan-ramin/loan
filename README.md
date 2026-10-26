@@ -30,7 +30,7 @@ For a fresh checkout, create a Python virtual environment, install [backend/requ
 
 1. Open the UI and ask the assistant a question or create a session. The assistant asks for the required documents first.
 2. Upload XLSX, PDF, DOCX, UTF-8 TXT, Markdown, CSV, or JSON files, or select **Use 3 Excel files from data folder** in a new/empty session. You can also try [examples/sample-policy.txt](examples/sample-policy.txt). Maximum: **20 files per conversation; XLSX up to 50 MB and other files up to 20 MB** by default.
-3. For recognized MTB workbooks, choose **Review mode**: **PRODUCTION — manual review only** (default) or **TEST — simulated paths only**. Changing mode clears the report and current validation and requires reprocessing. The selector is disabled during processing or another pending action; errors retain the prior mode/report. **Edit document checks** manages optional text checks separately. Exact bundled examples are removed from MTB sessions; modified/custom checks are retained. **View guideline rules** displays the current v4 catalog and separately categorized guide/expanded diagnostics. Readiness counts are not evaluated loan outcomes.
+3. For recognized MTB workbooks, **Review mode defaults to TEST — simulated paths only**. TEST cannot take operational action; with the public default configuration it produces `SIMULATED_REVIEW` unless explicitly enabled developer-only synthetic criteria are supplied. **PRODUCTION — manual review only** remains available as an explicit mode. Changing mode clears the report and current validation and requires reprocessing. The selector is disabled during processing or another pending action; errors retain the prior mode/report. **Edit document checks** manages optional text checks separately. Exact bundled examples are removed from MTB sessions; modified/custom checks are retained. **View guideline rules** displays the current v4 catalog and separately categorized guide/expanded diagnostics. Readiness counts are not evaluated loan outcomes.
 4. Select **Process documents**. Uploading and chatting never automatically start processing.
 5. Follow the five-agent pipeline. Open **Review report** to inspect each finding and its evidence.
 6. Select **Download HTML** for a standalone report, or **Download JSON / Download CSV** for completed v4 underwriting results. Exact USD values remain strings, including in nested CSV JSON cells. The UI downloads exports as untouched blobs rather than converting money through JavaScript numbers. Export errors retain the report and allow retry. Generic reports have HTML only.
@@ -51,9 +51,11 @@ Local guidance is deterministic and explicitly labeled, not a silent fallback fo
 
 ## Agent architecture
 
-### Three-workbook dataset
+### Three-file intake and account relationships
 
-The data-folder button imports only the fixed original Query 1/2/4 filenames from the configured backend data directory. It never changes originals or starts processing. It does **not** select revised/sample variants automatically and returns 404 if an original is absent.
+Upload **Query 1 (Loans, Accounts & Financials), Query 2 (SBSS & Entity Relationships), and Query 4 (Credit Reports)** for an MTB review. The files link only through matching explicit Account ID values. Supported headers include `LLC_BI__Account__c`, `ACCOUNT_ID`, `Account ID`, and `nFUSE__Account__c`; punctuation/case variants use a fixed allowlist. Generic `Id`, account names, row position, and fuzzy header guesses are not join keys. Every populated row attribute and source-cell location is extracted even when it has no mapped rule. Local validation displays the extracted field inventory.
+
+The fixed data-folder importer remains limited to the allowlisted original Query 1/2/4 filenames, never changes originals and does not start processing.
 
 Files actually inspected on 2026-10-20 (local test data, not verified customer records):
 
@@ -63,11 +65,13 @@ Files actually inspected on 2026-10-20 (local test data, not verified customer r
 | [backend/data/Query_2_Revised_Test_Data.xlsx](backend/data/Query_2_Revised_Test_Data.xlsx) | MTB Query 2 | 11 | 90 |
 | [backend/data/Query_4_Revised_Test_Data.xlsx](backend/data/Query_4_Revised_Test_Data.xlsx) | MTB Query 4 | 32 | 30 |
 
-The original fixed-name templates are currently absent from this workspace. Earlier 50/11/32-column, zero-row template descriptions are historical, not the current revised-file inventory. Upload the revised files manually if needed; their current names omit the MTB prefix, but extracted sheet/header signatures recognize them as MTB. 150 source rows do **not** mean 150 loans or joined borrowers. Recognition does not validate their business mappings. Extraction records first nonempty-row headers, counts and sheet/row/cell provenance. README, instructions and guidelines sheets are reference-only and excluded from data totals. Empty templates yield no invented loans.
+The original fixed-name templates are currently absent from this workspace. Earlier 50/11/32-column, zero-row template descriptions are historical, not the current revised-file inventory. The revised exports are joined only by matching Account ID foreign keys; their 150 combined source rows do not imply 150 loans or linked borrowers. Recognition does not validate business mappings. Extraction records all populated attributes with sheet/row/cell provenance. README, instructions and guidelines sheets are reference-only and excluded from data totals. Empty templates yield no invented loans.
 
 XLSX is supported; legacy XLS and macro-enabled XLSM are not. Formulas are preserved as text and **never calculated**. Limits: 30 sheets, 1,000,000 visited cells, 250 MB expanded ZIP contents, and 50 million extracted characters. Header-only workbooks produce mandatory needs-review findings even when generic text checks pass.
 
 **New MTB reviews use the deterministic v4 engine**, [backend/underwriting_engine.py](backend/underwriting_engine.py), models, graph and [backend/underwriting_config.json](backend/underwriting_config.json). The policy source is [backend/data/LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf](backend/data/LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf), **three pages**, SHA-256 **9ed35356fdf8d7f638b6eb77c463df71f9a6dd17234a5fe31be251fda8ac18e7**; version `v4-USD-verified-draft-2`. This remains the separately pinned v4 policy-evidence source; hash verification establishes integrity, **not production credit-policy authorization**.
+
+The revised SOQL exports use explicit per-query root-ID mappings: Query 1 root `Id` → Characteristic, Query 2 root `Id` → Indicator, Query 4 root `Id` → CreditReport. Nested loan/account foreign keys and allowlisted product, owner, DOB, NAICS, amount, SBSS and credit-report fields map to canonical fields while retaining source cells. Validation separates unmapped source headers from canonical inputs absent in the files and unresolved relationships. Repeated `CreditReport.Id` records with conflicting values remain conflicts; no export is preferred. Missing report/as-of dates, EBITDA, discharge dates, or scalar response IDs remain unavailable rather than inferred. See [docs/underwriting-policy.md](docs/underwriting-policy.md#observed-flattened-soql-export-contract) for field-level details.
 
 The complete implementation guide is separately pinned as [backend/data/MTB_LLM_Underwriting_Complete_Implementation_Guide.pdf](backend/data/MTB_LLM_Underwriting_Complete_Implementation_Guide.pdf), **seven pages**, SHA-256 **8a409bf6499129be8efe109d1a15f21ecfd95929b0674b993ab6d13c9c8e9467**. The configured mapping places the Section 8 decision tree on page 4 and processing stages, out-of-scope items, and auditability on page 5. This is an implementation **draft**, not approved credit policy or authority to lend. Runtime verification for each PDF independently requires the local file and pinned hash to match. The older [backend/policy.py](backend/policy.py) and [backend/policy_config.json](backend/policy_config.json) remain for compatibility, not new MTB decision execution.
 
@@ -121,15 +125,15 @@ Full paths below; schemas are at http://127.0.0.1:8010/docs.
 | Method | Path | Contract |
 | --- | --- | --- |
 | GET | `/api/health` | Health status |
-| GET / POST | `/api/sessions` | List / create; create accepts optional `title`, `mode` (default `PRODUCTION`) |
+| GET / POST | `/api/sessions` | List / create; create accepts optional `title`, `mode` (default `TEST`; `PRODUCTION` must be explicit) |
 | GET | `/api/sessions/{id}` | Session, progress and report |
 | POST | `/api/sessions/{id}/messages` | `{ "content": "…" }` |
 | POST | `/api/sessions/{id}/preflight` | No body; local validation and bounded priority summary; no provider call |
 | POST | `/api/sessions/{id}/assistant/inspect` | Exactly `loan_id`, optional `topic=blockers|rules|evidence`; local saved-report lookup |
 | POST | `/api/sessions/{id}/assistant/process` | Exactly `confirmed=true`, `expected_updated_at`; revision-bound explicit start, returns 202 |
 | POST | `/api/sessions/{id}/assistant/notes` | Exactly `loan_id`, `report_id`, `text`, optional `kind=note|acknowledgment`; unverified assertion |
-| POST | `/api/sessions/{id}/documents` | Multipart repeated `files` fields |
-| POST | `/api/sessions/{id}/dataset` | Fixed three-original-file import into an empty session; no body/path input |
+| POST | `/api/sessions/{id}/documents` | Multipart `files`; MTB package has Query 1, Query 2, Query 4, linked by normalized Account ID columns |
+| POST | `/api/sessions/{id}/dataset` | Fixed allowlisted Query 1/2/4 import into an empty session |
 | DELETE | `/api/sessions/{id}/documents/{document_id}` | Remove upload |
 | PUT | `/api/sessions/{id}/rules` | `{ "rules": [...] }`, optional document checks only |
 | PUT | `/api/sessions/{id}/mode` | Exactly `{ "mode": "TEST" }` or `{ "mode": "PRODUCTION" }`; clears report |
@@ -144,13 +148,19 @@ Modes are strict uppercase. Create/mode requests reject extra `authority`, `appr
 
 ### Example public TEST invocation
 
-This PowerShell example assumes **three locally prepared XLSX workbooks using the illustrative canonical contract** in [the policy guide](docs/underwriting-policy.md#public-test-walkthrough). The paths are placeholders for your files; the API does not create workbooks or expose fixture overrides. No credentials are included. With default policy configuration, TEST remains `SIMULATED_REVIEW`.
+This PowerShell example assumes **three locally prepared XLSX workbooks**, one each for Query 1, Query 2, and Query 4. Put the corresponding Account ID values in each source using a supported Account ID header variant, as detailed in [the policy guide](docs/underwriting-policy.md#public-test-walkthrough). The paths are placeholders; the API does not create workbooks or expose fixture overrides. No credentials are included. With default policy configuration, TEST remains review-only.
 
 ```powershell
 $base = 'http://127.0.0.1:8010/api'
 $session = Invoke-RestMethod -Method Post -Uri "$base/sessions" -ContentType 'application/json' -Body '{"title":"Illustrative synthetic TEST","mode":"TEST"}'
 $id = $session.id
 curl.exe --fail-with-body -X POST "$base/sessions/$id/documents" -F 'files=@C:/synthetic-fixtures/MTB_Query_1.xlsx' -F 'files=@C:/synthetic-fixtures/MTB_Query_2.xlsx' -F 'files=@C:/synthetic-fixtures/MTB_Query_4.xlsx'
+$validation = Invoke-RestMethod -Method Post -Uri "$base/sessions/$id/preflight"
+if ($validation.preflight.account_count -gt 0) {
+	$accounts = Invoke-RestMethod -Uri "$base/sessions/$id/accounts?limit=1"
+	$selection = @{ account_id = $accounts.results[0].account_id } | ConvertTo-Json
+	Invoke-RestMethod -Method Put -Uri "$base/sessions/$id/account" -ContentType 'application/json' -Body $selection
+}
 Invoke-RestMethod -Method Post -Uri "$base/sessions/$id/process"
 Invoke-RestMethod -Uri "$base/sessions/$id"
 # Repeat the preceding GET until status is completed (stop and inspect error if failed).

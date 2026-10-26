@@ -50,9 +50,21 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   const loans = session.report?.underwriting?.loan_results ?? [];
   const selectedLoan = loans.find((loan) => loan.loan_id === selected) ?? loans[0];
   const preflight = session.preflight;
+  const preflightAttributes = preflight?.attributes ?? [];
+  const missingQueryRoles = preflight?.missing_query_roles ?? [];
+  const duplicateQueryRoles = preflight?.duplicate_query_roles ?? [];
+  const priorityIssues = preflight?.priority_issues ?? [];
+  const unmappedAttributes = preflight?.unmapped_attributes ?? [];
+  const unavailableInputs = preflight?.unavailable_inputs ?? [];
+  const mappingWarnings = preflight?.mapping_warnings ?? [];
   const requiresAccountSelection = !!session.policy_rules?.length || preflight?.recognized_mtb === true
-    || session.documents.some((document) => /^MTB[ _-]+Query[ _-]+(1|2|4)(?=$|[ _().-]).*\.xlsx$/i.test(document.name));
+    || session.documents.some((document) => /^MTB[ _-]+Query[ _-]+(1|2|3|4)(?=$|[ _().-]).*\.xlsx$/i.test(document.name));
   const requiresWorkbookValidation = session.documents.some((document) => document.extension === '.xlsx') && !preflight;
+  const queryFileSetValid = preflight?.query_file_set_valid ?? Boolean(
+    preflight?.recognized_mtb && preflight.document_count === 3
+    && [1, 2, 4].every((role) => preflight.query_roles?.includes(role)
+      && !missingQueryRoles.includes(role) && !duplicateQueryRoles.includes(role)),
+  );
   const latestInspection = [...session.messages].reverse().find((item) =>
     item.inspection?.loan_id === selectedLoan?.loan_id && item.inspection?.report_id === session.report?.id);
   useEffect(() => { setConfirmation(null); }, [session.id, session.updated_at]);
@@ -121,7 +133,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     <div className="guided-actions">
       <button type="button" className="button secondary" disabled={disabled || !session.documents.length} onClick={() => void run('Validating files locally', async () => onSession(await api.preflight(session.id)))}>Validate files locally</button>
       <button type="button" className="button secondary" disabled={disabled} onClick={onUpload}>Add corrected source files</button>
-      <button type="button" className="button primary" disabled={disabled || !session.documents.length || requiresWorkbookValidation || accountLoading || (requiresAccountSelection && (!preflight?.recognized_mtb || ((accountTotal || preflight.account_count) > 0 && !session.selected_account_id)))} onClick={() => setConfirmation(session.updated_at)}>Prepare review</button>
+      <button type="button" className="button primary" disabled={disabled || !session.documents.length || requiresWorkbookValidation || accountLoading || (requiresAccountSelection && (!queryFileSetValid || ((accountTotal || preflight!.account_count) > 0 && !session.selected_account_id)))} onClick={() => setConfirmation(session.updated_at)}>Prepare review</button>
       {session.report && <>
         <button type="button" className="button secondary" disabled={disabled} onClick={onReport}>Inspect full report</button>
         <button type="button" className="button secondary" disabled={disabled} onClick={onDownload}>Save HTML report</button>
@@ -129,14 +141,22 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     </div>
     {preflight && <div className="guided-preflight" role="status">
       <h4>Local validation summary</h4>
-      <p>{preflight.document_count} files · {preflight.loan_count} explicit loans · {preflight.issue_count} diagnostic issues.</p>
-      <p>{preflight.recognized_mtb ? `Recognized Query roles: ${preflight.query_roles.join(', ')}` : 'Generic documents — no underwriting relationship validation claimed.'}</p>
+      <p>{preflight.document_count ?? session.documents.length} source file · {preflight.loan_count ?? 0} explicit loans · {preflight.issue_count ?? 0} structural issues.</p>
+      <p>{preflight.recognized_mtb ? 'MTB source roles detected. Query 1, Query 2, and Query 4 link through matching Account ID columns; header spellings may vary. No row-position or name joins are used.' : 'Generic document — extracted attributes are available; no underwriting relationship validation claimed.'}</p>
+      <p>{preflight.attribute_count ?? preflightAttributes.length} distinct column attributes extracted{preflightAttributes.length < (preflight.attribute_count ?? preflightAttributes.length) ? ` · showing first ${preflightAttributes.length}` : ''}.</p>
+      {!!preflightAttributes.length && <details><summary>View extracted attributes</summary><ul>{preflightAttributes.map((attribute) => <li key={attribute}>{attribute}</li>)}</ul></details>}
+      <p>{preflight.unmapped_attribute_count ?? unmappedAttributes.length} source columns currently unmapped; unmapped does not mean the source cell was discarded.</p>
+      {!!unmappedAttributes.length && <details><summary>View unmapped source columns</summary><ul>{unmappedAttributes.map((attribute) => <li key={attribute}>{attribute}</li>)}</ul></details>}
+      {!!unavailableInputs.length && <details><summary>Required canonical inputs not present in these files</summary><ul>{unavailableInputs.map((input) => <li key={input}>{input}</li>)}</ul></details>}
+      {!!mappingWarnings.length && <details><summary>Relationships not resolvable from supplied columns</summary><ul>{mappingWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></details>}
       {preflight.recognized_mtb && <>
-        <p>{preflight.account_count} borrower accounts detected across {preflight.loan_count} explicit loans. Local validation indexes relationships; it does not evaluate every client's credit.</p>
+        {!!missingQueryRoles.length && <p>Missing source roles: Query {missingQueryRoles.join(', Query ')}.</p>}
+        {!!duplicateQueryRoles.length && <p>Duplicate source roles: Query {duplicateQueryRoles.join(', Query ')}; keep one workbook per role.</p>}
+        <p>{preflight.account_count ?? 0} borrower accounts detected across {preflight.loan_count ?? 0} explicit loans. Local validation indexes relationships; it does not evaluate every client's credit.</p>
         <label>Search accounts or clients<input aria-label="Search accounts or clients" value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} placeholder="Account name or ID" /></label>
         <div className="guided-actions">
           <button type="button" className="button secondary" disabled={disabled || accountLoading} onClick={() => void loadAccounts(0)}>Search accounts</button>
-          <label>Choose account/client<select aria-label="Choose account/client" value={session.selected_account_id ?? ''} disabled={disabled || accountLoading || !(accountTotal || preflight.account_count)}
+          <label>Choose account/client<select aria-label="Choose account/client" value={session.selected_account_id ?? ''} disabled={disabled || accountLoading || !(accountTotal || (preflight.account_count ?? 0))}
             onChange={(event) => {
               const accountId = event.target.value;
               if (accountId) void run('Selecting borrower account', async () => onSession(await api.selectAccount(session.id, accountId)));
@@ -161,16 +181,15 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
           </ul>}
           {accountCandidates.length < accountTotal && <button type="button" className="button secondary" disabled={disabled || accountLoading} onClick={() => void loadAccounts(accountCandidates.length)}>Load more accounts</button>}
         </div>
-        {requiresAccountSelection && !session.selected_account_id && <small>{accountLoading ? 'Loading borrower accounts…' : accountTotal || preflight.account_count ? 'Select an account/client before preparing the review.' : 'No borrower accounts are indexed yet. Re-run local validation or check the explicit Account/Loan relationships.'}</small>}
+        {requiresAccountSelection && !session.selected_account_id && <small>{!queryFileSetValid ? 'Upload one workbook each for Query 1, Query 2, and Query 4 before preparing the review.' : accountLoading ? 'Loading borrower accounts…' : accountTotal || (preflight.account_count ?? 0) ? 'Select an account/client before preparing the review.' : 'No borrower accounts are linked by matching Account ID values. Check the Account columns across the three workbooks.'}</small>}
       </>}
-      {!!preflight.missing_query_roles.length && <p>Missing Query roles: {preflight.missing_query_roles.join(', ')}</p>}
-      <h5>Priority blockers · first {preflight.priority_issues.length} of {preflight.issue_count}</h5>
-      <ul>{preflight.priority_issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>
-      <p>{preflight.suggested_next_step}</p><p>{preflight.comparison}</p>
-      <small>Local validation is not a lending decision or a clean credit report. Source corrections require replacement uploads; remove superseded files to avoid conflicting duplicates.</small>
+      <h5>Priority blockers · first {priorityIssues.length} of {preflight.issue_count ?? priorityIssues.length}</h5>
+      <ul>{priorityIssues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>
+      <p>{preflight.suggested_next_step ?? 'Review the extracted attributes and source relationships before processing.'}</p><p>{preflight.comparison ?? 'No previous validation comparison is available.'}</p>
+      <small>All source-row attributes are extracted. Cross-file relationships use matching explicit Account ID values only; local validation is not a lending decision.</small>
     </div>}
     {confirmation && <div className="guided-confirmation" role="group" aria-label="Confirm external processing">
-      <h4>Start {session.mode ?? 'PRODUCTION'} review?</h4>
+      <h4>Start {session.mode ?? 'TEST'} review?</h4>
       <p>Processing sends bounded session/document context to Anthropic for commentary and may incur charges. It replaces the current report. Missing inputs and policy conflicts will remain review items; no lending authorization is issued.</p>
       <button type="button" className="button primary" disabled={disabled} onClick={() => void run('Starting confirmed review', async () => { onSession(await api.guidedProcess(session.id, confirmation)); setConfirmation(null); })}>Confirm and process</button>
       <button type="button" className="button secondary" disabled={disabled} onClick={() => setConfirmation(null)}>Cancel review</button>

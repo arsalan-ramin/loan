@@ -29,7 +29,6 @@ export const api = {
   sessions: () => request<Session[]>('/sessions'),
   create: () => request<Session>('/sessions', json('POST', {})),
   session: (id: string, signal?: AbortSignal) => request<Session>(`/sessions/${segment(id)}`, { signal }),
-  loadDataset: (id: string) => request<Session>(`/sessions/${segment(id)}/dataset`, { method: 'POST' }),
   message: (id: string, content: string, loanId?: string) => request<Session>(`/sessions/${segment(id)}/messages`, json('POST', { content, ...(loanId ? { loan_id: loanId } : {}) })),
   preflight: (id: string) => request<Session>(`/sessions/${segment(id)}/preflight`, { method: 'POST' }),
   accounts: (id: string, query = '', offset = 0, limit = 50) => request<AccountCandidatePage>(
@@ -55,6 +54,13 @@ export const api = {
 
 export async function downloadReport(id: string): Promise<void> {
   return downloadBlob(api.reportUrl(id), `agent-report-${id}.html`);
+}
+
+export async function downloadSourceDocument(sessionId: string, documentId: string, filename: string): Promise<void> {
+  return downloadBlob(
+    `${BASE}/sessions/${segment(sessionId)}/documents/${segment(documentId)}/download`,
+    filename,
+  );
 }
 
 export type UnderwritingFormat = 'json' | 'csv';

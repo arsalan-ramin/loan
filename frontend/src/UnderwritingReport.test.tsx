@@ -87,6 +87,24 @@ describe('V4 underwriting report', () => {
     expect(screen.getByText(/PRODUCTION — manual review only/)).toBeInTheDocument();
   });
 
+  it('renders ordered decision-flow validation and its evidence references', () => {
+    render(<UnderwritingReport batch={batch({ loan_results: [loan({ normalized_data: {
+      decision_flow: [
+        { stage: 'Account and relationship validation', status: 'PASS', summary: 'Explicit account link verified.', evidence_refs: ['cell-1'] },
+        { stage: 'Screenshot knockout screen', status: 'CANDIDATE_MATCH', summary: 'Candidate criteria matched: MAX_DELINQUENCY_PUBLIC_RECORDS_KNOCKOUT_CANDIDATE.', evidence_refs: ['cell-1'] },
+        { stage: 'Authorization and final action', status: 'REVIEW_REQUIRED', summary: 'authorization=NOT_ISSUED; final action=MANUAL_REVIEW.', evidence_refs: [] },
+      ],
+    } })] })} />);
+    const flow = within(screen.getByRole('region', { name: 'Ordered decision-flow validation' }));
+    expect(flow.getByText(/1\. Account and relationship validation/)).toBeInTheDocument();
+    expect(flow.getByText(/2\. Screenshot knockout screen/)).toBeInTheDocument();
+    expect(flow.getByText('PASS')).toBeInTheDocument();
+    expect(flow.getByText('CANDIDATE_MATCH')).toBeInTheDocument();
+    expect(flow.getByText(/Explicit account link verified/)).toBeInTheDocument();
+    expect(flow.getAllByText('Evidence references: cell-1')).toHaveLength(2);
+    expect(flow.getByText(/unknown means not validated, not passed/)).toBeInTheDocument();
+  });
+
   it('shows route, candidate assessment, authorization and guide diagnostics as separate non-operational outputs', async () => {
     render(<UnderwritingReport batch={batch({ source_available: true, implementation_guide_available: true, loan_results: [loan({
       eligibility_route: 'QUICK_APP', credit_assessment: 'SIMULATED_APPROVAL_CANDIDATE', authorization: 'NOT_ISSUED',

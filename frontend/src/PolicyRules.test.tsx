@@ -132,7 +132,7 @@ it('uses report policy evaluation to identify MTB even without the original uplo
   expect(screen.getByText('0 enforced safeguards')).toBeInTheDocument();
 });
 
-it.each([{ documents: [] }, { documents: [{ id: 'other', name: 'MTB_Query_3.xlsx', extension: '.xlsx', size: 100, metadata: {} }] }])('preserves generic rules behavior without MTB documents or a policy report', async ({ documents }) => {
+it.each([{ documents: [] }, { documents: [{ id: 'other', name: 'quarterly-report.xlsx', extension: '.xlsx', size: 100, metadata: {} }] }])('preserves generic rules behavior without MTB documents or a policy report', async ({ documents }) => {
   const { user } = await openSession(activeSession({ documents, policy_rules: [], rules: [
     { id: 'custom', name: 'Required date', kind: 'required_text', value: 'date', severity: 'review', enabled: true },
   ] }));
@@ -181,7 +181,7 @@ it.each([
   expect(screen.getByRole('button', { name: 'Process documents' })).toBeDisabled();
 });
 
-it.each(['renamed.xlsx', 'MTB_Query_3.xlsx'])('preserves generic approved reports and commentary for %s without a catalog', async (name) => {
+it.each(['renamed.xlsx', 'quarterly-report.xlsx'])('preserves generic approved reports and commentary for %s without a catalog', async (name) => {
   const { user, container } = await openSession(activeSession({
     status: 'completed', policy_rules: [],
     documents: [{ id: 'd', name, extension: '.xlsx', size: 100, metadata: {} }],

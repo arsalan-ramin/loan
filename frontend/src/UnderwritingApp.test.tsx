@@ -34,14 +34,14 @@ async function open(active: Session, handler?: (url: string, init?: RequestInit)
 }
 
 describe('V4 app integration', () => {
-  it('recognizes underwriting-only reports, defaults legacy mode to production and prefers v4 over the legacy adapter', async () => {
-    const active = session();
+  it('recognizes underwriting-only reports, defaults missing mode to TEST and prefers v4 over the legacy adapter', async () => {
+    const active = session({ mode: undefined });
     active.report!.policy_evaluation = {
       policy_version: 'draft-v1', source_document: 'legacy.pdf', source_sha256: null, policy_status: 'draft', recommended_route: 'LEGACY_ROUTE',
       decision_recommendation: null, requires_human_approval: true, missing_information: [], rule_results: [], profiles: [], limitations: [],
     };
     const { user } = await open(active);
-    expect(screen.getByRole('combobox', { name: 'Review mode' })).toHaveValue('PRODUCTION');
+    expect(screen.getByRole('combobox', { name: 'Review mode' })).toHaveValue('TEST');
     await user.click(screen.getByRole('button', { name: /^Review report/ }));
     expect(screen.getByRole('heading', { name: 'Per-loan underwriting report' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Draft underwriting route' })).not.toBeInTheDocument();
@@ -54,7 +54,7 @@ describe('V4 app integration', () => {
 
   it('sends mode only, disables edits while pending and replaces the report with the returned invalidated session', async () => {
     let finish!: (value: Response) => void;
-    const active = session();
+    const active = session({ mode: 'PRODUCTION' });
     const { user, fetchMock } = await open(active, (url) => url.endsWith('/mode') ? new Promise<Response>((resolve) => { finish = resolve; }) : undefined);
     await user.click(screen.getByRole('button', { name: /^Review report/ }));
     const selector = screen.getByRole('combobox', { name: 'Review mode' });

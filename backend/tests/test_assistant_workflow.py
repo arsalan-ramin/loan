@@ -11,7 +11,7 @@ from backend.agents import underwriting_policy_summary
 from backend.main import create_app
 from backend.models import Message, Report
 from backend.tests.test_underwriting import document, rows
-from backend.tests.test_underwriting_api import upload_three
+from backend.tests.test_underwriting_api import upload_three, workbook
 from backend.underwriting_engine import evaluate_underwriting
 
 
@@ -27,7 +27,7 @@ def completed(client, count=1):
     session = client.app.state.store.get(sid)
     source = rows()
     source.extend(("Loan", {**source[1][1], "Id": f"L{i}"}) for i in range(2, count + 1))
-    session.report = Report(decision="needs_review", summary="Synthetic saved report", findings=[], document_count=3,
+    session.report = Report(decision="needs_review", summary="Synthetic saved report", findings=[], document_count=1,
         underwriting=evaluate_underwriting([document(source)]))
     session.report.policy_evaluation = underwriting_policy_summary(session.report.underwriting, session)
     session.rules = []
@@ -44,16 +44,12 @@ def test_local_validation_is_persisted_bounded_and_never_creates_a_report(client
     result = session["preflight"]
     assert result["query_roles"] == [1, 2, 4]
     assert result["missing_query_roles"] == []
+    assert result["document_count"] == 3
+    assert result["query_file_set_valid"] is True
+    assert result["attribute_count"] >= 1
+    assert "Name" in result["attributes"]
     assert result["loan_count"] == 1
     assert result["account_count"] == 1
-    accounts = client.get(f"/api/sessions/{sid}/accounts?q=A1").json()
-    assert accounts["total"] == 1
-    assert accounts["results"][0]["account_id"] == "A1"
-    assert accounts["results"][0]["loan_count"] == 1
-    assert accounts["results"][0]["loan_ids"] == ["L1"]
-    by_loan = client.get(f"/api/sessions/{sid}/accounts?q=L1").json()
-    assert by_loan["total"] == 1
-    assert by_loan["results"][0]["account_id"] == "A1"
     assert result["external_processing"] is False
     assert len(result["priority_issues"]) <= 10
     assert session["status"] == "ready" and session["report"] is None
@@ -62,6 +58,74 @@ def test_local_validation_is_persisted_bounded_and_never_creates_a_report(client
     again = client.post(f"/api/sessions/{sid}/preflight").json()["preflight"]
     assert "Same file bytes" in again["comparison"]
     assert "Previous issue count" in again["comparison"]
+
+
+def test_preflight_discovers_accounts_from_namespaced_soql_query1_relationships(client):
+    sid = client.post("/api/sessions", json={}).json()["id"]
+    prefix = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
+    query1 = workbook([("MTB Query 1", {
+        "Id": "ANALYSIS-ROW-1",
+        prefix + "LLC_BI__Loan__c": "LOAN-1",
+        prefix + "LLC_BI__Account__c": "ACCOUNT-1",
+        prefix + "LLC_BI__Borrower_Type__c": "borrower",
+    })])
+    query2 = workbook([("MTB Query 2", {"Id": "RESPONSE-ROW-1"})])
+    query4 = workbook([("MTB Query 4", {"Id": "REPORT-ROW-1"})])
+    upload = client.post(f"/api/sessions/{sid}/documents", files=[
+        ("files", ("MTB_Query_1_SOQL_Only.xlsx", query1)),
+        ("files", ("MTB_Query_2_SOQL_Only.xlsx", query2)),
+        ("files", ("MTB_Query_4_SOQL_Only.xlsx", query4)),
+    ])
+    assert upload.status_code == 200
+
+    validation = client.post(f"/api/sessions/{sid}/preflight").json()["preflight"]
+
+    assert validation["query_file_set_valid"] is True
+    assert validation["loan_count"] == 1
+    assert validation["account_count"] == 1
+    account = client.get(f"/api/sessions/{sid}/accounts").json()["results"][0]
+    assert account["account_id"] == "ACCOUNT-1"
+    assert account["loan_ids"] == ["LOAN-1"]
+
+
+def test_preflight_separates_unmapped_soql_headers_from_unavailable_inputs(client):
+    sid = client.post("/api/sessions", json={}).json()["id"]
+    junction = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
+    q1 = workbook([("MTB Query 1", {
+        "Id": "C1", junction + "LLC_BI__Loan__c": "L1",
+        junction + "LLC_BI__Account__c": "A1",
+        junction + "LLC_BI__Borrower_Type__c": "Borrower",
+        junction + "LLC_BI__Account__r.Birth_Date__c": "1980-01-01",
+        "SCOC__CharacteristicKey__c": "numCollection",
+        "SCOC__CharacteristicValue__c": "0",
+        "Unsupported_Example_Field__c": "preserved",
+    })])
+    q2 = workbook([("MTB Query 2", {
+        "Id": "I1", junction + "LLC_BI__Loan__c": "L1",
+        junction + "LLC_BI__Account__c": "A1",
+        junction + "LLC_BI__Borrower_Type__c": "Borrower",
+        "SCOC__IndicatorKey__c": "thinFileIndicator",
+        "SCOC__IndicatorValue__c": "N",
+    })])
+    q4 = workbook([("MTB Query 4", {
+        "Id": "R1", "nFUSE__Account__c": "A1",
+        "nFUSE__Credit_Score__c": "740", "nFUSE__Status__c": "Completed",
+    })])
+    client.post(f"/api/sessions/{sid}/documents", files=[
+        ("files", ("MTB_Query_1_SOQL_Only.xlsx", q1)),
+        ("files", ("MTB_Query_2_SOQL_Only.xlsx", q2)),
+        ("files", ("MTB_Query_4_SOQL_Only.xlsx", q4)),
+    ])
+
+    result = client.post(f"/api/sessions/{sid}/preflight").json()["preflight"]
+
+    assert result["account_count"] == 1
+    assert result["loan_count"] == 1
+    assert "Unsupported_Example_Field__c" in result["unmapped_attributes"]
+    assert "Loan as-of date" in result["unavailable_inputs"]
+    assert "Explicit EBITDA (EBIT is not interchangeable)" in result["unavailable_inputs"]
+    assert "Credit report date" in result["unavailable_inputs"]
+    assert "UNMAPPED_RELATION:Indicator:analysis_id" in result["mapping_warnings"]
 
 
 def test_validation_preserves_existing_report_exactly(client):
@@ -78,13 +142,33 @@ def test_validation_upload_first_missing_roles_and_parse_failure(client):
     client.post(f"/api/sessions/{sid}/documents", files=[("files", ("MTB_Query_1.xlsx", b"invalid xlsx"))])
     result = client.post(f"/api/sessions/{sid}/preflight").json()["preflight"]
     assert result["priority_issues"][0].startswith("FILE_PARSE_FAILED")
-    assert result["missing_query_roles"] == [2, 4]
+    assert result["missing_query_roles"] == []
     assert result["loan_count"] == 0
     assert result["issue_count"] > 0
 
 
+def test_upload_accepts_query_files_in_batches_but_process_requires_all_roles(client, monkeypatch):
+    sid = client.post("/api/sessions", json={}).json()["id"]
+    one = workbook([("Account", {"Id": "A1"}),
+                    ("Loan", {"Id": "L1", "borrower_account_id": "A1"})])
+    two = workbook([("Account", {"Id": "A2"}),
+                    ("Loan", {"Id": "L2", "borrower_account_id": "A2"})])
+    response = client.post(f"/api/sessions/{sid}/documents", files=[
+        ("files", ("MTB_Query_1.xlsx", one)),
+        ("files", ("MTB_Query_2.xlsx", two)),
+    ])
+    assert response.status_code == 200
+    validation = client.post(f"/api/sessions/{sid}/preflight").json()["preflight"]
+    assert validation["missing_query_roles"] == [4]
+    assert not validation["query_file_set_valid"]
+    submit = Mock()
+    monkeypatch.setattr(client.app.state.executor, "submit", submit)
+    assert client.post(f"/api/sessions/{sid}/process").status_code == 409
+    assert submit.call_count == 0
+
+
 def test_changes_invalidate_current_validation_and_retain_one_comparison(client):
-    sid = upload_three(client)
+    sid = upload_three(client, mode="PRODUCTION")
     previous = client.post(f"/api/sessions/{sid}/preflight").json()["preflight"]
     changed = client.put(f"/api/sessions/{sid}/mode", json={"mode": "TEST"}).json()
     assert changed["preflight"] is None
@@ -134,7 +218,7 @@ def test_confirmed_processing_is_revision_bound_and_disallows_extra_configuratio
     assert client.post(endpoint, json={"confirmed": True, "expected_updated_at": current["updated_at"]}).status_code == 409
 
 
-def test_processing_requires_a_selected_detected_account(client, monkeypatch):
+def test_processing_requires_single_workbook_then_selects_detected_account(client, monkeypatch):
     sid = upload_three(client)
     session = client.app.state.store.get(sid)
     session.selected_account_id = None
@@ -246,6 +330,8 @@ def test_review_note_limit_and_unrecognized_action_are_enforced(client):
 def test_account_directory_search_is_paginated_and_session_scoped(client):
     from backend.models import AccountCandidate
     sid = upload_three(client)
+    # This search-directory contract uses the complete 1/2/4 upload helper.
+    client.post(f"/api/sessions/{sid}/preflight")
     client.app.state.store.replace_account_candidates(sid, [
         AccountCandidate(account_id=f"A{i:03}", name=f"Client {i:03}", loan_count=i,
                  loan_ids=[f"L{i:03}"]) for i in range(1, 6)

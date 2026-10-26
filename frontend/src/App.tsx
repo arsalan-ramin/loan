@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, ArrowDownToLine, ArrowRight, ArrowUp, BookOpen, Check, CheckCheck, ChevronDown, ChevronRight, CircleCheck, Clock3, FileCheck2, FileSearch, FileText, FolderOpen, Layers3, LoaderCircle, MessageSquare, Paperclip, Plus, RefreshCw, Settings2, ShieldCheck, Sparkles, Trash2, Upload, X, AlertCircle } from 'lucide-react';
-import { api, downloadReport, downloadUnderwriting } from './api';
+import { api, downloadReport, downloadSourceDocument, downloadUnderwriting } from './api';
 import type { UnderwritingFormat } from './api';
 import RulesDialog from './RulesDialog';
 import PolicyRulesDialog from './PolicyRulesDialog';
@@ -16,7 +16,7 @@ const errorText = (cause: unknown) => cause instanceof Error ? cause.message : '
 const dateLabel = (value: string) => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
 function isMtbSession(session: Session | null): boolean {
-  return !!session?.policy_rules?.length || !!session?.preflight?.recognized_mtb || !!session?.report?.underwriting || !!session?.report?.policy_evaluation || !!session?.documents.some((doc) => /^MTB[ _-]+Query[ _-]+(1|2|4)(?=$|[ _().-]).*\.xlsx$/i.test(doc.name));
+  return !!session?.policy_rules?.length || !!session?.preflight?.recognized_mtb || !!session?.report?.underwriting || !!session?.report?.policy_evaluation || !!session?.documents.some((doc) => /^MTB[ _-]+Query[ _-]+(1|2|3|4)(?=$|[ _().-]).*\.xlsx$/i.test(doc.name));
 }
 
 export default function App() {
@@ -47,6 +47,7 @@ export default function App() {
   const disabled = !!busy || !!processing || loading;
   const documents = session?.documents ?? [];
   const needsWorkbookValidation = documents.some((document) => document.extension === '.xlsx') && !session?.preflight;
+  const queryFileSetValid = !!session?.preflight?.query_file_set_valid;
   const enabledRules = session?.rules.filter((rule) => rule.enabled).length ?? 0;
   const isMtb = isMtbSession(session);
   const policyRules = session?.policy_rules ?? [];
@@ -152,19 +153,19 @@ export default function App() {
 
   async function upload(files: File[]) {
     if (!files.length || disabled) return;
+    const hasWorkbook = files.some((file) => file.name.toLowerCase().endsWith('.xlsx'))
+      || documents.some((document) => document.extension === '.xlsx');
+    const totalWorkbooks = files.filter((file) => file.name.toLowerCase().endsWith('.xlsx')).length
+      + documents.filter((document) => document.extension === '.xlsx').length;
+    if (hasWorkbook && (totalWorkbooks > 3 || files.some((file) => !file.name.toLowerCase().endsWith('.xlsx'))
+      || documents.some((document) => document.extension !== '.xlsx'))) {
+      setError('An MTB review uses exactly three XLSX source files: Query 1, Query 2 and Query 4. Other files cannot be mixed in.');
+      return;
+    }
     setTab('workspace');
     await action('Uploading documents', async () => {
       const active = await ensureSession();
       syncSession(await api.upload(active.id, files));
-    });
-  }
-
-  async function loadDataset() {
-    if (documents.length || disabled) return;
-    setTab('workspace');
-    await action('Loading dataset', async () => {
-      const active = await ensureSession();
-      syncSession(await api.loadDataset(active.id));
     });
   }
 
@@ -229,9 +230,9 @@ export default function App() {
 
           {isMtb && session && <section className="underwriting-mode" aria-label="Underwriting mode">
             <label htmlFor="underwriting-mode">Review mode</label>
-            <select id="underwriting-mode" value={session.mode ?? 'PRODUCTION'} disabled={disabled} aria-describedby="mode-help" onChange={(event) => {
+            <select id="underwriting-mode" value={session.mode ?? 'TEST'} disabled={disabled} aria-describedby="mode-help" onChange={(event) => {
               const mode = event.target.value as Mode;
-              if (disabled || mode === (session.mode ?? 'PRODUCTION')) return;
+              if (disabled || mode === (session.mode ?? 'TEST')) return;
               void action('Updating review mode', async () => { syncSession(await api.mode(session.id, mode)); });
             }}>
               <option value="PRODUCTION">PRODUCTION — manual review only</option>
@@ -271,10 +272,9 @@ export default function App() {
                 <section className="card documents-card"><div className="card-heading"><div className="heading-with-icon"><FilesIcon /><h2>Documents</h2><span className="count-badge">{documents.length}</span></div><button className="icon-button" aria-label="Add documents" disabled={disabled} onClick={() => fileInput.current?.click()}><Plus size={18} /></button></div>
                   <div className="documents-content"><div role="button" tabIndex={disabled ? -1 : 0} aria-disabled={disabled} aria-label="Upload documents" className={`dropzone ${dragging ? 'dragging' : ''} ${disabled ? 'disabled' : ''}`} onClick={() => !disabled && fileInput.current?.click()} onKeyDown={(event) => { if ((event.key === 'Enter' || event.key === ' ') && !disabled) { event.preventDefault(); fileInput.current?.click(); } }} onDragOver={(event) => { event.preventDefault(); if (!disabled) setDragging(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }} onDrop={(event) => { event.preventDefault(); setDragging(false); void upload(Array.from(event.dataTransfer.files)); }}><span className="upload-icon">{busy === 'Uploading documents' ? <LoaderCircle className="spin" size={23} /> : <Upload size={23} strokeWidth={1.6} />}</span><strong>{busy === 'Uploading documents' ? 'Adding your documents…' : dragging ? 'Drop files to add them' : 'Drop your documents here'}</strong><span>or <b>browse files</b> to get started</span><small>XLSX up to 50 MB · Other files up to 20 MB · 20 files per session</small></div>
                     <input ref={fileInput} className="sr-only" type="file" accept=".pdf,.docx,.xlsx,.txt,.md,.csv,.json" multiple aria-label="Choose documents" disabled={disabled} onChange={(event) => { void upload(Array.from(event.target.files || [])); event.target.value = ''; }} />
-                    <p className="dataset-note">Excel .xlsx files are supported; .xls and .xlsm are unsupported.</p>
-                    {!documents.length && <button className="button secondary dataset-button" disabled={disabled} onClick={() => void loadDataset()}>{busy === 'Loading dataset' ? <LoaderCircle size={16} className="spin" /> : <FolderOpen size={16} />}Use 3 Excel files from data folder</button>}
+                    <p className="dataset-note">Upload the three MTB source workbooks together: Query 1 (Loans, Accounts & Financials), Query 2 (SBSS & Entity Relationships), and Query 4 (Credit Reports). They link through Account ID columns, including recognized header variants; no row-position or name joins are used. All columns are extracted. Excel .xls and .xlsm are unsupported.</p>
                     <p className="dataset-note">V4 guideline available. Amounts use actual USD dollars; source currency and scale must match. Policy conflicts, production signoff and missing field mappings still require review. Generic document checks cannot approve financing.</p>
-                    {documents.length ? <ul className="document-list">{documents.map((doc) => <li key={doc.id}><span className="document-icon"><FileText size={19} /></span><div><strong title={doc.name}>{doc.name}</strong><small>{doc.extension.replace('.', '').toUpperCase() || 'FILE'}<span>·</span>{formatSize(doc.size)}</small><ExcelMetadata document={doc} /></div><button className="icon-button danger" disabled={disabled} aria-label={`Remove ${doc.name}`} onClick={() => void action('Removing document', async () => { syncSession(await api.remove(session!.id, doc.id)); })}><Trash2 size={15} /></button></li>)}</ul> : <div className="no-documents"><FileText size={14} />No documents added yet</div>}
+                    {documents.length ? <ul className="document-list">{documents.map((doc) => <li key={doc.id}><span className="document-icon"><FileText size={19} /></span><div><strong title={doc.name}>{doc.name}</strong><small>{doc.extension.replace('.', '').toUpperCase() || 'FILE'}<span>·</span>{formatSize(doc.size)}</small><ExcelMetadata document={doc} /></div><button className="icon-button" disabled={disabled} aria-label={`Download ${doc.name}`} title={`Download ${doc.name}`} onClick={() => void action('Downloading source document', () => downloadSourceDocument(session!.id, doc.id, doc.name))}><ArrowDownToLine size={15} /></button><button className="icon-button danger" disabled={disabled} aria-label={`Remove ${doc.name}`} onClick={() => void action('Removing document', async () => { syncSession(await api.remove(session!.id, doc.id)); })}><Trash2 size={15} /></button></li>)}</ul> : <div className="no-documents"><FileText size={14} />No documents added yet</div>}
                   </div>
                 </section>
                 {isMtb ? <>
@@ -302,7 +302,7 @@ export default function App() {
 
             <section className="card pipeline-card"><div className="pipeline-header"><div><div className="heading-with-icon"><Activity size={19} /><h2>A little teamwork. A thorough review.</h2></div><p>Your agent pipeline, from first read to final recommendation.</p></div><span className="pipeline-label">{processing ? <><LoaderCircle size={13} className="spin" />Review in progress</> : session?.steps.length ? `${session.steps.filter((step) => step.status === 'completed').length} / ${session.steps.length} steps complete` : <><span className="neutral-dot" />Ready when you are</>}</span></div>
               <div className="pipeline-steps">{session?.steps.length ? session.steps.map((step, index) => <div key={`${step.agent}-${index}`} className={`pipeline-step ${step.status}`}><div className="step-symbol">{step.status === 'running' ? <LoaderCircle size={20} className="spin" /> : step.status === 'completed' ? <Check size={20} /> : step.status === 'failed' ? <X size={20} /> : <Clock3 size={19} />}</div><div><span className="step-kicker">AGENT {String(index + 1).padStart(2, '0')} · {step.status}</span><h3>{readable(step.agent)}</h3><p>{step.detail || 'Waiting for the next step.'}</p></div>{index < session.steps.length - 1 && <ChevronRight className="step-chevron" size={17} />}</div>) : <><PipelinePlaceholder icon={<FileSearch size={21} />} number="01" title="Read & understand" detail="Bring the important details into focus." /><PipelinePlaceholder icon={<ShieldCheck size={21} />} number="02" title="Check & validate" detail="Measure the details against your rules." /><PipelinePlaceholder icon={<FileCheck2 size={21} />} number="03" title="Summarize & report" detail="Turn findings into a clear next step." /></>}</div>
-              <div className="pipeline-footer"><div><span className={`footer-status-icon ${processing ? 'working' : ''}`}>{processing ? <LoaderCircle size={17} className="spin" /> : <Sparkles size={17} />}</span><p>{processing ? 'Your agents are on it. This page updates automatically.' : !documents.length ? 'Add your documents. We’ll take it from there.' : session?.status === 'completed' ? 'Your review is ready. Explore the findings in your report.' : needsWorkbookValidation || (isMtb && session?.preflight?.recognized_mtb && session.preflight.account_count > 0 && !session.selected_account_id) ? 'Validate locally and select an account/client before processing.' : 'Everything in place? Let’s connect the dots.'}</p></div><div className="process-actions">{session?.report && <button className="button secondary" onClick={() => setTab('report')}>View report<ArrowRight size={15} /></button>}<button className="button primary" disabled={disabled || !documents.length || needsWorkbookValidation || (isMtb && (!session?.preflight?.recognized_mtb || (session.preflight.account_count > 0 && !session.selected_account_id)))} onClick={() => void process()}>{processing || busy === 'Starting review' ? <LoaderCircle size={16} className="spin" /> : <Sparkles size={16} />}{processing ? 'Processing documents' : session?.status === 'failed' ? 'Retry processing' : 'Process documents'}{!processing && <ArrowRight size={16} />}</button></div></div>
+              <div className="pipeline-footer"><div><span className={`footer-status-icon ${processing ? 'working' : ''}`}>{processing ? <LoaderCircle size={17} className="spin" /> : <Sparkles size={17} />}</span><p>{processing ? 'Your agents are on it. This page updates automatically.' : !documents.length ? 'Add your documents. We’ll take it from there.' : session?.status === 'completed' ? 'Your review is ready. Explore the findings in your report.' : isMtb && (!queryFileSetValid || needsWorkbookValidation) ? 'Upload and validate Query 1, Query 2, and Query 4; then select the borrower account.' : isMtb && (session?.preflight?.account_count ?? 0) > 0 && !session?.selected_account_id ? 'Select the borrower account/client before processing.' : 'Everything in place? Let’s connect the dots.'}</p></div><div className="process-actions">{session?.report && <button className="button secondary" onClick={() => setTab('report')}>View report<ArrowRight size={15} /></button>}<button className="button primary" disabled={disabled || !documents.length || needsWorkbookValidation || (isMtb && (!queryFileSetValid || ((session?.preflight?.account_count ?? 0) > 0 && !session?.selected_account_id)))} onClick={() => void process()}>{processing || busy === 'Starting review' ? <LoaderCircle size={16} className="spin" /> : <Sparkles size={16} />}{processing ? 'Processing documents' : session?.status === 'failed' ? 'Retry processing' : 'Process documents'}{!processing && <ArrowRight size={16} />}</button></div></div>
             </section>
             {session?.error && <div role="alert" className="error-banner"><AlertCircle size={18} /><span>{session.error}</span></div>}
             {session?.report && <div className="report-ready"><span className="icon-tile"><FileCheck2 size={23} /></span><div><h3>Your review is ready.</h3><p>{session.report.summary}</p></div><button className="button secondary" onClick={() => setTab('report')}>Explore findings<ArrowRight size={16} /></button></div>}

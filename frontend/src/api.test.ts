@@ -53,20 +53,6 @@ describe('API contract', () => {
     await expect(downloadUnderwriting('s', 'json')).rejects.toThrow('Unable to reach Agent');
   });
 
-  it('loads the fixed dataset with an encoded session identifier and no request body', async () => {
-    const active = { id: 'session/a', documents: [] };
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(active)));
-    vi.stubGlobal('fetch', fetchMock);
-    await expect(api.loadDataset('session/a')).resolves.toEqual(active);
-    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/session%2Fa/dataset', { method: 'POST' });
-  });
-
-  it.each([404, 409])('surfaces dataset HTTP %s details', async (status) => {
-    const detail = status === 404 ? 'Dataset files are missing.' : 'Only empty sessions can load the dataset.';
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail }), { status })));
-    await expect(api.loadDataset('s')).rejects.toThrow(detail);
-  });
-
   it('encodes session and document identifiers', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('{}'));
     vi.stubGlobal('fetch', fetchMock);

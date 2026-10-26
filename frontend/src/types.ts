@@ -159,6 +159,9 @@ export interface UnderwritingBatch {
   expanded_spec_source_sha256?: string;
   expanded_spec_available?: boolean;
   data_quality_issues: string[];
+  mapping_warnings?: string[];
+  unmapped_source_fields?: string[];
+  unavailable_inputs?: string[];
   loan_results: LoanRecommendation[];
 }
 
@@ -182,7 +185,15 @@ export interface PreflightResult {
   recognized_mtb: boolean;
   query_roles: number[];
   missing_query_roles: number[];
+  duplicate_query_roles: number[];
+  query_file_set_valid: boolean;
   document_count: number;
+  attribute_count: number;
+  attributes: string[];
+  unmapped_attribute_count?: number;
+  unmapped_attributes?: string[];
+  mapping_warnings?: string[];
+  unavailable_inputs?: string[];
   loan_count: number;
   account_count: number;
   account_index_version?: number;

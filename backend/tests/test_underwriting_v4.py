@@ -142,14 +142,46 @@ def test_screenshot_public_record_codes_match_knockout_candidate(code, status):
     result = evaluate(source, mode="PRODUCTION")
     diagnostic = next(item for item in result.expanded_spec.rule_results if item.rule_id == "KO-07")
     v4_check = rule(result, "MAX_DELINQUENCY_PUBLIC_RECORDS_KNOCKOUT_CANDIDATE")
+    flow = result.normalized_data["decision_flow"]
 
     assert diagnostic.status == status
     assert v4_check.status == status
+    assert [step["stage"] for step in flow] == [
+        "Account and relationship validation", "Query 1 / Query 2 / Query 4 source reconciliation",
+        "Draft source verification",
+        "Screenshot knockout criteria",
+        "SBSS / ownership / FICO / amount / NAICS strategy", "Authorization and final action",
+    ]
+    knockout_step = flow[3]
+    assert knockout_step["status"] == ("CANDIDATE_MATCH" if code in {"1", "2", "3"} else "NO_LISTED_CANDIDATE_MATCH")
+    assert any(ref in knockout_step["evidence_refs"] for ref in v4_check.evidence_refs)
+    if code in {"1", "2", "3"}:
+        assert f"code {code}" in knockout_step["summary"]
+        assert result.credit_assessment == "SIMULATED_DECLINE_CANDIDATE"
+        assert "not an actual rejection" in result.explanation
+    assert "Authorized human review is always required" in result.explanation
     assert result.expanded_spec.simulated_credit_route == (
         "SIMULATED_DECLINE_CANDIDATE" if code in {"1", "2", "3"} else "SBA_APPROVAL_CANDIDATE"
     )
     assert result.final_action == "MANUAL_REVIEW"
     assert result.recommendation_path == "POLICY_REVIEW_REQUIRED"
+
+
+def test_screenshot_knockout_explanation_is_explicit_and_other_diagnostics_do_not_override():
+    source = rows()
+    source[2][1]["max_delinquency_public_records"] = "2"
+    source[2][1]["ofac_alert"] = True
+    source[2][1]["credit_freeze"] = True
+    source[1][1]["is_increase"] = True
+
+    result = evaluate(source, mode="TEST")
+
+    assert result.credit_assessment == "SIMULATED_DECLINE_CANDIDATE"
+    assert result.recommendation_path == "SIMULATED_REVIEW"
+    assert result.final_action == "NO_OPERATIONAL_ACTION"
+    assert "maximum-delinquency public-record code 2" in result.explanation
+    assert "simulated decline candidate" in result.explanation
+    assert "not an actual rejection" in result.explanation
 
 
 @pytest.mark.parametrize("score,path,status", [("159", "KNOCKOUT_CANDIDATE", "FAIL"), ("160", "UNSPECIFIED_OWNERSHIP_FICO_AMOUNT", "PASS"), ("189", "UNSPECIFIED_OWNERSHIP_FICO_AMOUNT", "PASS"), ("190", "SBA_CANDIDATE", "PASS"), ("199", "SBA_CANDIDATE", "PASS"), ("200", "OWNERSHIP_NAICS_CANDIDATE", "PASS")])
@@ -178,6 +210,8 @@ def test_knockouts_are_deterministic_candidates_with_manual_production(table, fi
     assert rule(result, rule_id).page == 2
     assert result.final_action == "MANUAL_REVIEW"
     assert result.recommendation_path == "POLICY_REVIEW_REQUIRED"
+    assert result.credit_assessment == "SIMULATED_DECLINE_CANDIDATE"
+    assert "not an actual rejection" in result.explanation
 
 
 MAPPED_MONEY = [

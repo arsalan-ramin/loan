@@ -89,8 +89,8 @@ def test_unknown_policy_gates_and_conflicts_are_blocked_not_inferred():
     gates = {
         "QUICKAPP_POLICY", "PRODUCT_BALOC_POLICY", "SBSS_FICO_BRANCH_POLICY",
         "OWNERSHIP_EBITDA_POLICY", "BANKRUPTCY_POLICY", "GROUP_EXPOSURE_POLICY",
-        "INCREASE_WAIT_POLICY", "REQUEST_THRESHOLD_POLICY", "SBSS_160_189_BRANCH",
-        "SBSS_200_OWNERSHIP_NAICS_CANDIDATE", "GUIDE_VEHICLE_OVERRIDE",
+            "INCREASE_WAIT_POLICY", "REQUEST_THRESHOLD_POLICY", "SBSS_160_189_BRANCH",
+            "SBSS_200_OWNERSHIP_NAICS_CANDIDATE",
     }
     assert {key for key, item in lookup.items() if item["state"] == "blocked" and not key.startswith(("EXPANDED-", "REASON-"))} == gates
     assert "REQUEST_THRESHOLD_100M_VS_100K" in lookup["REQUEST_THRESHOLD_POLICY"]["description"]
@@ -216,6 +216,5 @@ def test_import_removes_examples_and_catalog_refreshes_in_api(tmp_path):
         imported = client.post(f"/api/sessions/{sid}/dataset").json()
         assert imported["rules"] == []
         assert imported["policy_rules"] == guideline_rules()
-        # Saving an empty optional-check list does not disable mandatory policy checks.
         changed = client.put(f"/api/sessions/{sid}/rules", json={"rules": []}).json()
         assert changed["policy_rules"] == guideline_rules()

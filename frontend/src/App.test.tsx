@@ -62,61 +62,13 @@ describe('Agent', () => {
     expect(screen.getByLabelText('Choose documents')).toHaveAttribute('accept', '.pdf,.docx,.xlsx,.txt,.md,.csv,.json');
     expect(screen.getByText('XLSX up to 50 MB · Other files up to 20 MB · 20 files per session')).toBeInTheDocument();
     expect(screen.getByText(/.xls and .xlsm are unsupported/)).toBeInTheDocument();
+    expect(screen.getByText(/Upload the three MTB source workbooks/)).toBeInTheDocument();
+    expect(screen.getByText(/.xls and .xlsm are unsupported/)).toBeInTheDocument();
     expect(screen.getByText(/V4 guideline available\. Amounts use actual USD dollars/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Use 3 Excel files from data folder' })).toBeEnabled();
     expect(fetch).not.toHaveBeenCalledWith('/api/sessions', expect.objectContaining({ method: 'POST' }));
   });
 
-  it.each([false, true])('loads the three Excel files without processing (existing empty session: %s)', async (existing) => {
-    const active = session({ title: 'Dataset review' });
-    const loaded = session({ title: active.title, status: 'ready', documents: [1, 2, 4].map((number) => ({
-      id: `doc-${number}`, name: `MTB_Query_${number}.xlsx`, extension: '.xlsx', size: 100, metadata: {},
-    })) });
-    let finish!: (value: Response) => void;
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/health')) return response({ status: 'ok' });
-      if (url.endsWith('/dataset')) return new Promise<Response>((resolve) => { finish = resolve; });
-      if (url === '/api/sessions' && init?.method !== 'POST') return response(existing ? [active] : []);
-      return response(active);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    const user = userEvent.setup();
-    render(<App />);
-    if (existing) {
-      await user.click(await screen.findByRole('button', { name: /Dataset review/ }));
-    } else await screen.findByText(/Your sessions will live here/);
-    const button = screen.getByRole('button', { name: 'Use 3 Excel files from data folder' });
-    await waitFor(() => expect(button).toBeEnabled());
-    await user.click(button);
-    expect(button).toBeDisabled();
-    expect(screen.getByLabelText('Choose documents')).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Process documents' })).toBeDisabled();
-    finish(response(loaded));
-    for (const doc of loaded.documents) expect(await screen.findByText(doc.name)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Use 3 Excel files from data folder' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Process documents' })).toBeDisabled();
-    expect(screen.getByText(/Validate locally and select an account\/client before processing/)).toBeInTheDocument();
-    const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST').map(([url]) => url);
-    expect(posts).toEqual(existing ? ['/api/sessions/session-1/dataset'] : ['/api/sessions', '/api/sessions/session-1/dataset']);
-  });
-
-  it.each([404, 409])('shows dataset HTTP %s errors and keeps the empty session available for retry', async (status) => {
-    const detail = status === 404 ? 'Dataset files are missing.' : 'Only empty sessions are allowed.';
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/health')) return response({ status: 'ok' });
-      if (url.endsWith('/dataset')) return response({ detail }, status);
-      return response(init?.method === 'POST' ? session() : []);
-    }));
-    const user = userEvent.setup(); render(<App />);
-    await screen.findByText(/Your sessions will live here/);
-    await user.click(screen.getByRole('button', { name: 'Use 3 Excel files from data folder' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(detail);
-    expect(screen.getByRole('button', { name: 'Use 3 Excel files from data folder' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Process documents' })).toBeDisabled();
-    expect(screen.getByText('No documents added yet')).toBeInTheDocument();
-  });
-
-  it('uploads XLSX and displays sheet metadata, zero data rows and escaped warnings per document', async () => {
+  it('uploads one XLSX and displays all sheet metadata, zero data rows and escaped warnings', async () => {
     const warning = 'Schema only. <img src=x onerror=alert(1)>';
     const uploaded = session({ status: 'ready', documents: [{
       id: 'excel', name: 'schema.xlsx', extension: '.xlsx', size: 100, metadata: {
@@ -124,10 +76,6 @@ describe('Agent', () => {
           { name: '<b>Loans</b>', headers: ['<script>alert(1)</script>', 'Amount'], header_row: 3, data_rows: 0, columns: 2, is_reference: false },
           { name: 'README', headers: [], header_row: null, data_rows: 8, columns: 1, is_reference: true },
         ],
-      },
-    }, {
-      id: 'rows', name: 'rows.xlsx', extension: '.xlsx', size: 100, metadata: {
-        data_row_count: 12, sheets: [{ name: 'Records', headers: ['ID'], header_row: 1, data_rows: 12, columns: 1, is_reference: false }],
       },
     }] });
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
@@ -146,12 +94,42 @@ describe('Agent', () => {
     expect(schema.getByText('Sheet: README (reference)')).toBeInTheDocument();
     expect(schema.getByText('1 columns · 8 data rows · Header row: None')).toBeInTheDocument();
     expect(schema.getByText(warning)).toBeInTheDocument();
-    const rows = within(screen.getByText('rows.xlsx').closest('li')!);
-    expect(rows.getByText('Data rows (excluding README sheets): 12')).toBeInTheDocument();
-    expect(rows.getByText('1 columns · 12 data rows · Header row: 1')).toBeInTheDocument();
-    expect(rows.queryByText(warning)).not.toBeInTheDocument();
     expect(container.querySelector('script, img, .excel-sheet b')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Use 3 Excel files from data folder' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Process documents' })).toBeDisabled();
+  });
+
+  it('accepts the three MTB source workbooks and rejects a fourth workbook', async () => {
+    let active = session();
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/health')) return response({ status: 'ok' });
+      if (url === '/api/sessions' && init?.method !== 'POST') return response([]);
+      if (url.endsWith('/documents')) {
+        const form = init?.body as FormData;
+        const file = form.get('files') as File;
+        active = { ...active, status: 'ready', documents: [...active.documents, {
+          id: `doc-${active.documents.length + 1}`, name: file.name, extension: '.xlsx', size: file.size, metadata: {},
+        }] };
+        return response(active);
+      }
+      return response(active);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup(); render(<App />);
+    await screen.findByText(/Your sessions will live here/);
+    for (const name of ['MTB_Query_1.xlsx', 'MTB_Query_2.xlsx', 'MTB_Query_4.xlsx']) {
+      if (active.documents.length) await user.click(screen.getByRole('button', { name: 'Add documents' }));
+      await user.upload(screen.getByLabelText('Choose documents'), new File([name], name, {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }));
+      expect(await screen.findByText(name)).toBeInTheDocument();
+    }
+    expect(active.documents).toHaveLength(3);
+    await user.click(screen.getByRole('button', { name: 'Add documents' }));
+    await user.upload(screen.getByLabelText('Choose documents'), new File(['extra'], 'extra.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('An MTB review uses exactly three XLSX source files: Query 1, Query 2 and Query 4.');
+    expect(active.documents).toHaveLength(3);
   });
 
   it('creates a session and sends before upload while keeping processing disabled', async () => {

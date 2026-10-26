@@ -37,8 +37,9 @@ class IntakeAgent:
 
     def greeting(self) -> str:
         return ("Hello! I’m your document review assistant. First, upload the files you want me to review "
-                "(XLSX, PDF, DOCX, TXT, Markdown, CSV, or JSON), or use the three Excel files from the data folder. "
-                "Then check the rules and select Process documents. "
+            "(XLSX, PDF, DOCX, TXT, Markdown, CSV, or JSON). For MTB reviews, upload Query 1 (Loans, Accounts & Financials), "
+            "Query 2 (SBSS & Entity Relationships), and Query 4 (Credit Reports). These exports link through explicit Account ID columns; "
+            "the app does not join by row position or borrower name. Then validate the extracted attributes and select Process documents. "
                 "I’ll extract content and metadata, evaluate each file, and prepare a downloadable HTML decision report. "
                 "Your conversation stays saved in this workspace.")
 

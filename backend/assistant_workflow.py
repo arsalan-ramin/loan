@@ -211,6 +211,8 @@ def preflight(session: Session, root: Path) -> PreflightResult:
         loans, account_candidates = _discover_accounts(detached.documents, config)
         graph = build_entity_graph(detached.documents, config)
         issues.extend(graph.issues)
+        if not graph.table("Loan"):
+            issues.append("NO_EXPLICIT_LOAN_RECORDS: continue with a diagnostic-only report; no loan records will be invented")
         mapping_warnings.update(graph.mapping_warnings)
         unmapped_attributes.update(graph.unmapped_source_fields)
         mapped_fields.update(graph.mapped_fields)
@@ -282,5 +284,7 @@ def preflight(session: Session, root: Path) -> PreflightResult:
         account_index_version=ACCOUNT_INDEX_VERSION,
         loan_count=loans, account_count=len(account_candidates), account_candidates=account_candidates,
         issue_count=len(issues), priority_issues=summaries[:10], comparison=comparison,
-        suggested_next_step=("Review extracted attributes, select the intended borrower account/client, then confirm processing. Query files link only through matching explicit Account ID columns, never row position or name. This is not a credit decision."
+        suggested_next_step=("Mappings are incomplete. You can prepare a diagnostic-only review without selecting an account. Available evidence will be retained; unmapped inputs remain UNKNOWN and no borrower relationships or loan records will be invented."
+                     if query_file_set_valid and not account_candidates else
+                     "Review extracted attributes, select the intended borrower account/client, then confirm processing. Query files link only through matching explicit Account ID columns, never row position or name. This is not a credit decision."
                              if issues else "Select the borrower account/client to scope processing. This validation is not credit clearance."))

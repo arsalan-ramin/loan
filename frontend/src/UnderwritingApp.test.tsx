@@ -34,6 +34,32 @@ async function open(active: Session, handler?: (url: string, init?: RequestInit)
 }
 
 describe('V4 app integration', () => {
+  it.each([false, true])('shows Claude output after Process without opening the report (provider failure: %s)', async (failed) => {
+    const active = session({ status: 'ready', report: null, documents: [
+      { id: 'd', name: 'evidence.txt', extension: '.txt', size: 10, metadata: {} },
+    ] });
+    const completed = session({ documents: active.documents });
+    completed.report!.llm_analysis = failed ? null : 'Review the supplied evidence; missing mappings remain unknown.';
+    completed.report!.llm_error = failed ? 'Anthropic unavailable; deterministic report retained.' : null;
+    let started = false;
+    const { user, fetchMock } = await open(active, (url) => {
+      if (url.endsWith('/process')) {
+        started = true;
+        return response({ ...active, status: 'processing' }, 202);
+      }
+      if (started && url.endsWith('/v4-session')) return response(completed);
+      return undefined;
+    });
+    await user.click(screen.getByRole('button', { name: 'Process documents' }));
+    expect(screen.getByText(/Claude’s explanation will appear here/)).toBeInTheDocument();
+    const text = failed ? completed.report!.llm_error! : completed.report!.llm_analysis!;
+    expect(await screen.findByText(text, {}, { timeout: 4000 })).toBeVisible();
+    expect(screen.getByLabelText('Processing explanation result')).toHaveFocus();
+    expect(screen.queryByRole('heading', { name: 'Per-loan underwriting report' })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/process'))).toHaveLength(1);
+    expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/messages'))).toBe(false);
+  });
+
   it('recognizes underwriting-only reports, defaults missing mode to TEST and prefers v4 over the legacy adapter', async () => {
     const active = session({ mode: undefined });
     active.report!.policy_evaluation = {

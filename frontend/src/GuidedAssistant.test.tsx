@@ -137,6 +137,24 @@ describe('Guided assistant workflow', () => {
     expect(screen.getByText(/Extraction agent: running/)).toBeInTheDocument();
   });
 
+  it('allows diagnostic-only processing when no borrower mappings are available', async () => {
+    const active = session();
+    active.documents = [1, 2, 4].map((role) => ({ id: `d${role}`, name: `MTB_Query_${role}.xlsx`, size: 10, extension: '.xlsx', metadata: {} }));
+    active.preflight = { created_at: 'now', input_fingerprint: 'unmapped', recognized_mtb: true,
+      query_roles: [1, 2, 4], missing_query_roles: [], duplicate_query_roles: [], query_file_set_valid: true,
+      document_count: 3, attribute_count: 1, attributes: ['Unsupported_Field__c'],
+      account_count: 0, loan_count: 0, issue_count: 1, priority_issues: ['NO_EXPLICIT_LOAN_RECORDS'],
+      suggested_next_step: 'Continue diagnostic-only review', comparison: 'First', external_processing: false };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ results: [], total: 0 }), { status: 200 })));
+    render(<GuidedAssistant {...props(active)} />);
+    const prepare = screen.getByRole('button', { name: 'Prepare review' });
+    await waitFor(() => expect(prepare).toBeEnabled());
+    expect(screen.getByText(/No borrower accounts could be mapped/)).toBeInTheDocument();
+    await userEvent.click(prepare);
+    expect(screen.getByRole('group', { name: 'Confirm external processing' })).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining('/process'), expect.anything());
+  });
+
   it('renders persisted exact evidence as escaped text with report provenance', async () => {
     const inspection: LoanInspection = { report_id: 'r1', loan_id: 'L25', topic: 'evidence', recommendation_path: 'POLICY_REVIEW_REQUIRED', final_action: 'MANUAL_REVIEW', missing_inputs: [], conflicts: [], rules: [], total_rules: 40, total_evidence: 100,
       evidence: [{ id: 'ev1', workbook: 'q1.xlsx', sheet: 'Loan', row: 2, record_id: 'L25', field: 'requested_amount', value: '<script>9007199254740993123.00</script>' }] };

@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.main as main
-from backend.llm import AnthropicLLM
+from backend.llm import AnthropicLLM, LLMError
 from backend.agents import underwriting_policy_summary
 from backend.main import create_app
 from backend.models import Message, Report
@@ -137,6 +137,37 @@ def test_validation_preserves_existing_report_exactly(client):
     assert response.status_code == 200
     assert response.json()["report"] == report
     assert response.json()["status"] == "completed"
+
+
+@pytest.mark.parametrize("mode", ["TEST", "PRODUCTION"])
+def test_unmapped_workbooks_continue_to_diagnostic_report(client, monkeypatch, mode):
+    sid = client.post("/api/sessions", json={"mode": mode}).json()["id"]
+    payload = workbook([("Data", {"Unsupported_Field__c": "unmapped source evidence"})])
+    uploaded = client.post(f"/api/sessions/{sid}/documents", files=[
+        ("files", (f"MTB_Query_{role}.xlsx", payload)) for role in (1, 2, 4)
+    ])
+    assert uploaded.status_code == 200
+    validation = client.post(f"/api/sessions/{sid}/preflight").json()
+    assert validation["preflight"]["query_file_set_valid"] is True
+    assert validation["preflight"]["account_count"] == 0
+    assert "diagnostic-only" in validation["preflight"]["suggested_next_step"]
+    assert validation["selected_account_id"] is None
+    monkeypatch.setattr(client.app.state.executor, "submit", Mock())
+    # Processing is explicitly confirmed (unlike local preflight). Simulate
+    # unavailable provider commentary; deterministic diagnostics must survive.
+    monkeypatch.setattr(AnthropicLLM, "explain", Mock(side_effect=LLMError("Provider unavailable in test")))
+    started = client.post(f"/api/sessions/{sid}/assistant/process", json={
+        "confirmed": True, "expected_updated_at": validation["updated_at"],
+    })
+    assert started.status_code == 202
+    main.process_session(client.app.state.store, sid)
+    result = client.get(f"/api/sessions/{sid}").json()
+    assert result["status"] == "completed"
+    assert result["report"]["decision"] == "needs_review"
+    batch = result["report"]["underwriting"]
+    assert batch["loan_results"] == []
+    assert "NO_EXPLICIT_LOAN_RECORDS" in batch["data_quality_issues"]
+    assert "Unsupported_Field__c" in batch["unmapped_source_fields"]
 
 
 def test_validation_upload_first_missing_roles_and_parse_failure(client):

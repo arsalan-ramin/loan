@@ -133,7 +133,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     <div className="guided-actions">
       <button type="button" className="button secondary" disabled={disabled || !session.documents.length} onClick={() => void run('Validating files locally', async () => onSession(await api.preflight(session.id)))}>Validate files locally</button>
       <button type="button" className="button secondary" disabled={disabled} onClick={onUpload}>Add corrected source files</button>
-      <button type="button" className="button primary" disabled={disabled || !session.documents.length || requiresWorkbookValidation || accountLoading || (requiresAccountSelection && (!queryFileSetValid || ((accountTotal || preflight!.account_count) > 0 && !session.selected_account_id)))} onClick={() => setConfirmation(session.updated_at)}>Prepare review</button>
+      <button type="button" className="button primary" disabled={disabled || !session.documents.length || requiresWorkbookValidation || accountLoading || (requiresAccountSelection && (!queryFileSetValid || ((accountTotal || preflight?.account_count || 0) > 0 && !session.selected_account_id)))} onClick={() => setConfirmation(session.updated_at)}>Prepare review</button>
       {session.report && <>
         <button type="button" className="button secondary" disabled={disabled} onClick={onReport}>Inspect full report</button>
         <button type="button" className="button secondary" disabled={disabled} onClick={onDownload}>Save HTML report</button>
@@ -146,6 +146,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
       <p>{preflight.attribute_count ?? preflightAttributes.length} distinct column attributes extracted{preflightAttributes.length < (preflight.attribute_count ?? preflightAttributes.length) ? ` · showing first ${preflightAttributes.length}` : ''}.</p>
       {!!preflightAttributes.length && <details><summary>View extracted attributes</summary><ul>{preflightAttributes.map((attribute) => <li key={attribute}>{attribute}</li>)}</ul></details>}
       <p>{preflight.unmapped_attribute_count ?? unmappedAttributes.length} source columns currently unmapped; unmapped does not mean the source cell was discarded.</p>
+      {queryFileSetValid && <p>Missing field mappings do not block processing. Continue with available evidence; affected checks remain UNKNOWN. No relationships or values are inferred.</p>}
       {!!unmappedAttributes.length && <details><summary>View unmapped source columns</summary><ul>{unmappedAttributes.map((attribute) => <li key={attribute}>{attribute}</li>)}</ul></details>}
       {!!unavailableInputs.length && <details><summary>Required canonical inputs not present in these files</summary><ul>{unavailableInputs.map((input) => <li key={input}>{input}</li>)}</ul></details>}
       {!!mappingWarnings.length && <details><summary>Relationships not resolvable from supplied columns</summary><ul>{mappingWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></details>}
@@ -181,7 +182,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
           </ul>}
           {accountCandidates.length < accountTotal && <button type="button" className="button secondary" disabled={disabled || accountLoading} onClick={() => void loadAccounts(accountCandidates.length)}>Load more accounts</button>}
         </div>
-        {requiresAccountSelection && !session.selected_account_id && <small>{!queryFileSetValid ? 'Upload one workbook each for Query 1, Query 2, and Query 4 before preparing the review.' : accountLoading ? 'Loading borrower accounts…' : accountTotal || (preflight.account_count ?? 0) ? 'Select an account/client before preparing the review.' : 'No borrower accounts are linked by matching Account ID values. Check the Account columns across the three workbooks.'}</small>}
+        {requiresAccountSelection && !session.selected_account_id && <small>{!queryFileSetValid ? 'Upload one workbook each for Query 1, Query 2, and Query 4 before preparing the review.' : accountLoading ? 'Loading borrower accounts…' : accountTotal || (preflight.account_count ?? 0) ? 'Select an account/client before preparing the review.' : 'No borrower accounts could be mapped. You can still use Prepare review for a diagnostic-only report without account selection; no loan records or relationships will be invented.'}</small>}
       </>}
       <h5>Priority blockers · first {priorityIssues.length} of {preflight.issue_count ?? priorityIssues.length}</h5>
       <ul>{priorityIssues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>

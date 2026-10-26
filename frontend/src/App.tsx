@@ -40,6 +40,8 @@ export default function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
+  const explanationPanel = useRef<HTMLDivElement>(null);
+  const processingSession = useRef<string | null>(null);
   const currentId = useRef<string | null>(null);
   const locked = useRef(false);
   const mounted = useRef(true);
@@ -112,6 +114,18 @@ export default function App() {
     }
   }, [session?.messages.length]);
   useEffect(() => { setChatLoanId(undefined); setChatError(''); setLatestReply(''); }, [session?.id, session?.report?.id]);
+
+  useEffect(() => {
+    if (session?.status === 'processing') {
+      processingSession.current = session.id;
+    } else {
+      if (session?.status === 'completed' && session.report && processingSession.current === session.id) {
+        explanationPanel.current?.focus({ preventScroll: true });
+        explanationPanel.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+      }
+      processingSession.current = null;
+    }
+  }, [session?.id, session?.status, session?.report?.id]);
 
   async function action(label: string, work: () => Promise<void>) {
     if (locked.current) return;
@@ -248,6 +262,10 @@ export default function App() {
                 <div className="conversation-body" aria-live="polite" aria-label="Conversation">
                   {!session?.messages.length && <div className="welcome-message"><div className="assistant-avatar"><Sparkles size={19} /></div><div><div className="message-author">Agent<span>Your document copilot</span></div><div className="assistant-bubble"><h3>A fresh perspective starts here.</h3><p>Upload your documents and I’ll help you see what matters. Together, we can check the details, spot gaps, and turn your files into a clear, actionable report.</p><div className="upload-guidance"><Paperclip size={16} /><span>Start by adding your first document below.</span></div></div></div></div>}
                   {session?.messages.filter((item, index) => !(latestReply && index === session.messages.length - 1 && item.role === 'assistant' && item.content === latestReply)).map((item) => <div key={item.id} className={`chat-message ${item.role}`}><div className={item.role === 'assistant' ? 'assistant-avatar' : 'user-avatar'}>{item.role === 'assistant' ? <Sparkles size={17} /> : 'Y'}</div><div><div className="message-author">{item.role === 'assistant' ? 'Agent' : 'You'}<time>{new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><div className={item.role === 'assistant' ? 'assistant-bubble message-content' : 'user-bubble message-content'}>{item.content}</div></div></div>)}
+                  {(processing || session?.status === 'completed') && <div ref={explanationPanel} tabIndex={-1} aria-label="Processing explanation result" aria-live="polite">
+                    {processing ? <section className="claude-explanation" role="status"><h3>Claude explanation</h3><p>Review in progress. Claude’s explanation will appear here when processing completes.</p><p className="muted">Processing includes billable Anthropic access. No explanation is available yet.</p></section>
+                      : session?.report && !(isMtb && !session.report.underwriting && !session.report.policy_evaluation) && <ClaudeExplanation report={session.report} showUnavailable />}
+                  </div>}
                   {session && <GuidedAssistant session={session} disabled={disabled} run={action} onSession={syncSession}
                     onUpload={() => fileInput.current?.click()} onReport={() => setTab('report')}
                     onDownload={() => void action('Downloading report', () => downloadReport(session.id))}
@@ -352,13 +370,19 @@ function Report({ session, busy, onDownload, onExport, onBack }: { session: Sess
     <div className="findings-heading"><h3>The findings</h3><span className="muted">{report.findings.length} checks</span></div>
     {!report.findings.length && <div className="no-findings"><ShieldCheck size={25} /><p>No individual rule findings were returned for this review.</p></div>}
     <div className="findings-list">{report.findings.map((finding, index) => <article className={`finding ${finding.status}`} key={`${finding.rule_id}-${index}`}><div className="finding-header"><span className={`finding-status ${finding.status}`}>{finding.status === 'pass' ? <CircleCheck size={15} /> : <AlertCircle size={15} />}{finding.status === 'pass' ? 'Passed' : finding.status === 'review' ? 'Needs review' : 'Failed'}</span><span className="finding-document"><FileText size={13} />{finding.document}</span></div><h4>{finding.rule_name}</h4><p>{finding.detail}</p>{finding.evidence && <blockquote><span>EVIDENCE</span>{finding.evidence}</blockquote>}</article>)}</div>
-    {!missingPolicy && (report.llm_analysis || report.llm_error || report.llm_model) && <section className="claude-explanation" aria-labelledby="claude-explanation-heading">
+    {!missingPolicy && <ClaudeExplanation report={report} />}
+    <div className="report-footnote"><ShieldCheck size={15} />{documentChecksOnly ? 'Non-operational findings only. Authorized human review required.' : 'Automated findings are a starting point. Use your judgment for the final decision.'}</div>
+  </section>;
+}
+
+function ClaudeExplanation({ report, showUnavailable = false }: { report: NonNullable<Session['report']>; showUnavailable?: boolean }) {
+  if (!showUnavailable && !report.llm_analysis && !report.llm_error && !report.llm_model) return null;
+  return <section className="claude-explanation" aria-labelledby="claude-explanation-heading">
       <div className="heading-with-icon"><Sparkles size={19} /><h3 id="claude-explanation-heading">Claude explanation</h3></div>
       {report.llm_model && <p className="claude-model">Model: {report.llm_model}</p>}
       <p className="muted">{report.underwriting ? 'Aggregate AI-generated commentary only. Per-loan explanations and rule findings remain deterministic. No operational lending decision; authorized human review required.' : report.policy_evaluation ? 'AI-generated commentary only. Draft routes and document checks are not lending decisions. Authorized review required.' : 'AI-generated commentary only. The deterministic decision and rule findings above remain authoritative.'}</p>
       {report.llm_analysis && <p className="claude-analysis">{report.llm_analysis}</p>}
+      {!report.llm_analysis && !report.llm_error && <p>No Claude explanation was returned for this saved report. Deterministic findings remain available; no new provider request has been made.</p>}
       {report.llm_error && <div className="claude-warning" role="alert"><AlertCircle size={18} /><div><strong>Claude explanation warning</strong><p>{report.llm_error}</p><p>Your deterministic report and findings remain available for review and download.</p></div></div>}
-    </section>}
-    <div className="report-footnote"><ShieldCheck size={15} />{documentChecksOnly ? 'Non-operational findings only. Authorized human review required.' : 'Automated findings are a starting point. Use your judgment for the final decision.'}</div>
   </section>;
 }

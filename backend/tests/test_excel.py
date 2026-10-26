@@ -160,3 +160,17 @@ def test_excel_upload_and_invalid_workbook(tmp_path):
     bad.write_bytes(b"not a zip archive")
     with pytest.raises(ValueError, match="Invalid XLSX"):
         ExtractionAgent().extract(Document(name="bad.xlsx", extension=".xlsx", size=18), bad)
+
+
+@pytest.mark.parametrize("error,code", [
+    (ValueError("Duplicate header 'private-source-value' in sheet internal; field mapping is ambiguous."), "DUPLICATE_HEADERS"),
+    (ValueError("Invalid XLSX workbook. Re-save it as a standard .xlsx file."), "INVALID_XLSX"),
+    (ValueError("XLSX exceeds the 1,000,000 visited-cell limit."), "CELL_LIMIT"),
+    (ValueError("private-source-value C:/private/path"), "UNSUPPORTED_WORKBOOK_STRUCTURE"),
+    (OSError("private-source-value C:/private/path"), "FILE_UNAVAILABLE"),
+])
+def test_excel_failure_reasons_are_allowlisted(error, code):
+    reason = excel.safe_excel_error_reason(error)
+    assert reason.startswith(code + ":")
+    assert "private-source-value" not in reason
+    assert "C:/private/path" not in reason

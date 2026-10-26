@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from .agents import ExtractionAgent
+from .excel import safe_excel_error_reason
 from .datasets import (account_reference_headers, borrower_role_headers,
                        loan_reference_headers, mtb_query_ids,
                        soql_field_headers, soql_mapping_coverage,
@@ -173,9 +174,11 @@ def preflight(session: Session, root: Path) -> PreflightResult:
                 doc, root / "uploads" / session.id / doc.id,
                 include_text=doc.extension != ".xlsx",
             )
-        except (ValueError, OSError):
+        except (ValueError, OSError) as exc:
             # Avoid exposing server paths or parser implementation details.
-            issues.append(f"FILE_PARSE_FAILED:{doc.name}: replace with a valid supported file")
+            reason = (safe_excel_error_reason(exc) if doc.extension == ".xlsx"
+                      else "replace with a valid supported file")
+            issues.append(f"FILE_PARSE_FAILED:{doc.name}: {reason}")
             continue
         document_roles = mtb_query_ids(doc.name, doc.metadata)
         roles_by_document.append(document_roles)
@@ -284,7 +287,9 @@ def preflight(session: Session, root: Path) -> PreflightResult:
         account_index_version=ACCOUNT_INDEX_VERSION,
         loan_count=loans, account_count=len(account_candidates), account_candidates=account_candidates,
         issue_count=len(issues), priority_issues=summaries[:10], comparison=comparison,
-        suggested_next_step=("Mappings are incomplete. You can prepare a diagnostic-only review without selecting an account. Available evidence will be retained; unmapped inputs remain UNKNOWN and no borrower relationships or loan records will be invented."
+        suggested_next_step=("A workbook could not be read. Check its FILE_PARSE_FAILED reason above, correct or replace that upload, then validate again. This is a parsing failure, not a missing field mapping."
+                     if any(item.startswith("FILE_PARSE_FAILED") for item in issues) else
+                     "Mappings are incomplete. You can prepare a diagnostic-only review without selecting an account. Available evidence will be retained; unmapped inputs remain UNKNOWN and no borrower relationships or loan records will be invented."
                      if query_file_set_valid and not account_candidates else
                      "Review extracted attributes, select the intended borrower account/client, then confirm processing. Query files link only through matching explicit Account ID columns, never row position or name. This is not a credit decision."
                              if issues else "Select the borrower account/client to scope processing. This validation is not credit clearance."))

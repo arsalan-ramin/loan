@@ -11,6 +11,24 @@ MAX_TEXT = 50_000_000
 MAX_EXPANDED_BYTES = 250 * 1024 * 1024
 
 
+def safe_excel_error_reason(error: Exception) -> str:
+    """Allowlisted diagnostics only: never echo paths, cell values or XML."""
+    message = str(error)
+    if isinstance(error, OSError):
+        return "FILE_UNAVAILABLE: uploaded bytes could not be read; remove this upload and upload the workbook again"
+    if message.startswith("Duplicate header "):
+        return "DUPLICATE_HEADERS: repeated column names make field mapping ambiguous; export unique headers without changing their meaning"
+    if message.startswith("Invalid XLSX workbook."):
+        return "INVALID_XLSX: file is not a readable standard XLSX package; save a new unencrypted Excel Workbook (.xlsx) copy"
+    limits = {
+        "Expanded XLSX exceeds the 250 MB limit.": "EXPANDED_SIZE_LIMIT: expanded workbook exceeds 250 MB",
+        "XLSX files are limited to 30 sheets.": "SHEET_LIMIT: workbook exceeds 30 worksheets",
+        "XLSX exceeds the 1,000,000 visited-cell limit.": "CELL_LIMIT: workbook exceeds 1,000,000 visited cells; export only the used data range",
+        "XLSX extracted text exceeds the 50 million character limit.": "TEXT_LIMIT: extracted workbook text exceeds 50 million characters",
+    }
+    return limits.get(message, "UNSUPPORTED_WORKBOOK_STRUCTURE: workbook could not be parsed; attach the original failing file for diagnosis")
+
+
 def extract_excel(raw: bytes, *, include_text: bool = True) -> tuple[str, dict]:
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:

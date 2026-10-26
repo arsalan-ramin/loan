@@ -176,6 +176,8 @@ def test_validation_upload_first_missing_roles_and_parse_failure(client):
     client.post(f"/api/sessions/{sid}/documents", files=[("files", ("MTB_Query_1.xlsx", b"invalid xlsx"))])
     result = client.post(f"/api/sessions/{sid}/preflight").json()["preflight"]
     assert result["priority_issues"][0].startswith("FILE_PARSE_FAILED")
+    assert "INVALID_XLSX" in result["priority_issues"][0]
+    assert "parsing failure, not a missing field mapping" in result["suggested_next_step"]
     assert result["missing_query_roles"] == []
     assert result["loan_count"] == 0
     assert result["issue_count"] > 0

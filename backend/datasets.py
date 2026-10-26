@@ -83,7 +83,7 @@ SOQL_FIELD_SUFFIXES = {
     ("Loan", "product"): ("llcbiloanrllcbiproductc", "llcbiloanrllcbiproducttypec"),
     ("Loan", "sbss"): ("scocsbss7scorec",),
     ("EntityInvolvement", "loan_id"): ("llcbiloanc",),
-    ("EntityInvolvement", "account_id"): ("llcbibiaccountc",),
+    ("EntityInvolvement", "account_id"): ("llcbiaccountc",),
     ("EntityInvolvement", "role"): ("llcbiborrowertypec",),
     # Approval/creation timestamps are retained as raw source evidence; they
     # are not substituted for an explicit policy as-of or account-opened date.
@@ -275,7 +275,10 @@ def mtb_query_ids(name: str, metadata: dict[str, Any]) -> set[int]:
         headers = set(sheet.get("headers", []))
         # Query 1 includes bureau columns too. Prefer the more specific master signature.
         for query in (1, 2, 4):
-            if SIGNATURES[query] <= headers:
+            # The copied Excel headers use fully qualified Salesforce paths;
+            # they need not contain the older short, standalone field names.
+            # Recognition alone does not authorize joins or infer root IDs.
+            if SIGNATURES[query] <= headers or soql_root_table(query, headers) is not None:
                 queries.add(query)
                 break
     return queries

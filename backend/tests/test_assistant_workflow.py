@@ -88,10 +88,11 @@ def test_preflight_discovers_accounts_from_namespaced_soql_query1_relationships(
     assert account["loan_ids"] == ["LOAN-1"]
 
 
-def test_preflight_separates_unmapped_soql_headers_from_unavailable_inputs(client):
+@pytest.mark.parametrize("renamed", [False, True])
+def test_preflight_separates_unmapped_soql_headers_from_unavailable_inputs(client, renamed):
     sid = client.post("/api/sessions", json={}).json()["id"]
     junction = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
-    q1 = workbook([("MTB Query 1", {
+    q1 = workbook([("Sheet1" if renamed else "MTB Query 1", {
         "Id": "C1", junction + "LLC_BI__Loan__c": "L1",
         junction + "LLC_BI__Account__c": "A1",
         junction + "LLC_BI__Borrower_Type__c": "Borrower",
@@ -100,25 +101,27 @@ def test_preflight_separates_unmapped_soql_headers_from_unavailable_inputs(clien
         "SCOC__CharacteristicValue__c": "0",
         "Unsupported_Example_Field__c": "preserved",
     })])
-    q2 = workbook([("MTB Query 2", {
+    q2 = workbook([("Sheet1" if renamed else "MTB Query 2", {
         "Id": "I1", junction + "LLC_BI__Loan__c": "L1",
         junction + "LLC_BI__Account__c": "A1",
         junction + "LLC_BI__Borrower_Type__c": "Borrower",
         "SCOC__IndicatorKey__c": "thinFileIndicator",
         "SCOC__IndicatorValue__c": "N",
     })])
-    q4 = workbook([("MTB Query 4", {
+    q4 = workbook([("Sheet1" if renamed else "MTB Query 4", {
         "Id": "R1", "nFUSE__Account__c": "A1",
         "nFUSE__Credit_Score__c": "740", "nFUSE__Status__c": "Completed",
     })])
     client.post(f"/api/sessions/{sid}/documents", files=[
-        ("files", ("MTB_Query_1_SOQL_Only.xlsx", q1)),
-        ("files", ("MTB_Query_2_SOQL_Only.xlsx", q2)),
-        ("files", ("MTB_Query_4_SOQL_Only.xlsx", q4)),
+        ("files", ("financials.xlsx" if renamed else "MTB_Query_1_SOQL_Only.xlsx", q1)),
+        ("files", ("scores.xlsx" if renamed else "MTB_Query_2_SOQL_Only.xlsx", q2)),
+        ("files", ("bureau.xlsx" if renamed else "MTB_Query_4_SOQL_Only.xlsx", q4)),
     ])
 
     result = client.post(f"/api/sessions/{sid}/preflight").json()["preflight"]
 
+    assert result["query_roles"] == [1, 2, 4]
+    assert result["query_file_set_valid"] is True
     assert result["account_count"] == 1
     assert result["loan_count"] == 1
     assert "Unsupported_Example_Field__c" in result["unmapped_attributes"]

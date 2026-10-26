@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from backend.agents import DecisionAgent, RulesAgent
-from backend.datasets import (SIGNATURES, account_reference_headers,
+from backend.datasets import (SIGNATURES, SOQL_ROOT_SIGNATURES, account_reference_headers,
                               borrower_role_headers, loan_reference_headers,
                               mtb_query_ids)
 from backend.llm import AnthropicLLM, LLMError
@@ -40,6 +40,28 @@ def test_renamed_workbook_detected_from_sheet_or_headers(query):
 def test_query_one_bureau_columns_not_misclassified_as_query_four():
     metadata = {"sheets": [{"name": "Data", "headers": list(SIGNATURES[1] | SIGNATURES[4])}]}
     assert mtb_query_ids("renamed.xlsx", metadata) == {1}
+
+
+@pytest.mark.parametrize("query", [1, 2, 4])
+def test_copied_soql_headers_recognize_renamed_workbooks(query):
+    headers = set(SOQL_ROOT_SIGNATURES[query][1]) | {"Id"}
+    if query == 2:
+        headers.add("SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r."
+                    "SCOC__Entity_Involvement__r.LLC_BI__Loan__c")
+    metadata = {"sheets": [{"name": "Sheet1", "headers": sorted(headers)}]}
+    assert mtb_query_ids("export.xlsx", metadata) == {query}
+    metadata["sheets"][0]["is_reference"] = True
+    assert mtb_query_ids("export.xlsx", metadata) == set()
+
+
+def test_nested_query_one_headers_take_precedence_over_bureau_signature():
+    headers = SOQL_ROOT_SIGNATURES[1][1] | SIGNATURES[4]
+    assert mtb_query_ids("export.xlsx", {"sheets": [{"name": "Sheet1", "headers": list(headers)}]}) == {1}
+
+
+def test_partial_copied_headers_do_not_guess_query_role():
+    headers = ["Id", "SCOC__IndicatorKey__c", "SCOC__IndicatorValue__c"]
+    assert mtb_query_ids("export.xlsx", {"sheets": [{"name": "Sheet1", "headers": headers}]}) == set()
 
 
 @pytest.mark.parametrize("header", [

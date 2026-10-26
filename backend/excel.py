@@ -3,12 +3,13 @@
 import io
 import zipfile
 from datetime import date, datetime, time
+from pathlib import Path
 
 from openpyxl import load_workbook
 
-MAX_CELLS = 1_000_000
+MAX_CELLS = 5_000_000
 MAX_TEXT = 50_000_000
-MAX_EXPANDED_BYTES = 250 * 1024 * 1024
+MAX_EXPANDED_BYTES = 512 * 1024 * 1024
 
 
 def safe_excel_error_reason(error: Exception) -> str:
@@ -21,6 +22,8 @@ def safe_excel_error_reason(error: Exception) -> str:
     if message.startswith("Invalid XLSX workbook."):
         return "INVALID_XLSX: file is not a readable standard XLSX package; save a new unencrypted Excel Workbook (.xlsx) copy"
     limits = {
+        "Expanded XLSX exceeds the 512 MB limit.": "EXPANDED_SIZE_LIMIT: expanded workbook exceeds 512 MB",
+        "XLSX exceeds the 5,000,000 visited-cell limit.": "CELL_LIMIT: workbook exceeds 5,000,000 visited cells; export only the used data range",
         "Expanded XLSX exceeds the 250 MB limit.": "EXPANDED_SIZE_LIMIT: expanded workbook exceeds 250 MB",
         "XLSX files are limited to 30 sheets.": "SHEET_LIMIT: workbook exceeds 30 worksheets",
         "XLSX exceeds the 1,000,000 visited-cell limit.": "CELL_LIMIT: workbook exceeds 1,000,000 visited cells; export only the used data range",
@@ -29,13 +32,25 @@ def safe_excel_error_reason(error: Exception) -> str:
     return limits.get(message, "UNSUPPORTED_WORKBOOK_STRUCTURE: workbook could not be parsed; attach the original failing file for diagnosis")
 
 
-def extract_excel(raw: bytes, *, include_text: bool = True) -> tuple[str, dict]:
+def extract_excel(raw: bytes | Path, *, include_text: bool = True) -> tuple[str, dict]:
+    # Uploaded XLSX files are already on disk. Stream directly from that file
+    # instead of retaining another compressed-workbook byte copy in memory.
+    source = raw if isinstance(raw, Path) else io.BytesIO(raw)
     try:
-        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        with zipfile.ZipFile(source) as archive:
             expanded_size = sum(item.file_size for item in archive.infolist())
             if expanded_size > MAX_EXPANDED_BYTES:
-                raise ValueError("Expanded XLSX exceeds the 250 MB limit.")
-        book = load_workbook(io.BytesIO(raw), read_only=True, data_only=False, keep_links=False)
+                raise ValueError("Expanded XLSX exceeds the 512 MB limit.")
+        if not isinstance(source, Path):
+            source.seek(0)
+        # Upload storage names are opaque IDs without an .xlsx extension;
+        # pass an open handle so openpyxl validates bytes, not the pathname.
+        workbook_stream = source.open("rb") if isinstance(source, Path) else source
+        try:
+            book = load_workbook(workbook_stream, read_only=True, data_only=False, keep_links=False)
+        except Exception:
+            workbook_stream.close()
+            raise
     except (zipfile.BadZipFile, KeyError) as exc:
         raise ValueError("Invalid XLSX workbook. Re-save it as a standard .xlsx file.") from exc
     parts: list[str] = []
@@ -57,7 +72,7 @@ def extract_excel(raw: bytes, *, include_text: bool = True) -> tuple[str, dict]:
             for row in sheet.iter_rows():
                 cells_seen += len(row)
                 if cells_seen > MAX_CELLS:
-                    raise ValueError("XLSX exceeds the 1,000,000 visited-cell limit.")
+                    raise ValueError("XLSX exceeds the 5,000,000 visited-cell limit.")
                 nonempty = [cell for cell in row if cell.value is not None and str(cell.value).strip()]
                 if not nonempty:
                     continue
@@ -106,6 +121,8 @@ def extract_excel(raw: bytes, *, include_text: bool = True) -> tuple[str, dict]:
         total_rows = sum(sheet["data_rows"] for sheet in sheets if not sheet["is_reference"])
         metadata = {"sheet_names": book.sheetnames, "sheets": sheets, "data_row_count": total_rows,
                     "records": records,
+                    "visited_cell_count": cells_seen,
+                    "expanded_size_bytes": expanded_size,
                     "formula_count": formula_count,
                     "formula_policy": "Formulas are preserved as text and never evaluated."}
         if total_rows == 0:
@@ -113,3 +130,4 @@ def extract_excel(raw: bytes, *, include_text: bool = True) -> tuple[str, dict]:
         return "\n".join(parts), metadata
     finally:
         book.close()
+        workbook_stream.close()

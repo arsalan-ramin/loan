@@ -49,7 +49,35 @@ def test_excel_records_metadata_and_formula_text(tmp_path):
 
 
 def test_xlsx_expanded_size_limit_is_above_previous_50_mb():
-    assert excel.MAX_EXPANDED_BYTES == 250 * 1024 * 1024
+    assert excel.MAX_EXPANDED_BYTES == 512 * 1024 * 1024
+
+
+@pytest.mark.parametrize("include_text", [False, True])
+def test_large_query_one_exceeds_old_million_cell_limit(tmp_path, include_text, monkeypatch):
+    book = Workbook(write_only=True)
+    sheet = book.create_sheet("MTB Query 1")
+    sheet.append(["Id", *[f"Source_Field_{i}" for i in range(1, 64)], "Account_ID"])
+    for index in range(16_000):
+        sheet.append([f"SYNTHETIC-{index}", *([None] * 63), "SYNTHETIC-ACCOUNT"])
+    path = tmp_path / "large-query-one.xlsx"
+    book.save(path)
+    book.close()
+    # Prove the upload path never calls Path.read_bytes for an XLSX.
+    monkeypatch.setattr(type(path), "read_bytes", lambda self: pytest.fail("XLSX must stream from disk"))
+    doc = Document(name="MTB_Query_1.xlsx", extension=".xlsx", size=path.stat().st_size)
+    ExtractionAgent().extract(doc, path, include_text=include_text)
+    assert doc.metadata["visited_cell_count"] > 1_000_000
+    assert doc.metadata["data_row_count"] == 16_000
+    assert len(doc.metadata["records"]) == 16_000
+    assert doc.metadata["records"][-1]["values"]["Id"] == "SYNTHETIC-15999"
+    assert doc.metadata["records"][-1]["sources"]["Account_ID"].endswith("BM16001")
+    assert bool(doc.content) is include_text
+
+
+def test_excel_cell_budget_remains_enforced(monkeypatch):
+    monkeypatch.setattr(excel, "MAX_CELLS", 2)
+    with pytest.raises(ValueError, match="visited-cell limit"):
+        excel.extract_excel(workbook_bytes(), include_text=False)
 
 
 def test_excel_extraction_accepts_text_above_previous_limit(tmp_path):

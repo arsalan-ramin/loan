@@ -73,8 +73,17 @@ function LoanCard({ loan }: { loan: LoanRecommendation }) {
     : [];
   const diagnosticFeatures = Object.entries(loan.normalized_data).filter(([key]) =>
     key !== 'implementation_guide_diagnostics' && key !== 'out_of_scope_diagnostics' && key !== 'decision_flow');
+  const workflow = loan.normalized_data.business_banking_workflow as { eligibility?: string; recommendation_candidate?: string; stages?: Array<{ stage: string; status: string; summary: string }> } | undefined;
   return <article className="underwriting-loan" aria-label={`Loan ${loan.loan_id}`}>
     <h4>Loan {loan.loan_id}</h4>
+    {workflow && <section aria-label="Business banking existing-process workflow">
+      <h5>Business banking · existing-process decision flow</h5>
+      <p>Diagram eligibility: {workflow.eligibility} · Non-operational candidate: {workflow.recommendation_candidate}</p>
+      <p>USD 250K group-credit filter is separate from the conflicting draft Tier I diagnostic. No approved policy or final decision is inferred.</p>
+      {workflow.stages?.map((step) => <div className="policy-result" key={step.stage}>
+        <h6>{step.stage} · {step.status}</h6><p>{step.summary}</p>
+      </div>)}
+    </section>}
     <dl className="policy-source">
       <div><dt>Borrower account ID</dt><dd>{loan.borrower_account_id ?? 'Not provided'}</dd></div>
       <div><dt>Recommendation path (non-operational)</dt><dd>{loan.recommendation_path}</dd></div>

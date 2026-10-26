@@ -28,7 +28,7 @@
   "mapping_manifest": {
     "expanded_canonical_fields": {
       "Account": ["identity_verified", "income_verified", "business_formation_date", "financial_period_start", "financial_period_end", "current_assets", "current_liabilities", "prior_revenue", "current_revenue", "prior_expenses", "current_expenses", "prior_profit", "current_profit", "prior_period_end", "current_period_end"],
-      "Loan": ["application_complete", "application_expiry_date", "broker_referred", "acceptance_letter_present", "sba_memo_present", "cam_complete", "loan_purpose", "existing_product", "new_line", "collateral_retained", "reducing_secured_line", "fixed_rate_confirmed", "repayment_terms_confirmed"],
+      "Loan": ["group_credit_usd", "real_estate_secured", "application_complete", "application_expiry_date", "broker_referred", "acceptance_letter_present", "sba_memo_present", "cam_complete", "loan_purpose", "existing_product", "new_line", "collateral_retained", "reducing_secured_line", "fixed_rate_confirmed", "repayment_terms_confirmed"],
       "CreditReport": ["account_count", "thin_file_indicator", "judgment_count", "judgments_satisfied", "lien_count", "liens_satisfied", "collection_indicator", "tax_lien_indicator", "max_delinquency_public_records"],
       "LCRESPONSE": ["score_date"]
     },

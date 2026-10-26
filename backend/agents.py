@@ -46,14 +46,25 @@ class IntakeAgent:
 
 class ExtractionAgent:
     def extract(self, document: Document, path: Path, *, include_text: bool = True) -> None:
-        raw = path.read_bytes()
+        # Hash XLSX incrementally and pass its path to the read-only parser.
+        # Other formats retain their existing byte-based parsers.
+        if document.extension == ".xlsx":
+            digest = hashlib.sha256()
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            raw = None
+            size_bytes, sha256 = path.stat().st_size, digest.hexdigest()
+        else:
+            raw = path.read_bytes()
+            size_bytes, sha256 = len(raw), hashlib.sha256(raw).hexdigest()
         metadata: dict = {
             "filename": document.name, "extension": document.extension,
-            "size_bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": size_bytes, "sha256": sha256,
             "extracted_at": datetime.now(timezone.utc).isoformat(),
         }
         if document.extension == ".xlsx":
-            content, excel_metadata = extract_excel(raw, include_text=include_text)
+            content, excel_metadata = extract_excel(path, include_text=include_text)
             metadata.update(excel_metadata)
         elif document.extension == ".pdf":
             reader = PdfReader(io.BytesIO(raw))

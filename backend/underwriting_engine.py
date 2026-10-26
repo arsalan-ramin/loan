@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .datasets import soql_unavailable_inputs
+from .business_workflow import interpret_business_workflow
 from .entity_graph import EntityGraph, EntityNode, build_entity_graph, iso_date
 from .expanded_spec import evaluate_expanded_spec
 from .underwriting_models import (
@@ -827,6 +828,10 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
         "human_review_required": True,
     }
     features["implementation_guide_diagnostics"] = strategy
+    features["business_banking_workflow"] = interpret_business_workflow(
+        profile=profile, identity_valid=identity, graph_issues=graph.issues,
+        knockout_results=features["screenshot_knockout_results"], strategy=strategy,
+    )
     features["out_of_scope_diagnostics"] = strategy["out_of_scope"]
     expanded = evaluate_expanded_spec(graph=graph, loan=loan, profile=profile,
         features=features, refs=refs, strategy=strategy, source_available=expanded_spec_available)

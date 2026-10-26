@@ -239,6 +239,10 @@ def report_context(report: Report) -> dict:
                 "credit_assessment": loan.credit_assessment,
                 "authorization": loan.authorization,
                 "strategy_branch": loan.strategy_branch,
+                "business_banking_workflow": {
+                    key: loan.normalized_data.get("business_banking_workflow", {}).get(key)
+                    for key in ("eligibility", "recommendation_candidate", "missing_inputs", "policy_conflicts")
+                },
                 "strategy_diagnostics": {
                     "stages": loan.normalized_data.get("implementation_guide_diagnostics", {}).get("stages", {}),
                     "branch": loan.normalized_data.get("implementation_guide_diagnostics", {}).get("strategy_branch"),

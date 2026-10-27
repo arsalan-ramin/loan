@@ -40,6 +40,9 @@ NOT_EVALUATED as clearance. Never alter expanded simulated routes or reason code
 Return only the requested schema-valid JSON."""
 
 REVIEW_REASONING_GUIDANCE = """
+When simulation_reference is supplied, its review_date is the assumed current UTC
+review date only. It is not the credit report issue date or loan as-of date. Never
+use it to clear report selection, calculate age/discharge recency or assert freshness.
 EXPLANATION QUALITY AND DECISION ORDER:
 Write for an underwriter, not a software developer. Do not recite status codes,
 the rule catalog, or a paragraph of generic disclaimers. Use short labeled plain-text

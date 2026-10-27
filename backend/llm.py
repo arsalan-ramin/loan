@@ -202,6 +202,7 @@ def report_context(report: Report) -> dict:
                         "requested_amount_le_100k", "requested_amount_le_100m",
                     ) if key in loan.normalized_data
                 },
+                "simulation_reference": loan.normalized_data.get("simulation_reference"),
                 "normalized_amounts_usd": loan.model_dump(mode="json")["normalized_amounts_usd"],
                 "missing_inputs": [item[:500] for item in loan.missing_inputs[:40]],
                 "conflicts": [item[:500] for item in loan.conflicts[:40]],

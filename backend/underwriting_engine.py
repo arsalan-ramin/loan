@@ -34,7 +34,7 @@ import json
 import logging
 import re
 from calendar import monthrange
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -655,6 +655,14 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
                                 if key not in AMOUNT_KEYS and key not in {"currency", "amount_scale", "personal_fico"}}
     features.update(observations)
     features["observation_groups"] = observation_groups
+    if mode == "TEST":
+        features["simulation_reference"] = {
+            "review_date": datetime.now(timezone.utc).date().isoformat(),
+            "date_basis": "ASSUMED_CURRENT_UTC_REVIEW_DATE",
+            "source_report_date": report.fields.get("report_date") if report else None,
+            "overrides_source_report_date": False,
+            "note": "Simulation context only; not a report issue date, freshness assertion or report-selection override.",
+        }
     features.update({"guarantor_account_ids": guarantors, "as_of_date": as_of.isoformat() if as_of else None,
                      "selected_report_id": report.id if report else None,
                      "selected_response_id": response.id if response else None,

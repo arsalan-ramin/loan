@@ -131,12 +131,75 @@ def test_preflight_separates_unmapped_soql_headers_from_unavailable_inputs(clien
     assert "UNMAPPED_RELATION:Indicator:analysis_id" in result["mapping_warnings"]
 
 
-def test_validation_preserves_existing_report_exactly(client):
+@pytest.mark.parametrize("missing_preflight", [False, True])
+def test_validation_preserves_existing_report_exactly(client, missing_preflight):
     sid, report = completed(client)
+    if missing_preflight:
+        store = client.app.state.store
+        current = store.get(sid)
+        current.previous_preflight = current.preflight
+        current.preflight = None
+        store.save(current)
+        assert client.get(f"/api/sessions/{sid}/accounts").status_code == 409
     response = client.post(f"/api/sessions/{sid}/preflight")
     assert response.status_code == 200
     assert response.json()["report"] == report
     assert response.json()["status"] == "completed"
+    assert response.json()["preflight"] is not None
+    assert client.get(f"/api/sessions/{sid}/accounts").json()["total"] == 1
+
+
+def test_completed_review_can_switch_accounts_without_reuploading(client, monkeypatch):
+    sid = client.post("/api/sessions", json={}).json()["id"]
+    source = rows()
+    groups = [
+        (1, source[:2]),
+        (2, [("Account", {**source[0][1], "Id": "A2"}),
+             ("Loan", {**source[1][1], "Id": "L2", "borrower_account_id": "A2"}),
+             source[3]]),
+        (4, source[2:3]),
+    ]
+    uploaded = client.post(f"/api/sessions/{sid}/documents", files=[
+        ("files", (f"MTB_Query_{role}.xlsx", workbook(records))) for role, records in groups
+    ])
+    assert uploaded.status_code == 200
+    documents = uploaded.json()["documents"]
+    store = client.app.state.store
+    paths = [store.root / "uploads" / sid / doc["id"] for doc in documents]
+    original_bytes = [path.read_bytes() for path in paths]
+    validation = client.post(f"/api/sessions/{sid}/preflight").json()["preflight"]
+    assert validation["account_count"] == 2
+    submit = Mock()
+    monkeypatch.setattr(client.app.state.executor, "submit", submit)
+    explain = Mock(side_effect=LLMError("Mock provider unavailable"))
+    monkeypatch.setattr(AnthropicLLM, "explain", explain)
+    monkeypatch.setattr(main.MemoryAgent, "index", Mock(return_value="Mock memory index"))
+    monkeypatch.setattr(store, "remember", Mock())
+
+    for account_id, loan_id in (("A1", "L1"), ("A2", "L2")):
+        candidates = client.get(f"/api/sessions/{sid}/accounts")
+        assert candidates.status_code == 200
+        assert {item["account_id"] for item in candidates.json()["results"]} == {"A1", "A2"}
+        selected = client.put(f"/api/sessions/{sid}/account", json={"account_id": account_id})
+        assert selected.status_code == 200
+        current = selected.json()
+        assert current["report"] is None and current["status"] == "ready"
+        assert all(step["status"] == "pending" for step in current["steps"])
+        assert current["preflight"] == validation
+        assert submit.call_count == explain.call_count
+        started = client.post(f"/api/sessions/{sid}/process")
+        assert started.status_code == 202
+        assert started.json()["preflight"] == validation
+        main.process_session(store, sid)
+        result = client.get(f"/api/sessions/{sid}").json()
+        assert result["status"] == "completed", result["error"]
+        assert result["preflight"] == validation
+        loans = result["report"]["underwriting"]["loan_results"]
+        assert [(loan["borrower_account_id"], loan["loan_id"]) for loan in loans] == [(account_id, loan_id)]
+        assert [doc["id"] for doc in result["documents"]] == [doc["id"] for doc in documents]
+        assert [path.read_bytes() for path in paths] == original_bytes
+        assert {path.name for path in paths[0].parent.iterdir()} == {doc["id"] for doc in documents}
+    assert submit.call_count == explain.call_count == 2
 
 
 @pytest.mark.parametrize("mode", ["TEST", "PRODUCTION"])

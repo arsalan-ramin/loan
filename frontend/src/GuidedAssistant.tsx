@@ -53,6 +53,8 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   const aiRequestRunning = useRef(false);
   const aiResult = useRef<HTMLDivElement>(null);
   const loanSelector = useRef<HTMLSelectElement>(null);
+  const accountSelector = useRef<HTMLSelectElement>(null);
+  const [focusAccountSession, setFocusAccountSession] = useState<string | null>(null);
   const preparedReview = useRef<{ sessionId: string; reportId: string | null } | null>(null);
   const [accountCandidates, setAccountCandidates] = useState<AccountCandidate[]>([]);
   const [accountTotal, setAccountTotal] = useState(0);
@@ -141,6 +143,19 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     return () => { active = false; };
   }, [session.id, preflight?.input_fingerprint, preflight?.recognized_mtb, accountSearch]);
   useEffect(() => {
+    if (!focusAccountSession) return;
+    if (focusAccountSession !== session.id) {
+      setFocusAccountSession(null);
+      return;
+    }
+    if (disabled || accountLoading || !preflight?.recognized_mtb) return;
+    if (accountSelector.current && !accountSelector.current.disabled) {
+      accountSelector.current.focus();
+      accountSelector.current.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+      setFocusAccountSession(null);
+    }
+  }, [focusAccountSession, session.id, disabled, accountLoading, preflight, accountTotal]);
+  useEffect(() => {
     if (latestInspection) {
       resultPanel.current?.focus({ preventScroll: true });
       resultPanel.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
@@ -212,6 +227,18 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
       <li><strong>{loans.length ? '3. Select a loan' : '3. Prepare review'}</strong><span>{loans.length ? 'Selecting a loan starts its Claude review; saved reviews are reused.' : 'Review the charge disclosure, then confirm initial report processing.'}</span></li>
     </ol>
     <p>{session.status === 'processing' ? 'Progress updates automatically. No duplicate review will be started.' : 'File validation and evidence lookups are local. Selecting a loan for Claude review sends normalized context to Anthropic and may incur charges. Notes cannot change verified evidence or clear policy conflicts.'}</p>
+    {session.status === 'completed' && session.report && session.documents.some((document) => document.extension === '.xlsx') && <div className="guided-actions">
+      <button type="button" className="button primary" disabled={disabled || aiPending} onClick={() => {
+        setAccountSearch('');
+        if (preflight?.recognized_mtb) setFocusAccountSession(session.id);
+        else void run('Validating files locally to choose another account', async () => {
+          const validated = await api.preflight(session.id);
+          onSession(validated);
+          if (validated.preflight?.recognized_mtb) setFocusAccountSession(session.id);
+        });
+      }}>Choose another account</button>
+      <small>Reuse these uploaded files. No provider call or charge to choose an account. Your report stays until you select another account; preparing its review requires confirmation.</small>
+    </div>}
     {session.status === 'processing' && <ol>{session.steps.map((step) => <li key={step.agent}>{step.agent}: {step.status} — {step.detail}</li>)}</ol>}
     <details className="secondary-actions"><summary>File tools and report downloads</summary><div className="guided-actions">
       <button type="button" className="button secondary" disabled={disabled || !session.documents.length} onClick={() => void run('Validating files locally', async () => onSession(await api.preflight(session.id)))}>Validate files locally</button>
@@ -240,7 +267,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
         <label>Search accounts or clients<input aria-label="Search accounts or clients" value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} placeholder="Account name or ID" /></label>
         <div className="guided-actions">
           <button type="button" className="button secondary" disabled={disabled || accountLoading} onClick={() => void loadAccounts(0)}>Search accounts</button>
-          <label>Choose account/client<select aria-label="Choose account/client" value={session.selected_account_id ?? ''} disabled={disabled || accountLoading || !(accountTotal || (preflight.account_count ?? 0))}
+          <label>Choose account/client<select ref={accountSelector} aria-label="Choose account/client" value={session.selected_account_id ?? ''} disabled={disabled || accountLoading || !(accountTotal || (preflight.account_count ?? 0))}
             onChange={(event) => {
               const accountId = event.target.value;
               if (accountId) void run('Selecting borrower account', async () => onSession(await api.selectAccount(session.id, accountId)));

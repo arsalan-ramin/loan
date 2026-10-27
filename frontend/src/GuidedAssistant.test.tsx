@@ -81,6 +81,57 @@ describe('Guided assistant workflow', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])('chooses another account from a completed report with local-only recovery: %s', async (missingPreflight) => {
+    const active = session();
+    active.status = 'completed';
+    active.selected_account_id = 'A1';
+    active.documents = [1, 2, 4].map((role) => ({ id: `d${role}`, name: `MTB_Query_${role}.xlsx`, size: 10, extension: '.xlsx', metadata: {} }));
+    const preflight: NonNullable<Session['preflight']> = {
+      created_at: 'now', input_fingerprint: 'same-files', recognized_mtb: true, query_roles: [1, 2, 4],
+      missing_query_roles: [], duplicate_query_roles: [], query_file_set_valid: true,
+      document_count: 3, attribute_count: 0, attributes: [], loan_count: 2, account_count: 2,
+      issue_count: 0, priority_issues: [], suggested_next_step: 'Select account', comparison: 'Same files', external_processing: false,
+    };
+    active.preflight = missingPreflight ? null : preflight;
+    active.report = { id: 'r1', created_at: 'today', decision: 'needs_review', summary: 'Account A review', document_count: 3,
+      findings: [], underwriting: { mode: 'TEST', currency: 'USD', policy_version: 'v4', source_document: 'LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf',
+        source_available: false, data_quality_issues: [], loan_results: [{
+          loan_id: 'L1', borrower_account_id: 'A1', currency: 'USD', mode: 'TEST', policy_version: 'v4',
+          normalized_amounts_usd: {}, normalized_data: {}, rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [],
+          recommendation_path: 'SIMULATED_REVIEW', final_action: 'NO_OPERATIONAL_ACTION', human_review_required: true,
+          explanation: 'Saved account A result', llm_error: null,
+        }] } };
+    const recovered = { ...active, preflight, updated_at: 'revision2' };
+    const switched: Session = { ...recovered, selected_account_id: 'A2', status: 'ready', report: null, steps: [], updated_at: 'revision3' };
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/preflight')) return new Response(JSON.stringify(recovered));
+      if (url.includes('/accounts?')) return new Response(JSON.stringify({ results: [
+        { account_id: 'A1', name: 'Client A', loan_count: 1, loan_ids: ['L1'] },
+        { account_id: 'A2', name: 'Client B', loan_count: 1, loan_ids: ['L2'] },
+      ], total: 2, offset: 0, limit: 50, account_count: 2 }));
+      if (url.endsWith('/account')) return new Response(JSON.stringify(switched));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const p = props(active);
+    const view = render(<GuidedAssistant {...p} />);
+    p.onSession.mockImplementation((updated: Session) => view.rerender(<GuidedAssistant {...p} session={updated} />));
+    await userEvent.click(screen.getByRole('button', { name: 'Choose another account' }));
+    const selector = await screen.findByRole('combobox', { name: 'Choose account/client' });
+    await waitFor(() => expect(selector).toHaveFocus());
+    expect(screen.getByRole('combobox', { name: 'Loan to explore' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Prepare review' })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/preflight'))).toHaveLength(missingPreflight ? 1 : 0);
+    await userEvent.selectOptions(selector, 'A2');
+    await waitFor(() => expect(p.onSession).toHaveBeenLastCalledWith(switched));
+    expect(screen.queryByRole('combobox', { name: 'Loan to explore' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Prepare review' })).toBeEnabled();
+    expect(selector).toHaveValue('A2');
+    expect(p.onUpload).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.every(([url]) => url.endsWith('/preflight') || url.endsWith('/account') || url.includes('/accounts?'))).toBe(true);
+    expect(screen.queryByRole('group', { name: 'Confirm external processing' })).not.toBeInTheDocument();
+  });
+
   it('shows escaped priority blockers and comparison without claiming approval', () => {
     const active = session();
     active.preflight = { created_at: 'now', input_fingerprint: 'hash', recognized_mtb: true, query_roles: [1],

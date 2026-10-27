@@ -515,6 +515,21 @@ def test_missing_request_asof_never_uses_wall_clock():
     assert evaluate(source).normalized_data["selected_report_id"] is None
 
 
+def test_test_reference_date_is_separate_from_missing_source_dates():
+    from datetime import datetime, timezone
+    source = rows()
+    source[1][1].pop("as_of_date")
+    source[2][1].pop("report_date")
+    result = evaluate(source)
+    reference = result.normalized_data["simulation_reference"]
+    assert reference["review_date"] == datetime.now(timezone.utc).date().isoformat()
+    assert reference["source_report_date"] is None
+    assert reference["overrides_source_report_date"] is False
+    assert result.normalized_data["as_of_date"] is None
+    assert result.normalized_data["selected_report_id"] is None
+    assert "simulation_reference" not in evaluate(source, mode="PRODUCTION").normalized_data
+
+
 def test_unrelated_account_bureau_data_never_attached():
     source = rows()
     source[2][1]["account_id"] = "A2"

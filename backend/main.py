@@ -525,7 +525,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 IntakeAgent().check(session)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+            # Processing changes results, not the validated files/mode or account directory.
+            validated_preflight = session.preflight
             invalidate(session, clear_selection=False)
+            session.preflight = validated_preflight
             session.status = "processing"
             store.save(session)
             request.app.state.executor.submit(process_session, store, session.id)

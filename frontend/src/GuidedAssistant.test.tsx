@@ -282,6 +282,10 @@ describe('Guided assistant workflow', () => {
     const loan: LoanRecommendation = { loan_id: 'L1', borrower_account_id: 'A1', currency: 'USD', mode: 'TEST', policy_version: 'v4', normalized_amounts_usd: {}, normalized_data: {}, rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [], recommendation_path: 'SIMULATED_REVIEW', final_action: 'NO_OPERATIONAL_ACTION', human_review_required: true, explanation: 'Fixed', llm_error: null };
     active.status = 'completed';
     active.report = { id: 'report-auto', created_at: 'today', decision: 'needs_review', summary: 'Review', document_count: 3, findings: [], underwriting: { mode: 'TEST', currency: 'USD', policy_version: 'v4', source_document: 'LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf', source_available: false, data_quality_issues: [], loan_results: [loan, { ...loan, loan_id: 'L2' }] } };
+    active.report.underwriting!.loan_results[1].source_evidence = [
+      { id: 'score-q1', record_id: 'R1', field: 'nFUSE__Credit_Score__c', value: '780', workbook: 'Query1', sheet: 'Data', row: 2 },
+      { id: 'score-q4', record_id: 'R1', field: 'nFUSE__Credit_Score__c', value: '710', workbook: 'Query4', sheet: 'Data', row: 2 },
+    ];
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ detail: 'Provider unavailable' }), { status: 503 }));
     vi.stubGlobal('fetch', fetchMock);
     const p = props(active); const view = render(<GuidedAssistant {...p} />);
@@ -290,8 +294,13 @@ describe('Guided assistant workflow', () => {
     expect(selector).toHaveValue('');
     expect(selector).toHaveAttribute('aria-describedby', 'loan-review-disclosure');
     await userEvent.selectOptions(selector, 'L2');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('region', { name: 'Choose credit-report evidence' })).toHaveTextContent('780');
+    expect(screen.getByRole('region', { name: 'Choose credit-report evidence' })).toHaveTextContent('710');
+    await userEvent.click(screen.getByRole('radio', { name: /Score 710/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Continue review with selected record' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(fetchMock).toHaveBeenLastCalledWith('/api/sessions/s1/assistant/loan-review', expect.objectContaining({ body: JSON.stringify({ loan_id: 'L2', report_id: 'report-auto', expected_updated_at: 'revision1', confirmed: true }) }));
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/sessions/s1/assistant/loan-review', expect.objectContaining({ body: JSON.stringify({ loan_id: 'L2', report_id: 'report-auto', expected_updated_at: 'revision1', confirmed: true, preferred_evidence_ref: 'score-q4' }) }));
     await screen.findByRole('button', { name: 'Retry Claude review' });
     view.rerender(<GuidedAssistant {...p} session={{ ...active, updated_at: 'revision2' }} />);
     await userEvent.selectOptions(selector, '');

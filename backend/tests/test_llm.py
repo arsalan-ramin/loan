@@ -121,7 +121,11 @@ def test_underwriting_prompt_requests_compact_aggregate_not_exhaustive_output(mo
     assert "not a\ndiagram decision rule" in captured[0]
     assert "Do not say that the diagram's low-SBSS" in captured[0]
     assert "zero bankruptcies needs" in captured[0]
-    assert "does NOT prove that all knockout checks were completed" in captured[0]
+    assert "Never say 'no exact value supplied'" in captured[0]
+    assert "State the actual stage blocker once in plain language instead" in captured[0]
+    features = report_context(report)["underwriting"]["loan_results"][0]["normalized_features"]
+    assert str(features["sbss"]) == "200"
+    assert features["fico"] is not None
 
 
 def test_chat_bounds_and_session_scoped_recall(provider):

@@ -82,6 +82,7 @@ SOQL_FIELD_SUFFIXES = {
     ("Loan", "requested_amount"): ("llcbiloanrllcbiamountc",),
     ("Loan", "product"): ("llcbiloanrllcbiproductc", "llcbiloanrllcbiproducttypec"),
     ("Loan", "sbss"): ("scocsbss7scorec",),
+    ("Loan", "behavioral_program"): ("llcbiloanrloanextensionrbehavioralunderwritingprogramc",),
     ("EntityInvolvement", "loan_id"): ("llcbiloanc",),
     ("EntityInvolvement", "account_id"): ("llcbiaccountc",),
     ("EntityInvolvement", "role"): ("llcbiborrowertypec",),
@@ -233,6 +234,8 @@ def soql_mapping_coverage(query_role: int | None, headers, manifest: dict,
         if canonical:
             for key in manifest.get("expanded_canonical_fields", {}).get(table, []):
                 field_map.setdefault(key, [key])
+        if table == "Loan":
+            field_map.setdefault("behavioral_program", ["behavioral_program", "Behavioral_Underwriting_Program__c"])
         for key, aliases in manifest.get("verified_usd_source_fields", {}).get(table, {}).items():
             field_map.setdefault(key, [key]).extend(aliases)
         for field, aliases in field_map.items():

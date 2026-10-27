@@ -77,6 +77,7 @@ function LoanCard({ loan }: { loan: LoanRecommendation }) {
   const workflow = loan.normalized_data.business_banking_workflow as { eligibility?: string; recommendation_candidate?: string; stages?: Array<{ stage: string; status: string; summary: string }> } | undefined;
   return <article className="underwriting-loan" aria-label={`Loan ${loan.loan_id}`}>
     <h4>Loan {loan.loan_id}</h4>
+    {loan.normalized_data.behavioral_program != null && <p>Source underwriting program: {displayDiagnostic(loan.normalized_data.behavioral_program)}. Retained as program evidence; not automatically substituted for the requested application path.</p>}
     {workflow && <section aria-label="Business banking existing-process workflow">
       <h5>Business banking · existing-process decision flow</h5>
       <p>Diagram eligibility: {workflow.eligibility} · Non-operational candidate: {workflow.recommendation_candidate}</p>

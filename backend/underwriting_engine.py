@@ -78,6 +78,14 @@ def personal_fico(report: EntityNode | None, role: str = "borrower") -> Any:
 def load_underwriting_config(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Return an isolated configuration, with no writes or shared mutable defaults."""
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    # Exact additional source spellings, shared by ingestion, coverage and
+    # account scoping. Relationship aliases still require scalar source IDs.
+    manifest = config["mapping_manifest"]
+    for table, additions in manifest.get("explicit_flattened_aliases", {}).items():
+        target = manifest["flattened"][table]
+        target["id"] = list(dict.fromkeys([*target["id"], *additions.get("id", [])]))
+        for field, names in additions.get("fields", {}).items():
+            target["fields"][field] = list(dict.fromkeys([*target["fields"].get(field, []), *names]))
 
     def merge(target: dict, source: Mapping) -> None:
         for key, value in source.items():

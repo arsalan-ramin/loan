@@ -224,6 +224,10 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                 raw_fields = mapping["fields"]
                 field_map = ({key: [key] for key in raw_fields} if isinstance(raw_fields, list)
                              else {key: list(aliases) for key, aliases in raw_fields.items()})
+                if table == "Loan":
+                    # Preserve the exported program under its own semantics;
+                    # it is not an approved requested-path substitution.
+                    field_map.setdefault("behavioral_program", ["behavioral_program", "Behavioral_Underwriting_Program__c"])
                 if not canonical and root_table:
                     mapping["id"].extend(soql_field_headers(table, "id", headers, root_table=root_table))
                     for key, aliases in field_map.items():

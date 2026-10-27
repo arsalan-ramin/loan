@@ -144,3 +144,13 @@ def test_per_check_reconciliation_must_be_complete_and_grounded(setup_review, mo
     assert response.status_code == 502
     assert client.app.state.store.get(session.id).loan_ai_reviews == []
     assert client.app.state.store.get(session.id).report == session.report
+
+
+def test_unknown_preferred_record_rejected_before_provider(setup_review, monkeypatch):
+    client, session = setup_review
+    call = Mock(side_effect=AssertionError("No provider call"))
+    monkeypatch.setattr(AnthropicLLM, "complete", call)
+    response = client.post(f"/api/sessions/{session.id}/assistant/loan-review",
+                           json={**payload(session), "preferred_evidence_ref": "other-loan-record"})
+    assert response.status_code == 422
+    call.assert_not_called()

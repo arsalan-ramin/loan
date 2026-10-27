@@ -4,10 +4,19 @@ import json
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
+from fastapi import HTTPException
 
 from .assistant_workflow import require_loan
-from .llm import AnthropicLLM, LLMError, REVIEW_REASONING_GUIDANCE, V4_SYSTEM, report_context
+from .llm import AnthropicLLM, LLMError, report_context
 from .models import LoanAIReview, LoanReviewOutput, Session
+from .prompts import (
+    REVIEW_REASONING_GUIDANCE,
+    SELECTED_LOAN_CONTEXT_NOTE as CONTEXT_NOTE,
+    SELECTED_LOAN_EVIDENCE_PREFERENCE_INSTRUCTIONS,
+    SELECTED_LOAN_RECONCILIATION_NOTE,
+    SELECTED_LOAN_REVIEW_INSTRUCTIONS,
+    V4_SYSTEM,
+)
 
 
 class LoanReviewRequest(BaseModel):
@@ -16,16 +25,10 @@ class LoanReviewRequest(BaseModel):
     report_id: str = Field(min_length=1, max_length=128)
     expected_updated_at: str
     confirmed: Literal[True]
+    preferred_evidence_ref: str | None = Field(default=None, min_length=1, max_length=128)
 
 
-CONTEXT_NOTE = (
-    "Selected loan only: up to 40 prioritized rules and 40 evidence IDs, normalized amounts and features. "
-    "No raw workbook rows, source values, chat history or retrieved memory. "
-    "Unmapped attributes cannot be assessed; no final lending decision or new evidence validation."
-)
-
-
-def review_selected_loan(session: Session, loan_id: str) -> LoanAIReview:
+def review_selected_loan(session: Session, loan_id: str, preferred_evidence_ref: str | None = None) -> LoanAIReview:
     loan = require_loan(session, loan_id)
     assert session.report is not None and session.report.underwriting is not None
     # Narrow BEFORE truncating so a loan after the first 20 is not lost.
@@ -34,6 +37,14 @@ def review_selected_loan(session: Session, loan_id: str) -> LoanAIReview:
     context = report_context(report)
     context["review_scope"] = CONTEXT_NOTE
     trace = context["underwriting"]
+    if preferred_evidence_ref is not None:
+        if preferred_evidence_ref not in trace["evidence_refs"]:
+            raise HTTPException(422, "Choose evidence from this loan's bounded review trace. No provider request was made.")
+        context["user_review_preference"] = {
+            "evidence_ref": preferred_evidence_ref,
+            "status": "UNVERIFIED_USER_PREFERENCE_NOT_SOURCE_CORRECTION",
+            "instruction": SELECTED_LOAN_EVIDENCE_PREFERENCE_INSTRUCTIONS,
+        }
     unresolved = {rule["rule_id"]: rule for rule in trace["loan_results"][0]["rule_results"]
                   if rule["status"] == "UNKNOWN"}
     context["checks_to_reconcile"] = [
@@ -45,31 +56,11 @@ def review_selected_loan(session: Session, loan_id: str) -> LoanAIReview:
     context["reconciliation_scope"] = {
         "included_unknown_checks": len(unresolved),
         "total_unknown_checks": sum(rule.status == "UNKNOWN" for rule in loan.rule_results),
-        "note": "Mapped evidence references indicate observations, not selected/validated input values. Never infer a field is absent solely from UNKNOWN status.",
+        "note": SELECTED_LOAN_RECONCILIATION_NOTE,
     }
     llm = AnthropicLLM()
     text = llm.complete(
-        V4_SYSTEM + REVIEW_REASONING_GUIDANCE + "\nPrepare a loan-focused review for the underwriter using only this selected loan. "
-        "Explain evidence sufficiency, the supplied decision-flow logic, supported factors, contradictions, "
-        "and the most important next evidence to obtain. Do not merely repeat all rule statuses. "
-        "Do not promote an unselected report observation to a verified input. "
-        "Treat missing, conflicting, unavailable and unmapped inputs distinctly. "
-        "Do not resolve the USD100K/USD100M, USD250K/group-credit-vs-USD250M/Tier-I, or 6/12-month source conflicts. "
-        "Preserve all engine paths, actions and explanations. Never issue an approval, denial or adverse action. "
-        "Return ONLY compact JSON: recommended_route=MANUAL_REVIEW, decision_recommendation=null, confidence=null, "
-        "requires_human_approval=true, loan_ids=[the selected loan ID], positive_factors, risk_factors, "
-        "missing_information (each a string array of at most 3 short items), explanation (at most 200 words), "
-        "triggered_rules (at most 3 supplied FAIL rule IDs), evidence_refs (at most 3 supplied evidence IDs). "
-        "Also return check_reconciliation, exactly one entry per checks_to_reconcile rule: "
-        "rule_id, evidence_state (MAPPED_EVIDENCE_BLOCKED, MISSING_OR_UNVERIFIED_INPUT, CONFLICTING_EVIDENCE, "
-        "or POLICY_UNRESOLVED), rationale (at most 40 words), next_step (at most 25 words), "
-        "evidence_refs (at most 3 evidence IDs supplied for that particular rule). "
-        "Explain why each rule remains unresolved rather than copying the rule ID as missing data. "
-        "Use MAPPED_EVIDENCE_BLOCKED only with a supplied rule evidence reference; "
-        "a zero bankruptcy count needs no discharge date only AFTER valid account-scoped report selection. "
-        "A count is not a discharge date; a freeze flag is not an OFAC disposition; EBIT is not EBITDA. "
-        "These entries explain blockers, never clear rules or change their statuses. "
-        "Put citations only in their arrays; no extra fields. Use an empty citation array if none are supplied.",
+        V4_SYSTEM + REVIEW_REASONING_GUIDANCE + SELECTED_LOAN_REVIEW_INSTRUCTIONS,
         json.dumps(context, ensure_ascii=False),
     )
     try:

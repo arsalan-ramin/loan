@@ -46,6 +46,8 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   const [aiConfirmation, setAIConfirmation] = useState<string | null>(null);
   const [aiError, setAIError] = useState('');
   const [aiPending, setAIPending] = useState(false);
+  const [recordChoiceLoan, setRecordChoiceLoan] = useState<string | null>(null);
+  const [preferredRecordRef, setPreferredRecordRef] = useState('');
   const attemptedReviews = useRef(new Set<string>());
   const aiRequestRunning = useRef(false);
   const aiResult = useRef<HTMLDivElement>(null);
@@ -60,6 +62,8 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   const loans = session.report?.underwriting?.loan_results ?? [];
   const reviewScope = `${session.id}:${session.report?.id ?? ''}`;
   const selectedLoan = loans.find((loan) => loan.loan_id === selected) ?? loans[0];
+  const recordCandidates = selectedLoan?.source_evidence.filter((item) =>
+    item.record_id && /(?:Credit_Score__c|personal_fico|^fico$)/i.test(item.field)) ?? [];
   const latestAIReview = [...(session.loan_ai_reviews ?? [])].reverse().find((item) =>
     item.report_id === session.report?.id && item.loan_id === selectedLoan?.loan_id);
   const preflight = session.preflight;
@@ -81,7 +85,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   const latestInspection = [...session.messages].reverse().find((item) =>
     item.inspection?.loan_id === selectedLoan?.loan_id && item.inspection?.report_id === session.report?.id);
   useEffect(() => { setConfirmation(null); }, [session.id, session.updated_at]);
-  useEffect(() => { attemptedReviews.current.clear(); }, [session.id, session.report?.id]);
+  useEffect(() => { attemptedReviews.current.clear(); setRecordChoiceLoan(null); setPreferredRecordRef(''); }, [session.id, session.report?.id]);
   useEffect(() => { setAIConfirmation(null); setAIError(''); }, [session.id, session.updated_at, selectedLoan?.loan_id]);
   useEffect(() => {
     if (latestAIReview) {
@@ -107,7 +111,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     preparedReview.current = null;
     if (loans.length === 1) {
       setSelected(loans[0].loan_id);
-      requestLoanReview(loans[0].loan_id, session.updated_at);
+      beginLoanReview(loans[0].loan_id);
     } else if (loans.length > 1) {
       loanSelector.current?.focus();
       loanSelector.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
@@ -169,7 +173,17 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     }
   }
 
-  function requestLoanReview(loanId: string, revision: string) {
+  function beginLoanReview(loanId: string) {
+    const loan = loans.find((item) => item.loan_id === loanId);
+    const candidates = loan?.source_evidence.filter((item) => item.record_id && /(?:Credit_Score__c|personal_fico|^fico$)/i.test(item.field)) ?? [];
+    if (new Set(candidates.map((item) => `${item.record_id}:${String(item.value)}`)).size > 1) {
+      setPreferredRecordRef(''); setRecordChoiceLoan(loanId);
+    } else {
+      setRecordChoiceLoan(null); requestLoanReview(loanId, session.updated_at);
+    }
+  }
+
+  function requestLoanReview(loanId: string, revision: string, preferredRef?: string) {
     if (!session.report || disabled || aiRequestRunning.current) return;
     const reportId = session.report.id;
     const key = `${session.id}:${reportId}:${loanId}`;
@@ -178,7 +192,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     attemptedReviews.current.add(key);
     setAIPending(true); setAIConfirmation(null); setAIError('');
     void run('Reviewing selected loan with Claude', async () => {
-      try { onSession(await api.loanReview(session.id, loanId, reportId, revision)); }
+      try { onSession(await api.loanReview(session.id, loanId, reportId, revision, preferredRef)); }
       catch (cause) { setAIError(cause instanceof Error ? cause.message : 'Claude review failed. Your underwriting report is unchanged.'); }
       finally { aiRequestRunning.current = false; setAIPending(false); }
     });
@@ -273,8 +287,23 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
       <label>Loan to explore<select ref={loanSelector} aria-label="Loan to explore" value={selected || ''} disabled={disabled || aiPending} onChange={(event) => {
         const loanId = event.target.value;
         setSelected(loanId);
-        if (loanId) requestLoanReview(loanId, session.updated_at);
+        setRecordChoiceLoan(null);
+        if (loanId) beginLoanReview(loanId);
       }} aria-describedby="loan-review-disclosure"><option value="">Select a loan to review with Claude</option>{loans.map((loan) => <option key={loan.loan_id} value={loan.loan_id}>{loan.loan_id}</option>)}</select></label>
+      {recordChoiceLoan === selectedLoan?.loan_id && <section className="guided-confirmation" aria-label="Choose credit-report evidence">
+        <h4>Found {recordCandidates.length} credit-score observations for this loan</h4>
+        <p>These may be separate reports or conflicting copies of the same report. Which source record should Claude focus on?</p>
+        {recordCandidates.map((item) => <label key={item.id}>
+          <input type="radio" name="credit-record-choice" value={item.id} checked={preferredRecordRef === item.id} onChange={() => setPreferredRecordRef(item.id)} disabled={disabled || aiPending} />
+          Report {item.record_id} · Score {String(item.value ?? 'Unknown')} · {item.workbook} · {item.sheet}, row {item.row}
+          <small>{item.field}</small>
+        </label>)}
+        <p>Your selection is an unverified review preference—not a correction to source data. Conflicting scores and required report-selection checks remain unresolved. Continuing sends normalized context and the chosen evidence ID to Anthropic and may incur charges.</p>
+        <button type="button" className="button primary" disabled={disabled || aiPending || !preferredRecordRef} onClick={() => {
+          setRecordChoiceLoan(null);
+          requestLoanReview(recordChoiceLoan, session.updated_at, preferredRecordRef);
+        }}>Continue review with selected record</button>
+      </section>}
       <details className="secondary-actions"><summary>Evidence tools and follow-up questions</summary><div className="guided-actions">
         <button type="button" className="button secondary" disabled={disabled} onClick={() => inspect('blockers')}>Why is this loan held?</button>
         <button type="button" className="button secondary" disabled={disabled} onClick={() => inspect('rules')}>Inspect loan rules</button>

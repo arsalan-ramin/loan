@@ -39,9 +39,10 @@ export const api = {
   ),
   inspectLoan: (id: string, loanId: string, topic: 'blockers' | 'rules' | 'evidence') => request<Session>(`/sessions/${segment(id)}/assistant/inspect`, json('POST', { loan_id: loanId, topic })),
   guidedProcess: (id: string, revision: string) => request<Session>(`/sessions/${segment(id)}/assistant/process`, json('POST', { confirmed: true, expected_updated_at: revision })),
-  loanReview: (id: string, loanId: string, reportId: string, revision: string) => request<Session>(
+  loanReview: (id: string, loanId: string, reportId: string, revision: string, preferredEvidenceRef?: string) => request<Session>(
     `/sessions/${segment(id)}/assistant/loan-review`, json('POST', {
       loan_id: loanId, report_id: reportId, expected_updated_at: revision, confirmed: true,
+      ...(preferredEvidenceRef ? { preferred_evidence_ref: preferredEvidenceRef } : {}),
     }),
   ),
   reviewNote: (id: string, reportId: string, loanId: string, text: string, kind: 'note' | 'acknowledgment') => request<Session>(`/sessions/${segment(id)}/assistant/notes`, json('POST', { report_id: reportId, loan_id: loanId, text, kind })),

@@ -26,6 +26,14 @@
     "criteria": null
   },
   "mapping_manifest": {
+    "explicit_flattened_aliases": {
+      "Loan": {"fields": {"product": ["LLC_BI__Product__c"], "requested_amount": ["LLC_BI__Amount__c"], "sbss": ["SCOC__SBSS7Score__c"]}},
+      "Account": {"fields": {"name": ["Name"], "ownership_years": ["Years_Under_Current_Ownership"], "naics": ["NAICS_Code_Formula__c"]}},
+      "CreditReport": {"id": ["credit_report_id"], "fields": {"status": ["nFUSE__Status__c"]}},
+      "LCRESPONSE": {"id": ["lcresponse_id"], "fields": {"sbss": ["SCOC__SBSS7Score__c"]}},
+      "LCREntity": {"id": ["lcrentity_id", "SCOC__LCREntity__r"], "fields": {"response_id": ["lcresponse_id"]}},
+      "DataSourceAnalysis": {"fields": {"entity_id": ["lcrentity_id", "SCOC__LCREntity__r"]}}
+    },
     "expanded_canonical_fields": {
       "Account": ["identity_verified", "income_verified", "business_formation_date", "financial_period_start", "financial_period_end", "current_assets", "current_liabilities", "prior_revenue", "current_revenue", "prior_expenses", "current_expenses", "prior_profit", "current_profit", "prior_period_end", "current_period_end"],
       "Loan": ["group_credit_usd", "real_estate_secured", "application_complete", "application_expiry_date", "broker_referred", "acceptance_letter_present", "sba_memo_present", "cam_complete", "loan_purpose", "existing_product", "new_line", "collateral_retained", "reducing_secured_line", "fixed_rate_confirmed", "repayment_terms_confirmed"],

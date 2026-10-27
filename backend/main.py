@@ -465,7 +465,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if len(snapshot.loan_ai_reviews) >= 20:
                 raise HTTPException(409, "This session has reached its 20 selected-loan AI review limit.")
         try:
-            review = review_selected_loan(snapshot, body.loan_id)
+            review = review_selected_loan(snapshot, body.loan_id, body.preferred_evidence_ref)
         except LLMError as exc:
             raise HTTPException(exc.status_code, str(exc)) from None
         with store.lock:

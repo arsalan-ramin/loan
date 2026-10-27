@@ -684,6 +684,34 @@ def test_selected_account_does_not_merge_different_zero_padded_ids():
     assert any("leading zeros" in warning for warning in graph.mapping_warnings)
 
 
+def test_proposal_ready_exact_aliases_link_without_inferred_policy_fields():
+    base = {"loan_id": "L1", "account_id": "A1", "LLC_BI__Account__c": "A1",
+            "entity_involvement_id": "J1", "lcresponse_id": "S1", "lcrentity_id": "E1",
+            "analysis_id": "D1", "LLC_BI__Borrower_Type__c": "Borrower"}
+    q1 = document([("Data", {**base, "Id": "L1", "credit_report_id": "R1",
+        "LLC_BI__Product__c": "Express BALOC", "LLC_BI__Amount__c": 1200000,
+        "Years_Under_Current_Ownership": 4, "NAICS_Code_Formula__c": "5415",
+        "SCOC__SBSS7Score__c": 215, "SBSS7_earn_before_int_and_taxes__c": 100,
+        "Expected_Simulated_Path": "APPROVE", "Report_As_Of": "2026-10-01"})], "MTB_Query_1_Proposal_Ready.xlsx", "q1")
+    q2 = document([("Data", {**base, "Id": "I1", "SCOC__IndicatorKey__c": "thinFileIndicator",
+        "SCOC__IndicatorValue__c": "N", "SCOC__SBSS7Score__c": 215})], "MTB_Query_2_Proposal_Ready.xlsx", "q2")
+    q4 = document([("Data", {"credit_report_id": "R1", "nFUSE__Account__c": "A1",
+        "nFUSE__Status__c": "ACTIVE", "nFUSE__Report_Category__c": "BUSINESS",
+        "nFUSE__Credit_Score__c": 790})], "MTB_Query_4_Proposal_Ready.xlsx", "q4")
+    for doc in (q1, q2, q4):
+        doc.metadata["sheets"] = [{"name": "Data", "headers": list(doc.metadata["records"][0]["values"])}]
+    graph = build_entity_graph([q1, q2, q4], load_underwriting_config(), selected_account_id="A1")
+    assert not graph.issues
+    assert graph.table("Loan")["L1"].fields["requested_amount"] == Decimal("1200000")
+    assert graph.table("Loan")["L1"].fields["product"] == "express_baloc"
+    assert graph.table("Account")["A1"].fields["ownership_years"] == 4
+    assert set(graph.table("LCREntity")) == {"E1"}
+    assert graph.table("LCREntity")["E1"].fields["response_id"] == "S1"
+    assert "ebitda" not in graph.table("Account")["A1"].fields
+    assert "as_of_date" not in graph.table("Loan")["L1"].fields
+    assert "personal_fico" not in graph.table("CreditReport")["R1"].fields
+
+
 def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields():
     junction = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
     loan = junction + "LLC_BI__Loan__c"
@@ -698,6 +726,7 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
         q1 + "LLC_BI__Product__c": "Express BALOC",
         q1 + "LLC_BI__Product_Type__c": "Express BALOC",
         q1 + "LLC_BI__Amount__c": "50000.00",
+        q1 + "Loan_Extension__r.Behavioral_Underwriting_Program__c": "quick_app",
         q1_account + "Birth_Date__c": "1980-01-01",
         q1_account + "Number_of_Years_as_Current_Owner__c": "3",
         q1_account + "NAICS_Code_Formula__c": "541100",
@@ -740,6 +769,9 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
     }
     assert graph.table("Loan")["L1"].fields["product"] == "express_baloc"
     assert graph.table("Loan")["L1"].fields["sbss"] == "175"
+    assert graph.table("Loan")["L1"].fields["behavioral_program"] == "quick_app"
+    assert "requested_path" not in graph.table("Loan")["L1"].fields
+    assert any(e.field.endswith("Behavioral_Underwriting_Program__c") for e in graph.table("Loan")["L1"].evidence)
     assert graph.table("Account")["A1"].fields["dob"] == "1980-01-01"
     assert graph.table("Account")["A1"].fields["ownership_years"] == "3"
     assert graph.table("Account")["A1"].fields["naics"] == "541100"
@@ -757,6 +789,8 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
     assert recommendation.normalized_data["product"] == "express_baloc"
     assert recommendation.normalized_data["ownership_years"] == "3"
     assert recommendation.normalized_data["sbss"] == "175"
+    assert recommendation.normalized_data["behavioral_program"] == "quick_app"
+    assert recommendation.normalized_data["business_banking_workflow"]["requested_path_mapping_status"] == "PROGRAM_PRESENT_SEMANTIC_MAPPING_UNCONFIRMED"
     # Query 4 has no report date, so a mapped generic score is not promoted to
     # selected personal FICO or used for a decision branch.
     assert recommendation.normalized_data["fico"] is None

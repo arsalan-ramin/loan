@@ -21,6 +21,7 @@
 .guided-assistant label { font-size: 13px; }
 .guided-assistant .auto-review-toggle { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid #ccd9bf; border-radius: 8px; background: #fffefa; }
 .guided-assistant .auto-review-toggle input { width: 22px; min-height: 22px; height: 22px; margin: 0; flex-shrink: 0; accent-color: #345c43; }
+.guided-assistant input[type="radio"] { display: inline-block; width: 20px; min-height: 20px; height: 20px; margin: 0 10px 0 0; vertical-align: middle; }
 .guided-actions { gap: 12px; align-items: center; }
 .guided-actions > label { flex: 1 1 260px; }
 .guided-assistant details > summary, .underwriting-report details > summary {

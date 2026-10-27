@@ -55,6 +55,11 @@ def interpret_business_workflow(*, profile, identity_valid, graph_issues,
         "group_credit_limit_usd": "250000",
         "real_estate_secured": re_secured,
         "missing_inputs": missing,
+        "program_observation_available": profile.get("behavioral_program") not in (None, ""),
+        "requested_path_mapping_status": (
+            "EXPLICIT_PATH" if path_known else
+            "PROGRAM_PRESENT_SEMANTIC_MAPPING_UNCONFIRMED" if profile.get("behavioral_program") not in (None, "") else
+            "NO_SUPPORTED_PATH_INPUT"),
         "recommendation_candidate": candidate,
         "observed_knockout_matches": failed,
         "interpretation": ("Ordered flow stopped before credit-strategy assessment. Any matched standalone risk diagnostics are observations only, not a workflow decline recommendation."

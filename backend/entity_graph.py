@@ -11,6 +11,7 @@ Batch-wide issues intentionally hold *all* loans until the input is reconciled.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from copy import copy
 from dataclasses import dataclass, field
@@ -28,8 +29,27 @@ MONEY_FIELDS = set(AMOUNT_NAMES) - {"effective_tgc"}
 SIGNED_MONEY_FIELDS = {"ebitda", "business_net_income", "net_worth", "prior_profit", "current_profit"}
 ID_FIELDS = {
     "loan_id", "account_id", "borrower_account_id", "response_id", "entity_id",
-    "analysis_id", "entity_involvement_id",
+    "analysis_id", "entity_involvement_id", "report_id",
 }
+
+
+def observation_text(value: Any) -> str | None:
+    """Lossless text for supplied strings; scalar display, never money parsing.
+
+    Excel numeric cells have already lost their original lexical formatting.
+    Preserve the supplied finite scalar's spelling, not a guessed code/date.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, Decimal) and value.is_finite():
+        return str(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return str(value)
+    return None
 
 
 def scalar_id(value: Any) -> str | None:
@@ -257,6 +277,7 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                 fields: dict[str, Any] = {}
                 refs: dict[str, list[str]] = {}
                 evidence: list[SourceEvidence] = []
+                invalid_parents: set[str] = set()
 
                 def select(target: str, aliases: list[str]) -> Any:
                     observed = []
@@ -269,12 +290,16 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                         # Decimal values preserve lexical precision; floats/objects are omitted.
                         if isinstance(raw, Decimal):
                             safe = str(raw)
+                        if table in {"Indicator", "Characteristic"} and target == "value":
+                            safe = observation_text(raw)
                         evidence.append(SourceEvidence(id=evidence_id, workbook=document.name, sheet=sheet,
                                                        row=row, field=alias, value=safe))
                         refs.setdefault(target, []).append(evidence_id)
                         observed.append(raw)
                     if len({str(item) for item in observed}) > 1:
                         graph.issue(f"CONFLICTING_ALIASES:{table}:{target}", refs[target])
+                        if table == "DataSourceAnalysis" and target in {"entity_id", "response_id", "report_id"}:
+                            invalid_parents.add(target)
                         return None
                     return observed[0] if observed else None
 
@@ -286,6 +311,8 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                     if key in ID_FIELDS:
                         if scalar_id(value) is None:
                             graph.issue(f"INVALID_RELATION_ID:{table}:{key}", refs.get(key, []))
+                            if table == "DataSourceAnalysis":
+                                invalid_parents.add(key)
                             continue
                         value = scalar_id(value)
                     if not canonical and table == "Loan" and key == "product":
@@ -314,7 +341,7 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                     storage_id = scalar_id(node_id)
                 # On flattened rows, a generic currency alone must not fabricate
                 # missing report/response entities. Entity-specific data must exist.
-                specific = set(fields) - {"currency", "amount_scale", "account_id", "loan_id", "response_id", "entity_id", "analysis_id"}
+                specific = set(fields) - {"currency", "amount_scale", "account_id", "loan_id", "response_id", "entity_id", "analysis_id", "report_id"}
                 if storage_id is None:
                     if not canonical and table == "EntityInvolvement" and root_table != "EntityInvolvement":
                         continue
@@ -324,6 +351,9 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                 for item in evidence:
                     item.record_id = scalar_id(node_id)
                 node = graph.add(table, storage_id, fields, evidence, refs)
+                for key in invalid_parents:
+                    node.fields[key] = None
+                    node.poisoned.add(key)
                 row_nodes[table] = node
                 row_evidence.extend(e.id for e in evidence)
                 if table in {"Indicator", "Characteristic"} and not fields.get("analysis_id"):
@@ -527,7 +557,7 @@ def _validate_relationships(graph: EntityGraph, manifest: dict[str, Any]) -> Non
         "LCRESPONSE": {"loan_id": "Loan"},
         "LCREntity": {"account_id": "Account", "response_id": "LCRESPONSE",
                    "entity_involvement_id": "EntityInvolvement"},
-        "DataSourceAnalysis": {"entity_id": "LCREntity"},
+        "DataSourceAnalysis": {"entity_id": "LCREntity", "response_id": "LCRESPONSE", "report_id": "CreditReport"},
         "Indicator": {"analysis_id": "DataSourceAnalysis"},
         "Characteristic": {"analysis_id": "DataSourceAnalysis"},
     }
@@ -543,6 +573,7 @@ def _validate_relationships(graph: EntityGraph, manifest: dict[str, Any]) -> Non
                         graph.mapping_warnings.append(warning)
                     continue
                 optional = (table == "Loan" or (table == "LCRESPONSE" and key == "loan_id")
+                            or (table == "DataSourceAnalysis" and key in {"response_id", "report_id"})
                             or (table == "LCREntity" and key == "entity_involvement_id"))
                 if value is None and optional:
                     continue
@@ -583,6 +614,17 @@ def _validate_relationships(graph: EntityGraph, manifest: dict[str, Any]) -> Non
         )
         if mismatch:
             graph.issue("MISMATCHED_LCR_ENTITY_INVOLVEMENT", (e.id for e in entity.evidence))
+    for analysis in graph.table("DataSourceAnalysis").values():
+        entity = graph.table("LCREntity").get(analysis.fields.get("entity_id", ""))
+        if entity is None:
+            continue
+        response_id = analysis.fields.get("response_id")
+        report_id = analysis.fields.get("report_id")
+        report = graph.table("CreditReport").get(report_id or "")
+        if ((response_id is not None and response_id != entity.fields.get("response_id"))
+                or (report is not None and report.fields.get("account_id") != entity.fields.get("account_id"))):
+            analysis.poisoned.add("parent_scope")
+            graph.issue("MISMATCHED_ANALYSIS_PARENT", (e.id for e in analysis.evidence))
     for table in ("Indicator", "Characteristic"):
         seen: dict[tuple[str, str], EntityNode] = {}
         for node in graph.table(table).values():

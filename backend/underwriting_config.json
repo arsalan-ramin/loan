@@ -57,9 +57,9 @@
       "LoanExtension": {"id": ["Id", "extension_id", "LOAN_EXTENSION_ID"], "fields": {"loan_id": ["loan_id", "LOAN_ID"], "ownership_years": ["ownership_years"], "ebitda": ["ebitda"], "currency": ["currency"], "amount_scale": ["amount_scale"]}},
       "LCRESPONSE": {"id": ["Id", "response_id", "LCResponse_ID"], "fields": {"loan_id": ["loan_id", "Loan_ID"], "sbss": ["sbss"], "score_date": ["score_date"]}},
       "LCREntity": {"id": ["Id", "entity_id", "lcrentity_id", "LCREntity_ID"], "fields": {"account_id": ["account_id", "Account_ID"], "response_id": ["response_id", "LCResponse_ID"], "entity_involvement_id": ["entity_involvement_id", "Entity_Involvement_ID"]}},
-      "DataSourceAnalysis": {"id": ["Id", "analysis_id", "LCRDataSourceAnalysis_ID", "LCDataSourceAnalysis_ID"], "fields": {"entity_id": ["entity_id", "LCREntity_ID"]}},
+      "DataSourceAnalysis": {"id": ["Id", "analysis_id", "LCRDataSourceAnalysis_ID", "LCDataSourceAnalysis_ID"], "fields": {"entity_id": ["entity_id", "LCREntity_ID"], "response_id": ["response_id", "LCResponse_ID"], "report_id": ["report_id", "CREDIT_REPORT_ID"]}},
       "Indicator": {"id": ["Id", "indicator_id", "LCIndicator_ID"], "fields": {"analysis_id": ["analysis_id", "LCDataSourceAnalysis_ID", "LCRDataSourceAnalysis_ID"], "key": ["key", "Indicator_Key"], "value": ["value", "Indicator_Value"]}},
-      "Characteristic": {"id": ["Id", "characteristic_id", "LCCharacteristic_ID"], "fields": {"analysis_id": ["analysis_id", "LCDataSourceAnalysis_ID", "LCRDataSourceAnalysis_ID"], "key": ["key", "Characteristic_Key"], "value": ["value", "Characteristic_Value"]}},
+      "Characteristic": {"id": ["Id", "characteristic_id", "LCCharacteristic_ID"], "fields": {"analysis_id": ["analysis_id", "LCDataSourceAnalysis_ID", "LCRDataSourceAnalysis_ID"], "key": ["key", "Characteristic_Key", "SCOC__CharacteristicKey__c"], "value": ["value", "Characteristic_Value", "SCOC__CharacteristicValue__c"]}},
       "Regulation": {"id": ["Id", "regulation_id"], "fields": ["loan_id"]}
     },
     "canonical_table_aliases": {

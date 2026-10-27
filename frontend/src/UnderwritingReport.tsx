@@ -73,7 +73,10 @@ function LoanCard({ loan }: { loan: LoanRecommendation }) {
     ? loan.normalized_data.decision_flow as Array<{ stage: string; status: string; summary: string; evidence_refs: string[] }>
     : [];
   const diagnosticFeatures = Object.entries(loan.normalized_data).filter(([key]) =>
-    key !== 'implementation_guide_diagnostics' && key !== 'out_of_scope_diagnostics' && key !== 'decision_flow');
+    key !== 'implementation_guide_diagnostics' && key !== 'out_of_scope_diagnostics' && key !== 'decision_flow'
+    && key !== 'observation_groups');
+  const observationGroups = Array.isArray(loan.normalized_data.observation_groups)
+    ? loan.normalized_data.observation_groups as Array<Record<string, unknown>> : [];
   const workflow = loan.normalized_data.business_banking_workflow as { eligibility?: string; recommendation_candidate?: string; stages?: Array<{ stage: string; status: string; summary: string }> } | undefined;
   return <article className="underwriting-loan" aria-label={`Loan ${loan.loan_id}`}>
     <h4>Loan {loan.loan_id}</h4>
@@ -129,6 +132,20 @@ function LoanCard({ loan }: { loan: LoanRecommendation }) {
       <h5>Out-of-scope checks — not evaluated</h5>
       <pre>{displayDiagnostic(loan.normalized_data.out_of_scope_diagnostics)}</pre>
     </details>
+    {!!observationGroups.length && <details className="underwriting-trace">
+      <summary>Explicitly grouped source observations · {observationGroups.length} groups</summary>
+      <p>Lexical source data only, not credit decisions. Report links are explicit; unknown links are never inferred from an account. Historical groups do not replace selected credit evidence.</p>
+      {observationGroups.map((group, index) => <section key={index} aria-label={`Observation group ${index + 1}`}>
+        <h5>Observation group {index + 1}</h5>
+        <dl className="policy-source">
+          {['account_id', 'response_id', 'report_id', 'entity_id', 'analysis_id'].map((key) => <div key={key}>
+            <dt>{key}</dt><dd>{displayDiagnostic(group[key])}</dd>
+          </div>)}
+        </dl>
+        <pre>{JSON.stringify({ indicators: group.indicators, characteristics: group.characteristics,
+          evidence_refs: group.evidence_refs }, null, 2)}</pre>
+      </section>)}
+    </details>}
     <h5>Exact USD amounts</h5>
     <dl className="policy-source underwriting-amounts">
       {Object.entries(loan.normalized_amounts_usd).map(([field, value]) => <div key={field}>

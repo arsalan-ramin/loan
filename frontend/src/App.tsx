@@ -7,6 +7,7 @@ import PolicyRulesDialog from './PolicyRulesDialog';
 import PolicyRouteCard from './PolicyRouteCard';
 import UnderwritingReport from './UnderwritingReport';
 import GuidedAssistant from './GuidedAssistant';
+import ClaudeExplanationText from './ClaudeExplanationText';
 import './usability.css';
 import type { Document, Mode, Session } from './types';
 
@@ -388,7 +389,7 @@ function ClaudeExplanation({ report, showUnavailable = false }: { report: NonNul
       <div className="heading-with-icon"><Sparkles size={19} /><h3 id="claude-explanation-heading">Claude explanation</h3></div>
       {report.llm_model && <p className="claude-model">Model: {report.llm_model}</p>}
       <p className="muted">{report.underwriting ? 'Aggregate AI-generated commentary only. Per-loan explanations and rule findings remain deterministic. No operational lending decision; authorized human review required.' : report.policy_evaluation ? 'AI-generated commentary only. Draft routes and document checks are not lending decisions. Authorized review required.' : 'AI-generated commentary only. The deterministic decision and rule findings above remain authoritative.'}</p>
-      {report.llm_analysis && <p className="claude-analysis">{report.llm_analysis}</p>}
+      {report.llm_analysis && <ClaudeExplanationText text={report.llm_analysis} />}
       {!report.llm_analysis && !report.llm_error && <p>No Claude explanation was returned for this saved report. Deterministic findings remain available; no new provider request has been made.</p>}
       {report.llm_error && <div className="claude-warning" role="alert"><AlertCircle size={18} /><div><strong>Claude explanation warning</strong><p>{report.llm_error}</p><p>Your deterministic report and findings remain available for review and download.</p></div></div>}
   </section>;

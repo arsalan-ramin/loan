@@ -34,6 +34,29 @@ function batch(overrides: Partial<UnderwritingBatch> = {}): UnderwritingBatch {
 }
 
 describe('V4 underwriting report', () => {
+  it('renders optional parent-isolated observations locally without coercion or HTML interpretation', async () => {
+    const { container } = render(<UnderwritingReport batch={batch({ loan_results: [loan({ normalized_data: {
+      observation_groups: [
+        { account_id: 'A1', response_id: 'S1', report_id: 'R1', entity_id: 'E1', analysis_id: 'D1',
+          indicators: [], characteristics: [{ key: '<script>unknown</script>', value: '0005', evidence_refs: ['cell-1'] }], evidence_refs: ['cell-1'] },
+        { account_id: 'A1', response_id: 'S2', report_id: null, entity_id: 'E2', analysis_id: 'D2',
+          indicators: [], characteristics: [{ key: '<script>unknown</script>', value: 'N' }, { key: 'date?', value: '19960700' },
+            { key: 'flag?', value: 'false' }], evidence_refs: [] },
+      ],
+    } })] })} />);
+    await userEvent.click(screen.getByText('Explicitly grouped source observations · 2 groups'));
+    const first = within(screen.getByRole('region', { name: 'Observation group 1' }));
+    const second = within(screen.getByRole('region', { name: 'Observation group 2' }));
+    expect(first.getByText('S1')).toBeVisible();
+    expect(first.getByText('R1')).toBeVisible();
+    expect(first.getByText(/"value": "0005"/)).toBeVisible();
+    expect(second.getByText('S2')).toBeVisible();
+    expect(second.getByText('Unknown')).toBeVisible();
+    for (const value of ['N', '19960700', 'false']) expect(second.getByText(new RegExp(`"value": "${value}"`))).toBeVisible();
+    expect(second.queryByText('R1')).toBeNull();
+    expect(container.querySelector('script')).toBeNull();
+  });
+
   it('shows expanded candidates, rule metadata and all reason statuses without issuing adverse action', async () => {
     const spec: ExpandedSpecEvaluation = {
       version: 'expanded-draft-1', source_document: 'expanded.pdf', source_sha256: 'synthetic-source-hash',

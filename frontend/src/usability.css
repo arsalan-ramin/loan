@@ -1,4 +1,9 @@
 /* One content scrollbar: conversation, evidence and uploads grow with the page. */
+.claude-bullets { display: grid; gap: 16px; white-space: normal; }
+.claude-bullets h5 { margin: 0 0 8px; font-size: 14px; color: #345c43; }
+.claude-bullets ul { margin: 0; padding-left: 22px; }
+.claude-bullets li { padding-left: 4px; margin-bottom: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.8; }
+.claude-bullets li::marker { color: #527a43; }
 .conversation-body,
 .document-list,
 .chat-feedback section {

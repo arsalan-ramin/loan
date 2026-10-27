@@ -283,7 +283,12 @@ describe('Agent', () => {
     if (fields.llm_analysis || fields.llm_error) {
       const card = screen.getByRole('region', { name: 'Claude explanation' });
       expect(within(card).getByText(/deterministic decision and rule findings above remain authoritative/)).toBeInTheDocument();
-      if (fields.llm_analysis) expect(within(card).getByText(fields.llm_analysis, { exact: true, normalizer: (text) => text })).toBeInTheDocument();
+      if (fields.llm_analysis) {
+        for (const bullet of fields.llm_analysis.split('\n')) {
+          expect(within(card).getByText(bullet, { exact: true })).toBeInTheDocument();
+        }
+        expect(within(card).getAllByRole('listitem').length).toBeGreaterThan(0);
+      }
       if (fields.llm_model) expect(within(card).getByText(`Model: ${fields.llm_model}`)).toBeInTheDocument();
       if (fields.llm_error) {
         expect(within(card).getByRole('alert')).toHaveTextContent(fields.llm_error);

@@ -3,6 +3,7 @@ import { api } from './api';
 import type { AccountCandidate, LoanInspection, Session } from './types';
 import './GuidedAssistant.css';
 import InputReadiness from './InputReadiness';
+import ClaudeExplanationText from './ClaudeExplanationText';
 
 interface Props {
   session: Session;
@@ -332,7 +333,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
           <h4>Claude rationale · {latestAIReview.loan_id}</h4>
           <p>MANUAL_REVIEW · No approval or denial · Authorized human review required.</p>
           <p className="claude-model">Model: {latestAIReview.model}</p>
-          <p className="claude-analysis">{latestAIReview.analysis.explanation}</p>
+          <ClaudeExplanationText text={latestAIReview.analysis.explanation} />
           {!!latestAIReview.analysis.check_reconciliation?.length && <section aria-label="Claude reconciliation of unresolved checks">
             <h5>Claude’s assessment of unresolved checks</h5>
             <p>These are AI explanations of the supplied evidence—not rule clearances or new verified facts.</p>

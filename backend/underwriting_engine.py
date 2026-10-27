@@ -41,7 +41,7 @@ from typing import Any, Iterable, Mapping
 
 from .datasets import soql_unavailable_inputs
 from .business_workflow import interpret_business_workflow
-from .entity_graph import EntityGraph, EntityNode, build_entity_graph, iso_date
+from .entity_graph import EntityGraph, EntityNode, build_entity_graph, iso_date, observation_text
 from .expanded_spec import evaluate_expanded_spec
 from .underwriting_models import (
     AMOUNT_NAMES, IMPLEMENTATION_GUIDE_DOCUMENT, IMPLEMENTATION_GUIDE_SHA256,
@@ -578,37 +578,75 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
         missing.append(response_error)
     include(response, True)
 
-    # Indicators/characteristics are retained one-to-many and scoped through
-    # analysis -> entity -> selected response AND this loan's borrower account.
+    # Build explicit parent groups BEFORE any optional interpretation. Historical
+    # responses remain reviewable but cannot supply selected-response features.
+    # Account membership alone never establishes an observation/report link.
     observations: dict[str, list[dict[str, Any]]] = {"indicators": [], "characteristics": []}
-    if response and borrower:
-        for entity in graph.related("LCREntity", "response_id", response.id):
-            if entity.fields.get("account_id") != borrower:
+    observation_groups: list[dict[str, Any]] = []
+    selected_observations: list[tuple[EntityNode, str]] = []
+    if borrower:
+        for entity in graph.related("LCREntity", "account_id", borrower):
+            parent_response = graph.table("LCRESPONSE").get(entity.fields.get("response_id", ""))
+            if (entity.poisoned or parent_response is None or parent_response.poisoned
+                    or not (parent_response.fields.get("loan_id") == loan.id
+                            or (loan.fields.get("response_id") == parent_response.id
+                                and parent_response.fields.get("loan_id") is None))):
                 continue
-            include(entity)
             for analysis in graph.related("DataSourceAnalysis", "entity_id", entity.id):
+                # Missing/invalid/conflicting supplied optional parents must not
+                # silently fall back to the entity's response or guessed report.
+                if (analysis.poisoned or any(key in analysis.field_refs and key not in analysis.fields
+                                            for key in ("response_id", "report_id"))):
+                    continue
+                if analysis.fields.get("response_id", parent_response.id) != parent_response.id:
+                    continue
+                report_id = analysis.fields.get("report_id")
+                parent_report = graph.table("CreditReport").get(report_id or "")
+                if report_id is not None and (parent_report is None or parent_report.poisoned
+                                              or parent_report.fields.get("account_id") != borrower):
+                    continue
+                parents = {"account_id": borrower, "response_id": parent_response.id,
+                           "entity_id": entity.id, "analysis_id": analysis.id, "report_id": report_id}
+                group: dict[str, Any] = {**parents, "indicators": [], "characteristics": [],
+                                        "evidence_refs": sorted({e.id for node in (entity, parent_response, analysis)
+                                                                 for e in node.evidence})}
+                observation_groups.append(group)
+                include(entity)
+                include(parent_response)
                 include(analysis)
-                for table, output, mapping_key in (("Indicator", "indicators", "indicator_feature_mapping"),
-                                                   ("Characteristic", "characteristics", "characteristic_feature_mapping")):
+                include(parent_report)
+                if parent_report:
+                    group["evidence_refs"] = sorted(set(group["evidence_refs"]) | {e.id for e in parent_report.evidence})
+                selected = (response is not None and response.id == parent_response.id
+                            and (report_id is None or (report is not None and report.id == report_id)))
+                for table, output in (("Indicator", "indicators"), ("Characteristic", "characteristics")):
                     for observation in graph.related(table, "analysis_id", analysis.id):
                         include(observation)
-                        raw = observation.fields.get("value")
-                        safe_value = str(raw) if isinstance(raw, (str, int, Decimal)) and not isinstance(raw, bool) else raw if isinstance(raw, bool) else None
-                        observations[output].append({"record_id": None if observation.id.startswith("observation:") else observation.id,
-                                                     "key": observation.fields.get("key"), "value": safe_value,
-                                                     "evidence_refs": [item.id for item in observation.evidence]})
-                        feature = config["mapping_manifest"].get(mapping_key, {}).get(observation.fields.get("key"))
-                        if feature and "value" not in observation.poisoned:
-                            # Money pivoting needs explicit source-row currency
-                            # normalization and is deliberately not supported.
-                            if feature in AMOUNT_KEYS or feature.endswith("_usd") or feature in {"borrower_account_id", "loan_id", "response_id", "fico", "personal_fico", "sbss", "report_category", "report_role"}:
-                                conflicts.append("UNSUPPORTED_INDICATOR_TARGET")
-                            elif feature in profile and str(profile[feature]) != str(raw):
-                                profile[feature] = None
-                                conflicts.append("CONFLICTING_INDICATOR_FEATURE")
-                            else:
-                                profile[feature] = raw
-                                refs.setdefault(feature, []).extend(item.id for item in observation.evidence)
+                        if "analysis_id" in observation.poisoned:
+                            continue
+                        item = {**parents, "record_id": None if observation.id.startswith("observation:") else observation.id,
+                                "key": observation.fields.get("key"), "value": observation_text(observation.fields.get("value")),
+                                "evidence_refs": [e.id for e in observation.evidence]}
+                        group[output].append(item)
+                        if selected:
+                            observations[output].append(item)
+                            selected_observations.append((observation, output))
+
+    for observation, output in selected_observations:
+        mapping_key = "indicator_feature_mapping" if output == "indicators" else "characteristic_feature_mapping"
+        feature = config["mapping_manifest"].get(mapping_key, {}).get(observation.fields.get("key"))
+        raw = observation.fields.get("value")
+        if feature and not observation.poisoned:
+            # Money, identities and typed credit scores cannot be observation
+            # substitutions. Unrecognized keys are display-only lexical data.
+            if feature in AMOUNT_KEYS or feature.endswith("_usd") or feature in {"borrower_account_id", "loan_id", "response_id", "report_id", "entity_id", "analysis_id", "account_id", "fico", "personal_fico", "sbss", "report_category", "report_role"}:
+                conflicts.append("UNSUPPORTED_INDICATOR_TARGET")
+            elif feature in profile and str(profile[feature]) != str(raw):
+                profile[feature] = None
+                conflicts.append("CONFLICTING_INDICATOR_FEATURE")
+            else:
+                profile[feature] = raw
+                refs.setdefault(feature, []).extend(item.id for item in observation.evidence)
 
     amounts = {key: profile.get(key) if isinstance(profile.get(key), Decimal) else None for key in AMOUNT_KEYS}
     tiers = amounts["tier_i"], amounts["tier_ii"]
@@ -616,6 +654,7 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
     features: dict[str, Any] = {key: value for key, value in profile.items()
                                 if key not in AMOUNT_KEYS and key not in {"currency", "amount_scale", "personal_fico"}}
     features.update(observations)
+    features["observation_groups"] = observation_groups
     features.update({"guarantor_account_ids": guarantors, "as_of_date": as_of.isoformat() if as_of else None,
                      "selected_report_id": report.id if report else None,
                      "selected_response_id": response.id if response else None,

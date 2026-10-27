@@ -76,6 +76,32 @@ def rule(result, name):
     return next(item for item in result.rule_results if item.rule_id == name)
 
 
+@pytest.mark.parametrize("count", ["0", "2"])
+def test_mapped_query4_count_is_explained_when_report_selection_blocked(count):
+    source = document(rows()[:2], "MTB_Query_1.xlsx", "q1")
+    source.metadata["records"][1]["values"].pop("as_of_date")
+    q4 = document([("MTB Query 4", {"Id": "R1", "nFUSE__Account__c": "A1",
+                   "nFUSE__Credit_Score__c": "740", "nFUSE__Status__c": "Completed",
+                   "nFUSE__Number_of_Bankruptcies__c": count,
+                   "nFUSE__Credit_Report_Freeze__c": False})], "MTB_Query_4.xlsx", "q4")
+    q4.metadata["sheets"] = [{"name": "MTB Query 4", "headers": list(q4.metadata["records"][0]["values"])}]
+    result = evaluate_underwriting([source, q4], mode="TEST").loan_results[0]
+    diagnostic = rule(result, "BANKRUPTCY_5_CALENDAR_YEARS_DIAGNOSTIC")
+    assert diagnostic.status == "UNKNOWN"
+    assert "not an unmapped or absent count" in diagnostic.detail
+    assert "report_selection_requires_explicit_as_of_date" in diagnostic.detail
+    assert any(e.field == "nFUSE__Number_of_Bankruptcies__c" and e.id in diagnostic.evidence_refs
+               for e in result.source_evidence)
+    assert "mapped in source cells" in rule(result, "CREDIT_FREEZE_CLEAR").detail
+
+
+def test_selected_zero_bankruptcies_need_no_discharge_date():
+    result = evaluate()
+    diagnostic = rule(result, "BANKRUPTCY_5_CALENDAR_YEARS_DIAGNOSTIC")
+    assert diagnostic.status == "PASS"
+    assert "no discharge date is required" in diagnostic.detail
+
+
 def test_default_production_contract_and_missing_source():
     batch = evaluate_underwriting([document(rows())], policy_config={"source_sha256": "0" * 64})
     assert isinstance(batch, UnderwritingBatch)
@@ -644,6 +670,18 @@ def test_three_query_files_link_entities_by_explicit_account_column_variants():
     assert loan.normalized_data["fico_band"] == "GE_760"
     assert loan.normalized_data["characteristics"][0]["key"] == "FLAG"
     assert not any("QUERY_FILE_SET_INCOMPLETE" in issue for issue in batch.data_quality_issues)
+
+
+def test_selected_account_does_not_merge_different_zero_padded_ids():
+    first = document([("Account", {"Id": "MTB-A000001"}),
+                      ("Loan", {"Id": "MTB-L000001", "borrower_account_id": "MTB-A000001"})], "MTB_Query_1.xlsx")
+    second = document([("Account", {"Id": "MTB-A001"}),
+                       ("Loan", {"Id": "MTB-L001", "borrower_account_id": "MTB-A001"})], "MTB_Query_2.xlsx")
+    graph = build_entity_graph([first, second], load_underwriting_config(), selected_account_id="MTB-A001")
+    assert set(graph.table("Loan")) == {"MTB-L001"}
+    assert "NO_MATCHING_SELECTED_ACCOUNT_ROWS:Query1" in graph.issues
+    assert "EMPTY_RECOGNIZED_WORKBOOK" not in graph.issues
+    assert any("leading zeros" in warning for warning in graph.mapping_warnings)
 
 
 def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields():

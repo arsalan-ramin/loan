@@ -56,6 +56,10 @@ def interpret_business_workflow(*, profile, identity_valid, graph_issues,
         "real_estate_secured": re_secured,
         "missing_inputs": missing,
         "recommendation_candidate": candidate,
+        "observed_knockout_matches": failed,
+        "interpretation": ("Ordered flow stopped before credit-strategy assessment. Any matched standalone risk diagnostics are observations only, not a workflow decline recommendation."
+                   if knockout_status == "NOT_EVALUATED" else
+                   "Eligibility and identity guards satisfied; interpret knockout results before remaining strategy."),
         "authorization": "NOT_ISSUED",
         "human_review_required": True,
         "policy_conflicts": ["DIAGRAM_250K_GROUP_CREDIT_VS_V4_250M_TIER_I",

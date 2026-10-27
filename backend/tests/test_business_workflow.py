@@ -16,6 +16,7 @@ def test_missing_eligibility_does_not_substitute_existing_fields():
     assert output["eligibility"] == "UNKNOWN"
     assert output["recommendation_candidate"] == "REFER"
     assert output["stages"][2]["status"] == "NOT_EVALUATED"
+    assert "stopped before" in output["interpretation"]
 
 
 @pytest.mark.parametrize("amount,status", [("250000", "PASS"), ("250000.01", "OUT_OF_SCOPE"), (250000.0, "UNKNOWN"), (True, "UNKNOWN"), ("-1", "UNKNOWN")])

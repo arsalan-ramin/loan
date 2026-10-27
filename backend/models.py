@@ -148,6 +148,40 @@ class UnderwritingExplanation(PolicyExplanation):
     evidence_refs: list[str]
 
 
+class CheckReconciliation(BaseModel):
+    model_config = {"extra": "forbid"}
+    rule_id: str = Field(min_length=1, max_length=128)
+    evidence_state: Literal["MAPPED_EVIDENCE_BLOCKED", "MISSING_OR_UNVERIFIED_INPUT", "CONFLICTING_EVIDENCE", "POLICY_UNRESOLVED"]
+    rationale: str = Field(min_length=1, max_length=600)
+    next_step: str = Field(min_length=1, max_length=400)
+    evidence_refs: list[str] = Field(max_length=3)
+
+
+class LoanReviewOutput(UnderwritingExplanation):
+    """Separate AI commentary, never an operational recommendation."""
+
+    recommended_route: Literal["MANUAL_REVIEW"]
+    confidence: None = None
+    positive_factors: list[str] = Field(max_length=3)
+    risk_factors: list[str] = Field(max_length=3)
+    missing_information: list[str] = Field(max_length=3)
+    explanation: str = Field(min_length=1, max_length=4000)
+    loan_ids: list[str] = Field(min_length=1, max_length=1)
+    triggered_rules: list[str] = Field(max_length=3)
+    evidence_refs: list[str] = Field(max_length=3)
+    check_reconciliation: list[CheckReconciliation] = Field(default_factory=list, max_length=40)
+
+
+class LoanAIReview(BaseModel):
+    id: str = Field(default_factory=uid)
+    created_at: str = Field(default_factory=now)
+    report_id: str
+    loan_id: str
+    model: str
+    analysis: LoanReviewOutput
+    context_note: str
+
+
 class Report(BaseModel):
     id: str = Field(default_factory=uid)
     created_at: str = Field(default_factory=now)
@@ -227,6 +261,7 @@ class Session(BaseModel):
     preflight: PreflightResult | None = None
     previous_preflight: PreflightResult | None = None
     review_notes: list[ReviewNote] = Field(default_factory=list)
+    loan_ai_reviews: list[LoanAIReview] = Field(default_factory=list)
 
     @computed_field
     @property

@@ -1,0 +1,50 @@
+/* One content scrollbar: conversation, evidence and uploads grow with the page. */
+.conversation-body,
+.document-list,
+.chat-feedback section {
+  max-height: none;
+  overflow: visible;
+}
+.studio-grid { align-items: start; }
+.conversation-card, .right-column, .guided-assistant { min-width: 0; }
+.document-list strong { white-space: normal; overflow-wrap: anywhere; }
+.conversation-body, .guided-assistant, .claude-explanation { scroll-margin-top: 24px; }
+
+/* Larger, readable controls with clear keyboard focus and wrapping labels. */
+.button { min-height: 44px; font-size: 13px; padding: 12px 16px; white-space: normal; text-align: center; }
+.icon-button, .send-button { min-width: 44px; min-height: 44px; }
+.text-button { min-height: 40px; font-size: 12px; }
+.guided-assistant input, .guided-assistant select, .guided-assistant textarea {
+  min-height: 44px; font-size: 14px;
+}
+.guided-assistant { font-size: 14px; }
+.guided-assistant label { font-size: 13px; }
+.guided-assistant .auto-review-toggle { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid #ccd9bf; border-radius: 8px; background: #fffefa; }
+.guided-assistant .auto-review-toggle input { width: 22px; min-height: 22px; height: 22px; margin: 0; flex-shrink: 0; accent-color: #345c43; }
+.guided-actions { gap: 12px; align-items: center; }
+.guided-actions > label { flex: 1 1 260px; }
+.guided-assistant details > summary, .underwriting-report details > summary {
+  cursor: pointer; padding: 12px 8px; min-height: 44px; font-weight: 600;
+}
+summary:focus-visible { outline: 3px solid #497447; outline-offset: 3px; }
+.workflow-steps {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px; padding: 0; margin: 16px 0; list-style: none;
+}
+.workflow-steps li { padding: 12px; border: 1px solid #ccd9bf; border-radius: 8px; background: #fffefa; }
+.workflow-steps strong { display: block; color: #345c43; }
+.workflow-steps span { font-size: 12px; color: #52634a; }
+.guided-assistant { display: flex; flex-direction: column; }
+.guided-assistant > .guided-confirmation { order: -1; margin: 0 0 16px; border-width: 2px; }
+.guided-confirmation:focus { outline: 3px solid #8e7333; outline-offset: 4px; }
+.guided-preflight ul, .underwriting-evidence pre { overflow-wrap: anywhere; }
+.pipeline-footer .button { min-height: 44px; font-size: 13px; }
+.pipeline-footer .process-actions { flex-wrap: wrap; }
+@media (max-width: 700px) {
+  .workflow-steps { grid-template-columns: 1fr; }
+  .guided-actions > .button { flex: 1 1 100%; }
+  .right-column { display: flex; flex-direction: column; }
+  .right-column > .card { width: 100%; }
+  .pipeline-footer .process-actions { flex-direction: column; }
+}
+.excel-metadata summary { cursor: pointer; min-height: 44px; padding: 12px 0; font-size: 12px; }

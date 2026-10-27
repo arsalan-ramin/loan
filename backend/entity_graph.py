@@ -173,14 +173,20 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                 if root_table_for_sheet:
                     graph.has_soql_exports = True
                 mapped_headers, mapped_targets = soql_mapping_coverage(
-                    soql_role, headers, manifest, AMOUNT_NAMES,
+                    soql_role, headers, manifest, AMOUNT_NAMES, sheet_name=sheet_name,
                 )
                 graph.unmapped_source_fields.update(
                     header for header in headers if isinstance(header, str) and header not in mapped_headers
                 )
                 graph.mapped_fields.update(mapped_targets)
         if recognized and not records:
-            graph.issue("EMPTY_RECOGNIZED_WORKBOOK")
+            if metadata.get("source_record_count_before_scope", 0):
+                graph.issue("NO_MATCHING_SELECTED_ACCOUNT_ROWS:Query" + str(soql_role))
+                graph.mapping_warnings.append(
+                    "SELECTED_ACCOUNT_NOT_LINKED:Query" + str(soql_role)
+                    + ": workbook has source rows but none match the selected account/loan through explicit IDs; check exact ID values, including leading zeros")
+            else:
+                graph.issue("EMPTY_RECOGNIZED_WORKBOOK")
         for index, record in enumerate(records):
             if not isinstance(record, dict):
                 graph.issue("INVALID_RECORD")
@@ -500,6 +506,7 @@ def _scope_documents_to_borrower(documents: Iterable[Any], manifest: dict[str, A
         detached.metadata = dict(document.metadata)
         records = document.metadata.get("records", [])
         if isinstance(records, list):
+            detached.metadata["source_record_count_before_scope"] = len(records)
             detached.metadata["records"] = [record for record in records if isinstance(record, dict) and keep(record)]
         scoped.append(detached)
     return scoped

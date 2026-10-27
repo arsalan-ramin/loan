@@ -230,6 +230,35 @@ export interface ReviewNote {
   provenance: 'user_assertion_not_verified_evidence';
 }
 
+export interface LoanAIReview {
+  id: string;
+  created_at: string;
+  report_id: string;
+  loan_id: string;
+  model: string;
+  context_note: string;
+  analysis: {
+    recommended_route: 'MANUAL_REVIEW';
+    decision_recommendation: null;
+    confidence: null;
+    requires_human_approval: true;
+    loan_ids: string[];
+    explanation: string;
+    positive_factors: string[];
+    risk_factors: string[];
+    missing_information: string[];
+    triggered_rules: string[];
+    evidence_refs: string[];
+    check_reconciliation?: Array<{
+      rule_id: string;
+      evidence_state: 'MAPPED_EVIDENCE_BLOCKED' | 'MISSING_OR_UNVERIFIED_INPUT' | 'CONFLICTING_EVIDENCE' | 'POLICY_UNRESOLVED';
+      rationale: string;
+      next_step: string;
+      evidence_refs: string[];
+    }>;
+  };
+}
+
 export interface Session {
   id: string;
   title: string;
@@ -241,6 +270,7 @@ export interface Session {
   messages: { id: string; role: 'assistant' | 'user'; content: string; created_at: string; origin?: 'conversation' | 'local_assistant'; inspection?: LoanInspection | null }[];
   preflight?: PreflightResult | null;
   review_notes?: ReviewNote[];
+  loan_ai_reviews?: LoanAIReview[];
   documents: Document[];
   rules: Rule[];
   policy_rules?: PolicyRuleDefinition[];

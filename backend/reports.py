@@ -53,6 +53,12 @@ def render_report(session: Session) -> str:
 
         loans = []
         for loan in batch.loan_results:
+            rule_ids = {rule.rule_id for rule in loan.rule_results}
+            data_requirements = [item for item in loan.missing_inputs if item not in rule_ids]
+            unresolved_checks = [rule for rule in loan.rule_results if rule.rule_id in loan.missing_inputs]
+            unresolved_html = "".join(
+                f'<li>{escape(rule.rule_id)}: {escape(rule.detail)}</li>' for rule in unresolved_checks
+            ) or '<li>None reported.</li>'
             amounts = "".join(f'<dt>{escape(key)}</dt><dd>USD {format(value, "f") if value is not None else "unknown"}</dd>'
                               for key, value in loan.normalized_amounts_usd.items())
             checks = "".join(
@@ -99,7 +105,10 @@ def render_report(session: Session) -> str:
                          f'<pre>{diagnostics}</pre></details>'
                          f'<h4>Exact USD amounts</h4><dl>{amounts}</dl>'
                          f'{expanded_html}'
-                         f'<h4>Missing inputs</h4><ul>{items(loan.missing_inputs)}</ul>'
+                         f'<h4>Missing data or selection requirements</h4><ul>{items(data_requirements)}</ul>'
+                         '<h4>Unresolved checks—not missing Excel columns</h4>'
+                         '<p>Mapped fields can be blocked by report selection, conflicts or missing companion evidence. UNKNOWN is not a pass.</p>'
+                         f'<ul>{unresolved_html}</ul>'
                          f'<h4>Conflicts</h4><ul>{items(loan.conflicts)}</ul>'
                          f'<h4>Rule statuses and citations</h4><table><thead><tr><th>Rule</th><th>Status</th><th>Source</th><th>Evidence references</th></tr></thead><tbody>{checks}</tbody></table>'
                          f'<h4>Deterministic per-loan explanation (not LLM-generated)</h4><p>{escape(loan.explanation)}</p>'

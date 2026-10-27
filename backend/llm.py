@@ -51,6 +51,54 @@ adverse-action codes; never issue a denial notice or reinterpret REVIEW or
 NOT_EVALUATED as clearance. Never alter expanded simulated routes or reason codes.
 Return only the requested schema-valid JSON."""
 
+REVIEW_REASONING_GUIDANCE = """
+EXPLANATION QUALITY AND DECISION ORDER:
+Write for an underwriter, not a software developer. Do not recite status codes,
+the rule catalog, or a paragraph of generic disclaimers. Use short labeled plain-text
+paragraphs inside explanation: Result:, Why:, What is unresolved:, Next steps:.
+Result: state the supplied review outcome for this loan (or aggregate for multiple
+loans). Distinguish the overall data/policy hold from a matched credit-risk candidate.
+Why: explain the strongest supplied evidence and its causal effect. Give a normalized
+value and boundary only if supplied, otherwise its supplied band; never invent a value.
+Explain the order: explicit identity/data joins, Quick App scope (explicit group credit
+<=USD250K and explicitly not real-estate secured for the business diagram), knockout
+screen, then remaining SBSS/ownership/FICO/amount/NAICS strategy. If scope is unknown,
+do not assert Quick App eligibility merely because another draft diagnostic says QUICK_APP.
+A known SBSS below160 may match a standalone knockout diagnostic while eligibility/other evidence
+remains unresolved. When business_banking_workflow stages say NOT_EVALUATED, say the
+ordered flow stopped at eligibility/data preparation; do not say 'the knockout screen
+then matched' or imply that the workflow advanced. Describe the SBSS result separately
+as an observed risk diagnostic, not the ordered-flow recommendation. Such a match does NOT prove that all knockout checks were completed
+or that the later strategy tree was entered. Explain the distinction, not a contradiction.
+What is unresolved: identify at most three concrete root causes and their effects.
+Separate DECISION CRITERIA from SOURCE-SELECTION PREREQUISITES. The supplied business
+diagram does NOT list credit-report date or loan as-of date as universal knockout
+criteria. Never attribute those requirements to the diagram or invent a report-age
+threshold. They belong to the existing ingestion contract for selecting the unique
+latest completed account-scoped report on/before as-of. If they block the supplied
+engine results, explicitly label that blocker 'Source-selection requirement (not a
+diagram decision rule)'. This explains the current contract; it does not add a
+credit-policy criterion. Dates used directly by age or bankruptcy elapsed-time
+calculations are different companion inputs. Do not say that the diagram's low-SBSS
+comparison itself requires a bureau report date.
+Mapped-but-unselected bureau evidence is not an absent Excel column. Missing loan
+as-of/report dates can block bankruptcy, freeze, OFAC-alert and FICO checks together;
+explain that shared dependency once. A selected report with zero bankruptcies needs
+no discharge date; a positive count additionally requires a verified discharge date
+and as-of date. Never substitute filing date/discharged boolean for discharge date,
+business score for typed personal FICO, or EBIT/net income for EBITDA. Conflicting
+copies of the same report must be reconciled, not resolved by choosing a workbook.
+Policy conflicts are distinct from source-data gaps; do not dump every policy conflict
+if only one actually explains the current hold. NOT_APPLICABLE/NOT_EVALUATED is not PASS.
+Next steps: request the smallest specific source corrections that unblock the review
+in order (for example exact matching IDs, report-selection dates, conflicting copies,
+then genuinely absent financial inputs), only when those gaps occur in supplied data.
+Do not claim automatic approval after corrections or historical accuracy validation.
+End with one short safety sentence: human review required; no lending action issued.
+Do not repeat TEST, draft policy, authority and adverse-action disclaimers in every paragraph.
+Keep citations in the requested citation arrays, using only supplied IDs.
+"""
+
 
 class LLMError(RuntimeError):
     """Safe, actionable error; never includes provider bodies, credentials, or prompts."""
@@ -138,7 +186,7 @@ class AnthropicLLM:
             # Never replace engine per-loan explanations or expose raw workbook fields.
             context = report_context(report)
             text = self.complete(
-                V4_SYSTEM + "\nReturn ONLY JSON aggregate commentary with exactly these fields: "
+                V4_SYSTEM + REVIEW_REASONING_GUIDANCE + "\nReturn ONLY JSON aggregate commentary with exactly these fields: "
                 "recommended_route (MANUAL_REVIEW), decision_recommendation (null), confidence (null), "
                 "positive_factors (string array), risk_factors (string array), "
                 "triggered_rules (only supplied FAIL rule IDs), missing_information (string array), "
@@ -149,7 +197,7 @@ class AnthropicLLM:
                 "do not return or reinterpret them as approval/denial. No probability, additional fields, or Markdown. "
                 "Per-loan explanations remain deterministic, including loans omitted from this context. "
                 "Keep the entire JSON response under 600 words. Each factor/missing-information array must have "
-                "at most 3 short items (under 20 words each); explanation at most 120 words. "
+                "at most 3 short items (under 20 words each); explanation at most 220 words. "
                 "Include at most 3 IDs in each citation array. Summarize common issues across loans; "
                 "do not enumerate loans, all reasons, rules, fields or evidence. Use empty arrays when appropriate. "
                 "Return compact JSON without indentation, preamble or repeated input.",
@@ -241,7 +289,7 @@ def report_context(report: Report) -> dict:
                 "strategy_branch": loan.strategy_branch,
                 "business_banking_workflow": {
                     key: loan.normalized_data.get("business_banking_workflow", {}).get(key)
-                    for key in ("eligibility", "recommendation_candidate", "missing_inputs", "policy_conflicts")
+                    for key in ("eligibility", "recommendation_candidate", "missing_inputs", "policy_conflicts", "stages", "interpretation")
                 },
                 "strategy_diagnostics": {
                     "stages": loan.normalized_data.get("implementation_guide_diagnostics", {}).get("stages", {}),

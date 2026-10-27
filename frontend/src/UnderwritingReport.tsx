@@ -1,4 +1,5 @@
 import type { ExpandedSpecEvaluation, LoanRecommendation, SourceEvidence, UnderwritingBatch } from './types';
+import InputReadiness from './InputReadiness';
 
 const V4_SOURCE_SHA256 = '9ed35356fdf8d7f638b6eb77c463df71f9a6dd17234a5fe31be251fda8ac18e7';
 
@@ -134,7 +135,7 @@ function LoanCard({ loan }: { loan: LoanRecommendation }) {
       </div>)}
     </dl>
     {!Object.keys(loan.normalized_amounts_usd).length && <p>No normalized amounts reported.</p>}
-    <IssueList title="Missing inputs" items={loan.missing_inputs} />
+    <InputReadiness items={loan.missing_inputs} rules={loan.rule_results} />
     <IssueList title="Conflicts" items={loan.conflicts} />
     {loan.expanded_spec && <ExpandedSpecReport spec={loan.expanded_spec} />}
     <p className="underwriting-explanation">{loan.explanation}</p>

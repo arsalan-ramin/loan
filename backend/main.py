@@ -21,6 +21,7 @@ from .assistant_workflow import (
     inspect_loan, preflight, require_loan,
 )
 from .llm import LLMError
+from .loan_review import LoanReviewRequest, review_selected_loan
 from .models import (AGENTS, AccountCandidate, AccountCandidatePage, AccountSelectionRequest,
                      ChatRequest, CreateSession, Document, Message, ModeRequest,
                      RulesRequest, Session, Step, ReviewNote, default_rules)
@@ -450,6 +451,32 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 content=f"Local {body.topic} lookup for loan {body.loan_id}. This is a bounded view of saved deterministic evidence, not a new evaluation. No provider call or lending decision."))
             store.save(session)
         return session
+
+    @application.post("/api/sessions/{session_id}/assistant/loan-review", response_model=Session)
+    def assistant_loan_review(request: Request, session_id: str, body: LoanReviewRequest):
+        store: Store = request.app.state.store
+        with store.lock:
+            snapshot = require_session(store, session_id)
+            editable(snapshot)
+            require_loan(snapshot, body.loan_id)
+            assert snapshot.report is not None
+            if snapshot.updated_at != body.expected_updated_at or snapshot.report.id != body.report_id:
+                raise HTTPException(409, "Report or session changed. Review the current loan and confirm again.")
+            if len(snapshot.loan_ai_reviews) >= 20:
+                raise HTTPException(409, "This session has reached its 20 selected-loan AI review limit.")
+        try:
+            review = review_selected_loan(snapshot, body.loan_id)
+        except LLMError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from None
+        with store.lock:
+            latest = require_session(store, session_id)
+            editable(latest)
+            if (latest.updated_at != snapshot.updated_at or latest.report is None
+                    or latest.report.id != body.report_id):
+                raise HTTPException(409, "Session changed during the Claude request. Output was not saved; the provider call may have incurred charges.")
+            latest.loan_ai_reviews.append(review)
+            store.save(latest)
+        return latest
 
     @application.post("/api/sessions/{session_id}/assistant/notes", response_model=Session)
     def assistant_note(request: Request, session_id: str, body: ReviewNoteRequest):

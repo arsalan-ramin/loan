@@ -81,6 +81,7 @@ describe('Agent', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith('/health')) return response({ status: 'ok' });
       if (url.endsWith('/documents')) return response(uploaded);
+      if (url.endsWith('/preflight')) return response(uploaded);
       return response(init?.method === 'POST' ? session() : []);
     }));
     const user = userEvent.setup(); const { container } = render(<App />);
@@ -124,6 +125,8 @@ describe('Agent', () => {
       expect(await screen.findByText(name)).toBeInTheDocument();
     }
     expect(active.documents).toHaveLength(3);
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/preflight'))).toHaveLength(3);
+    expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/process') || url.endsWith('/assistant/loan-review'))).toBe(false);
     await user.click(screen.getByRole('button', { name: 'Add documents' }));
     await user.upload(screen.getByLabelText('Choose documents'), new File(['extra'], 'extra.xlsx', {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -159,7 +162,9 @@ describe('Agent', () => {
     expect(sendButton).toBeEnabled();
     expect(processButton).toBeDisabled();
     await user.click(sendButton);
-    expect(await screen.findByText(reply)).toBeInTheDocument();
+    // The reply moves from history to the dedicated latest-reply panel;
+    // query the committed render rather than retaining the replaced node.
+    await waitFor(() => expect(screen.getByText(reply)).toBeInTheDocument());
     expect(screen.getByText(content)).toBeInTheDocument();
     expect(input).toBeEnabled();
     expect(input).toHaveValue('');
@@ -197,6 +202,7 @@ describe('Agent', () => {
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith('/health')) return response({ status: 'ok' });
       if (url.endsWith('/documents')) return response(uploaded);
+      if (url.endsWith('/preflight')) return response(uploaded);
       if (url.endsWith('/messages')) return response({ ...uploaded, messages: [{ id: 'msg-1', role: 'user', content: 'Check the terms', created_at: '2026-10-20T12:00:00Z' }] });
       if (init?.method === 'POST') return response(session());
       return response([]);

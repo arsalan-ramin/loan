@@ -229,13 +229,14 @@ def preflight(session: Session, root: Path) -> PreflightResult:
                     continue
                 headers = sheet.get("headers", [])
                 root_table = soql_root_table(query_role, headers)
-                if root_table is None:
+                canonical_table = config["mapping_manifest"].get("canonical_table_aliases", {}).get(sheet.get("name"), sheet.get("name"))
+                if root_table is None and canonical_table not in config["mapping_manifest"]["tables"]:
                     unmapped_attributes.update(header for header in headers if isinstance(header, str))
                     mapping_warnings.add(f"SOQL_ROOT_ID_MAPPING_UNRESOLVED:Query{query_role}")
                     continue
                 mapped_headers, targets = soql_mapping_coverage(
                     query_role, headers, config["mapping_manifest"],
-                    AMOUNT_NAMES,
+                    AMOUNT_NAMES, sheet_name=sheet.get("name"),
                 )
                 mapped_fields.update(targets)
                 unmapped_attributes.update(

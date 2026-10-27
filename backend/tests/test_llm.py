@@ -116,6 +116,12 @@ def test_underwriting_prompt_requests_compact_aggregate_not_exhaustive_output(mo
     assert AnthropicLLM().explain(report) == "Authorized human review required."
     assert "under 600 words" in captured[0]
     assert "do not enumerate loans" in captured[0]
+    assert "Result:, Why:, What is unresolved:, Next steps:" in captured[0]
+    assert "Mapped-but-unselected bureau evidence is not an absent Excel column" in captured[0]
+    assert "not a\ndiagram decision rule" in captured[0]
+    assert "Do not say that the diagram's low-SBSS" in captured[0]
+    assert "zero bankruptcies needs" in captured[0]
+    assert "does NOT prove that all knockout checks were completed" in captured[0]
 
 
 def test_chat_bounds_and_session_scoped_recall(provider):

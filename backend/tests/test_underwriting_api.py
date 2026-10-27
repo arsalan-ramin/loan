@@ -214,7 +214,8 @@ def test_production_real_upload_exact_json_csv_html_and_trace(client, provider, 
     assert client.get(f"/api/sessions/{sid}/underwriting?format=xml").status_code == 422
     html = client.get(f"/api/sessions/{sid}/report").text
     for value in ("V4 underwriting", SOURCE_DOCUMENT, SOURCE_SHA256, "USD 100000.01", "PDF", "p.2",
-                  "POLICY_REVIEW_REQUIRED", "MANUAL_REVIEW", "Source evidence", "Conflicts", "Missing inputs",
+                  "POLICY_REVIEW_REQUIRED", "MANUAL_REVIEW", "Source evidence", "Conflicts", "Missing data or selection requirements",
+                  "Unresolved checks—not missing Excel columns",
                   "not LLM-generated", loan["source_evidence"][0]["id"]):
         assert value in html
     for value in (batch["implementation_guide_source_document"], IMPLEMENTATION_GUIDE_SHA256,

@@ -7,6 +7,7 @@ import PolicyRulesDialog from './PolicyRulesDialog';
 import PolicyRouteCard from './PolicyRouteCard';
 import UnderwritingReport from './UnderwritingReport';
 import GuidedAssistant from './GuidedAssistant';
+import './usability.css';
 import type { Document, Mode, Session } from './types';
 
 const statusLabels: Record<Session['status'], string> = { awaiting_upload: 'Awaiting documents', ready: 'Ready to review', processing: 'Processing', completed: 'Review complete', failed: 'Review failed' };
@@ -179,7 +180,13 @@ export default function App() {
     setTab('workspace');
     await action('Uploading documents', async () => {
       const active = await ensureSession();
-      syncSession(await api.upload(active.id, files));
+      const uploaded = await api.upload(active.id, files);
+      syncSession(uploaded);
+      // Validation is local only. Preserve the successful upload even if
+      // parsing fails; never start billable processing on upload.
+      setBusy('Validating uploaded files locally');
+      try { syncSession(await api.preflight(uploaded.id)); }
+      catch (cause) { throw new Error(`Files uploaded, but automatic validation failed: ${errorText(cause)} Use Validate files locally to retry.`); }
     });
   }
 
@@ -339,11 +346,11 @@ function ExcelMetadata({ document }: { document: Document }) {
   const { sheets, data_row_count, warning } = document.metadata;
   return <div className="excel-metadata">
     {typeof data_row_count === 'number' && <p>Data rows (excluding README sheets): {data_row_count}</p>}
-    {sheets?.map((sheet, index) => <div className="excel-sheet" key={`${sheet.name}-${index}`}>
+    {!!sheets?.length && <details><summary>View worksheet columns and details</summary>{sheets.map((sheet, index) => <div className="excel-sheet" key={`${sheet.name}-${index}`}>
       <p>Sheet: {sheet.name}{sheet.is_reference ? ' (reference)' : ''}</p>
       <p>{sheet.columns} columns · {sheet.data_rows} data rows · Header row: {sheet.header_row ?? 'None'}</p>
       {!!sheet.headers.length && <p>Headers: {sheet.headers.join(', ')}</p>}
-    </div>)}
+    </div>)}</details>}
     {warning && <p className="document-warning">{warning}</p>}
   </div>;
 }

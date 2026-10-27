@@ -514,6 +514,10 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
         candidate_reports = graph.related("CreditReport", "account_id", borrower)
         for candidate_report in candidate_reports:
             include(candidate_report)
+            # Retain refs for mapped observations without promoting an
+            # unselected report's values into the authoritative profile.
+            for field_name, field_refs in candidate_report.field_refs.items():
+                refs.setdefault(field_name, []).extend(field_refs)
         refs["fico"] = sorted({
             ref for candidate_report in candidate_reports
             for field_name in ("personal_fico", "fico")
@@ -675,7 +679,18 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
     if count is not None and count > 0 and count == count.to_integral_value() and discharge and as_of and discharge <= as_of:
         bankruptcy_clear = as_of >= calendar_anniversary(discharge, 5)
     features["bankruptcy_discharge_at_least_5_years"] = bankruptcy_clear
-    check("BANKRUPTCY_5_CALENDAR_YEARS_DIAGNOSTIC", bankruptcy_clear, "Draft knock-out candidate: discharge recency uses five calendar years; future/absent dates unknown.", ("bankruptcy_count", "bankruptcy_discharge_date", "as_of_date"), page=2)
+    if bankruptcy_clear is True and count == 0:
+        bankruptcy_detail = "Selected account-scoped report explicitly contains zero bankruptcies; no discharge date is required for this diagnostic. Not a lending clearance."
+    elif count is None and refs.get("bankruptcy_count") and report_error:
+        bankruptcy_detail = ("Bankruptcy count is mapped from supplied credit-report cells (including nFUSE__Number_of_Bankruptcies__c), "
+                             f"but no report was selected: {report_error}. This is blocked report selection, not an unmapped or absent count. "
+                             "Supply explicit loan as-of and completed-report dates so the correct account-scoped report can be selected.")
+    elif count is not None and count > 0:
+        bankruptcy_detail = ("Bankruptcy count is available and positive. The five-calendar-year diagnostic additionally requires a valid discharge date "
+                             "and loan as-of date. Number of bankruptcies, filing date and discharged flag do not establish the discharge date.")
+    else:
+        bankruptcy_detail = "Valid bankruptcy count is unavailable in the selected report; positive counts additionally require discharge/as-of dates. No missing value is treated as zero."
+    check("BANKRUPTCY_5_CALENDAR_YEARS_DIAGNOSTIC", bankruptcy_clear, bankruptcy_detail, ("bankruptcy_count", "bankruptcy_discharge_date", "as_of_date"), page=2)
     dob = iso_date(profile.get("dob"))
     age = None
     if dob and as_of and dob <= as_of:
@@ -704,7 +719,11 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
     for field_name in ("ofac_alert", "credit_freeze"):
         flag = _boolean(profile.get(field_name))
         features[field_name + "_clear"] = not flag if flag is not None else None
-        check(field_name.upper() + "_CLEAR", features[field_name + "_clear"], "Alert/freeze requires review, not an automatic lending denial.", (field_name,))
+        detail = (f"{field_name} is mapped in source cells, but no report was selected: {report_error}. "
+              "Mapped evidence is retained; the unselected value is not treated as clearance."
+              if flag is None and refs.get(field_name) and report_error else
+              "Alert/freeze requires review, not an automatic lending denial.")
+        check(field_name.upper() + "_CLEAR", features[field_name + "_clear"], detail, (field_name,))
     naics, risk_codes = profile.get("naics"), config["high_risk_naics"]
     valid_naics = isinstance(naics, str) and re.fullmatch(r"\d{2,6}", naics) is not None
     features["naics_not_high_risk"] = not any(str(naics).startswith(code) for code in risk_codes) if risk_codes and valid_naics else None

@@ -64,6 +64,18 @@ def test_partial_copied_headers_do_not_guess_query_role():
     assert mtb_query_ids("export.xlsx", {"sheets": [{"name": "Sheet1", "headers": headers}]}) == set()
 
 
+def test_canonical_schema_coverage_uses_manifest_before_soql_signatures():
+    from backend.datasets import soql_mapping_coverage
+    from backend.underwriting_engine import load_underwriting_config
+    manifest = load_underwriting_config()["mapping_manifest"]
+    headers = ["Id", "group_credit_usd", "real_estate_secured", "requested_path", "unsupported_attribute"]
+    mapped, targets = soql_mapping_coverage(1, headers, manifest, sheet_name="Loan")
+    assert mapped == set(headers) - {"unsupported_attribute"}
+    assert {"Loan.id", "Loan.group_credit_usd", "Loan.real_estate_secured", "Loan.requested_path"} <= targets
+    mapped, targets = soql_mapping_coverage(4, ["Id", "bankruptcy_count", "report_date"], manifest, sheet_name="CreditReport")
+    assert "bankruptcy_count" in mapped and "CreditReport.report_date" in targets
+
+
 @pytest.mark.parametrize("header", [
     "ACCOUNT_ID", "Account ID", "Account-ID", "Account Column", "Account ID Column",
     "LLC_BI__Account__c", "LLC_BI__Account__r.Id", "nFUSE__Account__c",

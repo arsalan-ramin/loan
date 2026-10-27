@@ -198,7 +198,7 @@ def soql_field_headers(table: str, field: str, headers, *, root_table: str | Non
 
 
 def soql_mapping_coverage(query_role: int | None, headers, manifest: dict,
-                          amount_names: dict[str, str] | None = None) -> tuple[set[str], set[str]]:
+                          amount_names: dict[str, str] | None = None, *, sheet_name: str | None = None) -> tuple[set[str], set[str]]:
     """Return mapped header names and canonical ``Table.field`` targets.
 
     Only exact manifest aliases and the SOQL suffix allowlist count as mapped.
@@ -206,12 +206,14 @@ def soql_mapping_coverage(query_role: int | None, headers, manifest: dict,
     every value required by a decision rule.
     """
     root_table = soql_root_table(query_role, headers)
-    if root_table is None:
+    canonical_table = manifest.get("canonical_table_aliases", {}).get(sheet_name, sheet_name)
+    canonical = canonical_table in manifest["tables"]
+    if root_table is None and not canonical:
         return set(), set()
-    flattened = manifest.get("flattened", {})
+    flattened = manifest["tables"] if canonical else manifest.get("flattened", {})
     mapped: set[str] = set()
     targets: set[str] = set()
-    for table in soql_tables_for_role(query_role):
+    for table in ([canonical_table] if canonical else soql_tables_for_role(query_role)):
         mapping = flattened.get(table)
         if not isinstance(mapping, dict):
             continue
@@ -228,9 +230,15 @@ def soql_mapping_coverage(query_role: int | None, headers, manifest: dict,
         raw_fields = mapping.get("fields", {})
         field_map = ({key: [key] for key in raw_fields} if isinstance(raw_fields, list)
                      else {key: list(aliases) for key, aliases in raw_fields.items()})
+        if canonical:
+            for key in manifest.get("expanded_canonical_fields", {}).get(table, []):
+                field_map.setdefault(key, [key])
+        for key, aliases in manifest.get("verified_usd_source_fields", {}).get(table, {}).items():
+            field_map.setdefault(key, [key]).extend(aliases)
         for field, aliases in field_map.items():
             candidates = list(aliases)
-            candidates.extend(soql_field_headers(table, field, headers, root_table=root_table))
+            if not canonical:
+                candidates.extend(soql_field_headers(table, field, headers, root_table=root_table))
             if field in {"account_id", "borrower_account_id"}:
                 candidates.extend(account_reference_headers(headers))
             if amount_names and field in amount_names:

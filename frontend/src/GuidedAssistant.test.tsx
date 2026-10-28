@@ -15,8 +15,77 @@ function props(active = session()) {
     onSession: vi.fn(), onUpload: vi.fn(), onReport: vi.fn(), onDownload: vi.fn(), onAsk: vi.fn() };
 }
 
+function demoSession(label = 'Decline'): Session {
+  return { ...session(), mode: 'TEST', status: 'completed', report: {
+    id: 'demo-report', created_at: 'today', decision: 'needs_review', summary: 'Review', document_count: 1, findings: [],
+    underwriting: { mode: 'TEST', currency: 'USD', policy_version: 'v4', source_document: 'LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf', source_available: false,
+      data_quality_issues: [], loan_results: [{
+        loan_id: 'L1', borrower_account_id: 'A1', decision_status: 'Human Review', currency: 'USD', mode: 'TEST', policy_version: 'v4',
+        normalized_amounts_usd: {}, normalized_data: { demo_decision: { version: 'screenshot-test-demo-v1', simulation_only: true,
+          authorization: 'NOT_ISSUED', label, rationale: 'SBSS 155 is below 160.', source_evidence: [{ id: 'demo-cell', value: '000155' }] } },
+        rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [], recommendation_path: 'SIMULATED_REVIEW',
+        final_action: 'NO_OPERATIONAL_ACTION', human_review_required: true, explanation: 'Strict trace retained', llm_error: null,
+      }] },
+  } };
+}
+
 describe('Guided assistant workflow', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(session()), { status: 200 }))));
+
+  it.each(['Approve', 'Decline', 'Refer'])('leads with the selected TEST demo %s and preserves its collapsed evidence', async (label) => {
+    const active = demoSession(label);
+    const p = props(active);
+    render(<GuidedAssistant {...p} />);
+    const summary = screen.getByRole('region', { name: 'TEST demo summary for L1' });
+    expect(summary).toHaveTextContent(`${label} · Loan L1`);
+    expect(within(summary).getByText('TEST demo • no lending action')).toBeVisible();
+    expect(within(summary).getByText('SBSS 155 is below 160.')).toBeVisible();
+    expect(screen.queryByText(/^MANUAL_REVIEW/)).not.toBeInTheDocument();
+    const details = within(summary).getByText('Demo criteria and source evidence').closest('details')!;
+    expect(details).not.toHaveAttribute('open');
+    await userEvent.click(within(summary).getByText('Demo criteria and source evidence'));
+    expect(within(details).getByText(/000155/)).toBeVisible();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['version', 'simulation_only', 'authorization', 'label', 'production'])('does not present an invalid or production demo as a recommendation: %s', (field) => {
+    const active = demoSession();
+    if (field === 'production') {
+      active.report!.underwriting!.mode = 'PRODUCTION';
+      active.report!.underwriting!.loan_results[0].mode = 'PRODUCTION';
+    } else {
+      (active.report!.underwriting!.loan_results[0].normalized_data.demo_decision as Record<string, unknown>)[field] = 'invalid';
+    }
+    render(<GuidedAssistant {...props(active)} />);
+    expect(screen.queryByText('TEST demo • no lending action')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Decline · Loan L1' })).not.toBeInTheDocument();
+    if (field === 'production') expect(screen.getByText(/PRODUCTION — manual review only/)).toBeVisible();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps focus and viewport stable when saved Claude reviews and processing states arrive', () => {
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, writable: true, value: scroll });
+    const active = demoSession();
+    const p = props(active);
+    const view = render(<GuidedAssistant {...p} />);
+    const selector = screen.getByRole('combobox', { name: 'Loan to explore' });
+    selector.focus();
+    const review: LoanAIReview = { id: 'saved-ai', created_at: 'today', loan_id: 'L1', report_id: 'demo-report', model: 'saved-model',
+      context_note: 'Saved context', analysis: { recommended_route: 'MANUAL_REVIEW', decision_recommendation: null, confidence: null,
+        requires_human_approval: true, loan_ids: ['L1'], explanation: 'Original arbitrary model wording remains intact.',
+        positive_factors: ['Saved factor'], risk_factors: [], missing_information: [], triggered_rules: ['rule-1'], evidence_refs: ['cell-1'] } };
+    view.rerender(<GuidedAssistant {...p} session={{ ...active, loan_ai_reviews: [review] }} />);
+    expect(selector).toHaveFocus();
+    expect(screen.getByText('Original arbitrary model wording remains intact.')).toBeVisible();
+    for (const text of ['Model: saved-model', 'Saved context', 'Saved factor', 'Failed-rule citations: rule-1']) {
+      expect(screen.getByText(text)).not.toBeVisible();
+    }
+    view.rerender(<GuidedAssistant {...p} session={{ ...active, status: 'processing' }} disabled />);
+    view.rerender(<GuidedAssistant {...p} session={{ ...active, updated_at: 'new-revision', loan_ai_reviews: [review] }} />);
+    expect(scroll).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
   it('runs local validation without processing or sending a chat request', async () => {
     const p = props(); render(<GuidedAssistant {...p} />);
@@ -27,18 +96,23 @@ describe('Guided assistant workflow', () => {
   });
 
   it('requires explicit charge-disclosing confirmation and binds it to the current revision', async () => {
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus');
     const p = props(); render(<GuidedAssistant {...p} />);
     await userEvent.click(screen.getByRole('button', { name: 'Prepare review' }));
     expect(fetch).not.toHaveBeenCalled();
     const confirmation = within(screen.getByRole('group', { name: 'Confirm external processing' }));
-    expect(screen.getByRole('list', { name: 'Review steps' })).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Confirm external processing' })).toHaveFocus();
+    expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
+    focus.mockRestore();
+    expect(screen.getByText('Workflow and processing details').closest('details')).not.toHaveAttribute('open');
+    await userEvent.click(screen.getByText('Workflow and processing details'));
+    expect(screen.getByRole('list', { name: 'Review steps' })).toBeInTheDocument();
     expect(confirmation.getByText(/may incur charges/)).toBeInTheDocument();
     await userEvent.click(confirmation.getByRole('button', { name: 'Confirm and process' }));
     expect(fetch).toHaveBeenCalledWith('/api/sessions/s1/assistant/process', expect.objectContaining({ method: 'POST', body: JSON.stringify({ confirmed: true, expected_updated_at: 'revision1' }) }));
   });
 
-  it('requires local validation and an explicit borrower selection for MTB processing', async () => {
+  it('requires local validation and an explicit loan-number selection for MTB processing', async () => {
     const active = session();
     active.documents = [1, 2, 4].map((role) => ({ id: `d${role}`, name: `MTB_Query_${role}.xlsx`, size: 10, extension: '.xlsx', metadata: {} }));
     active.preflight = { created_at: 'now', input_fingerprint: 'hash', recognized_mtb: true, query_roles: [1, 2, 4],
@@ -46,28 +120,31 @@ describe('Guided assistant workflow', () => {
       document_count: 3, attribute_count: 2, attributes: ['Id', 'Loan_ID'],
       loan_count: 2, account_count: 1, issue_count: 0,
       priority_issues: [], suggested_next_step: 'Select account', comparison: 'First', external_processing: false };
-    const selected = { ...active, selected_account_id: 'A1' };
+    const selected = { ...active, selected_account_id: 'A1', selected_loan_id: 'MTB-L003' };
     const fetchMock = vi.fn(async (url: string) => {
-      const body = url.includes('/accounts?')
-        ? { results: [{ account_id: 'A1', name: 'Client A', loan_count: 2, loan_ids: ['MTB-L003', 'MTB-L004'] }], total: 1, offset: 0, limit: 50, account_count: 1 }
-        : url.endsWith('/account') ? selected : active;
+      const body = url.includes('/loans?')
+        ? { results: [{ loan_id: 'MTB-L003', account_id: 'A1', account_name: 'Client A' }], total: 1, offset: 0, limit: 50, loan_count: 2 }
+        : url.endsWith('/loan') ? selected : active;
       return new Response(JSON.stringify(body), { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock);
     const p = props(active); const view = render(<GuidedAssistant {...p} />);
-    await screen.findByRole('option', { name: /Client A/ });
-    await userEvent.type(screen.getByRole('textbox', { name: 'Search accounts or clients' }), 'MTB-L003');
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/sessions/s1/accounts?q=MTB-L003&offset=0&limit=50', undefined));
-    expect(await screen.findByRole('option', { name: /matched loan MTB-L003/ })).toBeInTheDocument();
+    await screen.findByRole('option', { name: /MTB-L003 · Client A · A1/ });
+    await userEvent.type(screen.getByRole('textbox', { name: 'Search loan numbers' }), 'MTB-L003');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/sessions/s1/loans?q=MTB-L003&offset=0&limit=50', undefined));
     const prepare = screen.getByRole('button', { name: 'Prepare review' });
     expect(prepare).toBeDisabled();
-    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Choose account/client' }), 'A1');
-    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/s1/account', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ account_id: 'A1' }) }));
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Choose loan number' }), 'MTB-L003');
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/s1/loan', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ loan_id: 'MTB-L003' }) }));
     view.rerender(<GuidedAssistant {...p} session={selected} />);
     expect(prepare).toBeEnabled();
-    const accountSelector = screen.getByRole('combobox', { name: 'Choose account/client' });
-    expect(accountSelector.compareDocumentPosition(prepare) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const loanSelector = screen.getByRole('combobox', { name: 'Choose loan number' });
+    expect(loanSelector.compareDocumentPosition(prepare) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getAllByRole('button', { name: 'Prepare review' })).toHaveLength(1);
+    expect(screen.getByText('Validation details, attributes and issues').closest('details')).not.toHaveAttribute('open');
+    expect(screen.getByRole('textbox', { name: 'Search loan numbers' })).toBeVisible();
+    expect(loanSelector).toBeVisible();
+    expect(prepare).toBeVisible();
   });
 
   it('cancels confirmation and clears stale confirmations after input revisions change', async () => {
@@ -81,7 +158,7 @@ describe('Guided assistant workflow', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])('chooses another account from a completed report with local-only recovery: %s', async (missingPreflight) => {
+  it.each([false, true])('chooses another loan from a completed report with local-only recovery: %s', async (missingPreflight) => {
     const active = session();
     active.status = 'completed';
     active.selected_account_id = 'A1';
@@ -102,33 +179,33 @@ describe('Guided assistant workflow', () => {
           explanation: 'Saved account A result', llm_error: null,
         }] } };
     const recovered = { ...active, preflight, updated_at: 'revision2' };
-    const switched: Session = { ...recovered, selected_account_id: 'A2', status: 'ready', report: null, steps: [], updated_at: 'revision3' };
+    const switched: Session = { ...recovered, selected_account_id: 'A2', selected_loan_id: 'L2', status: 'ready', report: null, steps: [], updated_at: 'revision3' };
     const fetchMock = vi.fn(async (url: string) => {
       if (url.endsWith('/preflight')) return new Response(JSON.stringify(recovered));
-      if (url.includes('/accounts?')) return new Response(JSON.stringify({ results: [
-        { account_id: 'A1', name: 'Client A', loan_count: 1, loan_ids: ['L1'] },
-        { account_id: 'A2', name: 'Client B', loan_count: 1, loan_ids: ['L2'] },
-      ], total: 2, offset: 0, limit: 50, account_count: 2 }));
-      if (url.endsWith('/account')) return new Response(JSON.stringify(switched));
+      if (url.includes('/loans?')) return new Response(JSON.stringify({ results: [
+        { loan_id: 'L1', account_id: 'A1', account_name: 'Client A' },
+        { loan_id: 'L2', account_id: 'A2', account_name: 'Client B' },
+      ], total: 2, offset: 0, limit: 50, loan_count: 2 }));
+      if (url.endsWith('/loan')) return new Response(JSON.stringify(switched));
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
     const p = props(active);
     const view = render(<GuidedAssistant {...p} />);
     p.onSession.mockImplementation((updated: Session) => view.rerender(<GuidedAssistant {...p} session={updated} />));
-    await userEvent.click(screen.getByRole('button', { name: 'Choose another account' }));
-    const selector = await screen.findByRole('combobox', { name: 'Choose account/client' });
+    await userEvent.click(screen.getByRole('button', { name: 'Choose another loan' }));
+    const selector = await screen.findByRole('combobox', { name: 'Choose loan number' });
     await waitFor(() => expect(selector).toHaveFocus());
     expect(screen.getByRole('combobox', { name: 'Loan to explore' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Prepare review' })).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/preflight'))).toHaveLength(missingPreflight ? 1 : 0);
-    await userEvent.selectOptions(selector, 'A2');
+    await userEvent.selectOptions(selector, 'L2');
     await waitFor(() => expect(p.onSession).toHaveBeenLastCalledWith(switched));
     expect(screen.queryByRole('combobox', { name: 'Loan to explore' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Prepare review' })).toBeEnabled();
-    expect(selector).toHaveValue('A2');
+    expect(selector).toHaveValue('L2');
     expect(p.onUpload).not.toHaveBeenCalled();
-    expect(fetchMock.mock.calls.every(([url]) => url.endsWith('/preflight') || url.endsWith('/account') || url.includes('/accounts?'))).toBe(true);
+    expect(fetchMock.mock.calls.every(([url]) => url.endsWith('/preflight') || url.endsWith('/loan') || url.includes('/loans?'))).toBe(true);
     expect(screen.queryByRole('group', { name: 'Confirm external processing' })).not.toBeInTheDocument();
   });
 
@@ -207,7 +284,7 @@ describe('Guided assistant workflow', () => {
     render(<GuidedAssistant {...props(active)} />);
     const prepare = screen.getByRole('button', { name: 'Prepare review' });
     await waitFor(() => expect(prepare).toBeEnabled());
-    expect(screen.getByText(/No borrower accounts could be mapped/)).toBeInTheDocument();
+    expect(screen.getByText(/No explicit loan numbers could be mapped/)).toBeInTheDocument();
     await userEvent.click(prepare);
     expect(screen.getByRole('group', { name: 'Confirm external processing' })).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining('/process'), expect.anything());
@@ -267,6 +344,7 @@ describe('Guided assistant workflow', () => {
     const p = props(active); const view = render(<GuidedAssistant {...p} />);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Prepare review' })).toBeNull();
+    expect(screen.getByRole('status', { name: 'Saved report requires demo refresh' })).toHaveTextContent('predates the TEST demo');
     expect(screen.queryByRole('button', { name: 'Review selected loan with Claude' })).toBeNull();
     expect(screen.getByText(/Selecting a loan starts its Claude review automatically and confirms/)).toHaveTextContent('may incur charges');
     await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Loan to explore' }), 'L1');
@@ -280,23 +358,32 @@ describe('Guided assistant workflow', () => {
       await waitFor(() => expect(p.onSession).toHaveBeenCalledWith(updated));
       view.rerender(<GuidedAssistant {...p} session={updated} />);
       expect(screen.getByText('<script>untrusted commentary</script>')).toBeVisible();
+      expect(screen.getByText('Claude audit details · model, context and evidence').closest('details')).not.toHaveAttribute('open');
+      expect(screen.getByText('Count evidence exists, but report selection is blocked by dates.')).not.toBeVisible();
+      await userEvent.click(screen.getByText('Claude audit details · model, context and evidence'));
+      expect(screen.getByText('Historical strict-workflow commentary — not the current TEST demo.')).toBeVisible();
       expect(screen.getByRole('region', { name: 'Claude reconciliation of unresolved checks' })).toHaveTextContent('Mapped evidence found—use is blocked');
       expect(screen.getByText('Count evidence exists, but report selection is blocked by dates.')).toBeVisible();
       expect(view.container.querySelector('script')).toBeNull();
-      expect(screen.getByLabelText('Selected-loan Claude review result')).toHaveFocus();
+      expect(screen.getByLabelText('Selected-loan Claude review result')).not.toHaveFocus();
       view.rerender(<GuidedAssistant {...p} session={{ ...updated, report: { ...updated.report!, id: 'different-report' } }} />);
       expect(screen.queryByLabelText('Selected-loan Claude rationale')).toBeNull();
     }
   });
 
-  it('places the latest matching lookup next to controls and focuses the result instead of the chat bottom', async () => {
+  it('places the latest matching lookup next to controls without stealing focus or scrolling', async () => {
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, writable: true, value: scroll });
     const active = session();
     const inspection: LoanInspection = { report_id: 'r1', loan_id: 'L25', topic: 'evidence', recommendation_path: 'POLICY_REVIEW_REQUIRED', final_action: 'MANUAL_REVIEW', missing_inputs: [], conflicts: [], rules: [], total_rules: 0, total_evidence: 0, evidence: [] };
     active.report = { id: 'r1', created_at: 'today', decision: 'needs_review', summary: 'Review', document_count: 1, findings: [], underwriting: { mode: 'PRODUCTION', currency: 'USD', policy_version: 'draft', source_document: 'LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf', source_available: true, data_quality_issues: [], loan_results: [{ loan_id: 'L25', borrower_account_id: null, decision_status: 'Human Review', currency: 'USD', mode: 'PRODUCTION', policy_version: 'draft', normalized_amounts_usd: {}, normalized_data: {}, rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [], recommendation_path: 'POLICY_REVIEW_REQUIRED', final_action: 'MANUAL_REVIEW', human_review_required: true, explanation: 'Review', llm_error: null }] } };
     const p = props(active);
     const view = render(<GuidedAssistant {...p} />);
+    const selector = screen.getByRole('combobox', { name: 'Loan to explore' });
+    selector.focus();
     view.rerender(<GuidedAssistant {...p} session={{ ...active, messages: [{ id: 'lookup', role: 'assistant', content: 'Lookup', created_at: 'today', origin: 'local_assistant', inspection }] }} />);
-    expect(screen.getByLabelText('Latest loan lookup result')).toHaveFocus();
+    expect(selector).toHaveFocus();
+    expect(scroll).not.toHaveBeenCalled();
     expect(screen.getByRole('region', { name: 'Saved evidence for loan L25' })).toBeInTheDocument();
     expect(screen.getByText('Source cells · showing 0 of 0').closest('details')).toHaveAttribute('open');
   });
@@ -322,7 +409,7 @@ describe('Guided assistant workflow', () => {
       view.rerender(<GuidedAssistant {...p} session={{ ...completed, updated_at: 'later' }} />);
       expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/loan-review'))).toHaveLength(1);
     } else {
-      expect(selector).toHaveFocus();
+      expect(selector).not.toHaveFocus();
       expect(selector).toHaveValue('');
       expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/loan-review'))).toBe(false);
     }

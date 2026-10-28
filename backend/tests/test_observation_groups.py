@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from backend.entity_graph import build_entity_graph
-from backend.llm import report_context
+from backend.llm_context import report_context
 from backend.models import Report
 from backend.underwriting_engine import evaluate_underwriting, load_underwriting_config
 from backend.tests.test_underwriting import document, evaluate, observations, rows

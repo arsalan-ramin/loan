@@ -50,7 +50,7 @@ summary:focus-visible { outline: 3px solid #497447; outline-offset: 3px; }
 .workflow-steps strong { display: block; color: #345c43; }
 .workflow-steps span { font-size: 12px; color: #52634a; }
 .guided-assistant { display: flex; flex-direction: column; }
-.guided-assistant > .guided-confirmation { order: -1; margin: 0 0 16px; border-width: 2px; }
+.guided-assistant > .guided-confirmation { border-width: 2px; }
 .guided-confirmation:focus { outline: 3px solid #8e7333; outline-offset: 4px; }
 .guided-preflight ul, .underwriting-evidence pre { overflow-wrap: anywhere; }
 .pipeline-footer .button { min-height: 44px; font-size: 13px; }

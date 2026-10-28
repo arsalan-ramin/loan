@@ -51,7 +51,7 @@ def test_selected_loan_is_scoped_before_context_limits_and_report_is_unchanged(s
     prompts = []
     def complete(self, system, prompt):
         assert "Result:, Why:, What is unresolved:, Next steps:" in system
-        assert "do not assert Quick App eligibility" in system
+        assert "Do not assert those requirements are satisfied" in system
         prompts.append(json.loads(prompt))
         refs = prompts[-1]["underwriting"]["evidence_refs"]
         return json.dumps(output(evidence_refs=refs[:1], check_reconciliation=reconciliation(prompts[-1])))

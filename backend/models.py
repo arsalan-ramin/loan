@@ -65,6 +65,34 @@ class AccountCandidatePage(BaseModel):
     refreshed_preflight: "PreflightResult | None" = None
 
 
+class LoanCandidate(BaseModel):
+    loan_id: str
+    account_id: str
+    account_name: str | None = None
+
+
+class LoanCandidatePage(BaseModel):
+    results: list[LoanCandidate]
+    total: int
+    offset: int
+    limit: int
+    loan_count: int = 0
+
+
+class LoanCandidate(BaseModel):
+    loan_id: str
+    account_id: str
+    account_name: str | None = None
+
+
+class LoanCandidatePage(BaseModel):
+    results: list[LoanCandidate]
+    total: int
+    offset: int
+    limit: int
+    loan_count: int = 0
+
+
 class Message(BaseModel):
     id: str = Field(default_factory=uid)
     role: Literal["assistant", "user"]
@@ -249,6 +277,8 @@ class Session(BaseModel):
     title: str = "Untitled review"
     mode: Mode = "TEST"
     selected_account_id: str | None = None
+    selected_loan_id: str | None = None
+    selected_loan_id: str | None = None
     created_at: str = Field(default_factory=now)
     updated_at: str = Field(default_factory=now)
     status: Literal["awaiting_upload", "ready", "processing", "completed", "failed"] = "awaiting_upload"
@@ -284,6 +314,16 @@ class ModeRequest(BaseModel):
 class AccountSelectionRequest(BaseModel):
     model_config = {"extra": "forbid"}
     account_id: str = Field(min_length=1, max_length=128)
+
+
+class LoanSelectionRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    loan_id: str = Field(min_length=1, max_length=128)
+
+
+class LoanSelectionRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    loan_id: str = Field(min_length=1, max_length=128)
 
 
 class ChatRequest(BaseModel):

@@ -6,7 +6,9 @@ from copy import deepcopy
 import pytest
 
 from backend.agents import DecisionAgent, RulesAgent
-from backend.llm import AnthropicLLM, LLMError, report_context
+from backend.commentary import explain
+from backend.llm import AnthropicLLM, LLMError
+from backend.llm_context import report_context
 from backend.models import Document, Session
 from backend.policy import CONFIG_PATH, boolean_value, decimal_value, evaluate_profile, evaluate_session
 from backend.reports import render_report
@@ -188,7 +190,7 @@ def test_structured_commentary_guards(monkeypatch, change, error):
     data.update(change)
     monkeypatch.setattr(AnthropicLLM, "complete", lambda *args: json.dumps(data))
     with pytest.raises(LLMError, match=error):
-        AnthropicLLM().explain(report)
+        explain(AnthropicLLM(), report)
     assert report.llm_policy_output is None
 
 
@@ -200,6 +202,6 @@ def test_structured_commentary_success(monkeypatch):
                 positive_factors=[], risk_factors=["Schema-only"], triggered_rules=["MTB-DRAFT-POLICY"],
                 missing_information=["Borrower records"], explanation="Human review required (PDF p.4).", requires_human_approval=True)
     monkeypatch.setattr(AnthropicLLM, "complete", lambda *args: json.dumps(data))
-    assert AnthropicLLM().explain(report) == data["explanation"]
+    assert explain(AnthropicLLM(), report) == data["explanation"]
     assert report.llm_policy_output is not None
     assert report.llm_policy_output.requires_human_approval

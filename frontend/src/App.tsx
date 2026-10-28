@@ -41,10 +41,7 @@ export default function App() {
   const [tab, setTab] = useState<'workspace' | 'report'>('workspace');
   const [mobileNav, setMobileNav] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  const chatEnd = useRef<HTMLDivElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
-  const explanationPanel = useRef<HTMLDivElement>(null);
-  const processingSession = useRef<string | null>(null);
   const currentId = useRef<string | null>(null);
   const locked = useRef(false);
   const mounted = useRef(true);
@@ -111,24 +108,7 @@ export default function App() {
     return () => { stopped = true; clearTimeout(timeout); controller.abort(); };
   }, [session?.id, session?.status, syncSession]);
 
-  useEffect(() => {
-    if (session?.messages.at(-1)?.origin !== 'local_assistant') {
-      chatEnd.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
-    }
-  }, [session?.messages.length]);
   useEffect(() => { setChatLoanId(undefined); setChatError(''); setLatestReply(''); }, [session?.id, session?.report?.id]);
-
-  useEffect(() => {
-    if (session?.status === 'processing') {
-      processingSession.current = session.id;
-    } else {
-      if (session?.status === 'completed' && session.report && processingSession.current === session.id) {
-        explanationPanel.current?.focus({ preventScroll: true });
-        explanationPanel.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
-      }
-      processingSession.current = null;
-    }
-  }, [session?.id, session?.status, session?.report?.id]);
 
   async function action(label: string, work: () => Promise<void>) {
     if (locked.current) return;
@@ -271,25 +251,24 @@ export default function App() {
                 <div className="conversation-body" aria-live="polite" aria-label="Conversation">
                   {!session?.messages.length && <div className="welcome-message"><div className="assistant-avatar"><Sparkles size={19} /></div><div><div className="message-author">Agent<span>Your document copilot</span></div><div className="assistant-bubble"><h3>A fresh perspective starts here.</h3><p>Upload your documents and I’ll help you see what matters. Together, we can check the details, spot gaps, and turn your files into a clear, actionable report.</p><div className="upload-guidance"><Paperclip size={16} /><span>Start by adding your first document below.</span></div></div></div></div>}
                   {session?.messages.filter((item, index) => !(latestReply && index === session.messages.length - 1 && item.role === 'assistant' && item.content === latestReply)).map((item) => <div key={item.id} className={`chat-message ${item.role}`}><div className={item.role === 'assistant' ? 'assistant-avatar' : 'user-avatar'}>{item.role === 'assistant' ? <Sparkles size={17} /> : 'Y'}</div><div><div className="message-author">{item.role === 'assistant' ? 'Agent' : 'You'}<time>{new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><div className={item.role === 'assistant' ? 'assistant-bubble message-content' : 'user-bubble message-content'}>{item.role === 'assistant' ? <AssistantMessage content={item.content} /> : item.content}</div></div></div>)}
-                  {(processing || session?.status === 'completed') && <div ref={explanationPanel} tabIndex={-1} aria-label="Processing explanation result" aria-live="polite">
+                  {(processing || session?.status === 'completed') && <div tabIndex={-1} aria-label="Processing explanation result" aria-live="polite">
                     {processing ? <section className="claude-explanation" role="status"><h3>Claude explanation</h3><p>Review in progress. Claude’s explanation will appear here when processing completes.</p><p className="muted">Processing includes billable Anthropic access. No explanation is available yet.</p></section>
-                      : session?.report && !(isMtb && !session.report.underwriting && !session.report.policy_evaluation) && <ClaudeExplanation report={session.report} showUnavailable />}
+                      : session?.report && !session.report.underwriting && !(isMtb && !session.report.policy_evaluation) && <ClaudeExplanation report={session.report} showUnavailable />}
                   </div>}
                   {session && <GuidedAssistant session={session} disabled={disabled} run={action} onSession={syncSession}
                     onUpload={() => fileInput.current?.click()} onReport={() => setTab('report')}
                     onDownload={() => void action('Downloading report', () => downloadReport(session.id))}
                     onAsk={(loanId, question) => {
                       setChatLoanId(loanId); setMessage(question);
-                      composerInput.current?.focus();
-                      composerInput.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+                      composerInput.current?.focus({ preventScroll: true });
                     }} />}
+                  {session?.report?.underwriting && <section className="aggregate-commentary" aria-label="Aggregate report commentary"><h3>Aggregate report commentary</h3><ClaudeExplanation report={session.report} showUnavailable /></section>}
                   {!documents.length && !session?.messages.length && <div className="conversation-empty"><div className="paper-art"><FileText size={39} strokeWidth={1.25} /><span><Sparkles size={16} /></span></div><p>A little context. A lot of possibility.</p><span>Your documents are the starting point.</span></div>}
                   {busy === 'Sending message' && <div className="thinking"><LoaderCircle size={15} className="spin" />Agent is thinking…</div>}
-                  <div ref={chatEnd} />
                 </div>
                 <div className="chat-feedback" aria-live="polite">
                   {pendingQuestion && <section role="status"><h3>Sending your follow-up…</h3><p>{pendingQuestion}</p><p>Waiting for Anthropic. No answer is available yet.</p></section>}
-                  {chatError && <section role="alert"><h3>Your follow-up could not be answered</h3><p>{chatError}</p><p>Your question is still in Message Agent. Edit it or press Send to retry; another request may incur charges. Your saved report has not changed.</p><button type="button" className="text-button" onClick={() => { setChatError(''); composerInput.current?.focus(); }}>Edit question</button></section>}
+                  {chatError && <section role="alert"><h3>Your follow-up could not be answered</h3><p>{chatError}</p><p>Your question is still in Message Agent. Edit it or press Send to retry; another request may incur charges. Your saved report has not changed.</p><button type="button" className="text-button" onClick={() => { setChatError(''); composerInput.current?.focus({ preventScroll: true }); }}>Edit question</button></section>}
                   {latestReply && <section aria-label="Latest agent reply"><h3>Agent’s reply</h3><AssistantMessage content={latestReply} /></section>}
                 </div>
                 <div className="composer-area">{chatLoanId && <p>Focused report context: loan {chatLoanId}. Session history and recall may include other session documents. <button type="button" className="text-button" disabled={disabled} onClick={() => setChatLoanId(undefined)}>Clear loan focus</button></p>}<form onSubmit={send} className="composer"><button className="icon-button" type="button" aria-label="Attach documents" disabled={disabled} onClick={() => fileInput.current?.click()}><Paperclip size={20} /></button><textarea ref={composerInput} aria-label="Message Agent" rows={1} value={message} onChange={(event) => setMessage(event.target.value)} disabled={disabled} placeholder={!documents.length ? 'Ask a question, or upload your documents to begin…' : 'Ask about documents, rules, or earlier messages…'} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(event); } }} /><button type="submit" className="send-button" aria-label="Send message" disabled={disabled || !message.trim()}>{busy === 'Sending message' ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} />}</button></form><div className="composer-note"><ShieldCheck size={12} /><span>Grounded in your documents. Guided by your rules.</span><span className="enter-hint">Enter to send</span></div><p className="privacy-disclosure">Chat context and document evidence are sent to Anthropic for chat and Claude report explanations. Requires a backend API key and billable network access. Storage and lexical embeddings stay local.</p></div>
@@ -388,9 +367,9 @@ function ClaudeExplanation({ report, showUnavailable = false }: { report: NonNul
   if (!showUnavailable && !report.llm_analysis && !report.llm_error && !report.llm_model) return null;
   return <section className="claude-explanation" aria-labelledby="claude-explanation-heading">
       <div className="heading-with-icon"><Sparkles size={19} /><h3 id="claude-explanation-heading">Claude explanation</h3></div>
-      {report.llm_model && <p className="claude-model">Model: {report.llm_model}</p>}
       <p className="muted">{report.underwriting ? 'Aggregate AI-generated commentary only. Per-loan explanations and rule findings remain deterministic. No operational lending decision; authorized human review required.' : report.policy_evaluation ? 'AI-generated commentary only. Draft routes and document checks are not lending decisions. Authorized review required.' : 'AI-generated commentary only. The deterministic decision and rule findings above remain authoritative.'}</p>
       {report.llm_analysis && <ClaudeExplanationText text={report.llm_analysis} />}
+      {report.llm_model && <details><summary>Claude audit details</summary><p className="claude-model">Model: {report.llm_model}</p><p>Saved report: {report.id}</p></details>}
       {!report.llm_analysis && !report.llm_error && <p>No Claude explanation was returned for this saved report. Deterministic findings remain available; no new provider request has been made.</p>}
       {report.llm_error && <div className="claude-warning" role="alert"><AlertCircle size={18} /><div><strong>Claude explanation warning</strong><p>{report.llm_error}</p><p>Your deterministic report and findings remain available for review and download.</p></div></div>}
   </section>;

@@ -1,3 +1,17 @@
 .chat-feedback{padding:0 20px}.chat-feedback section{margin:12px 0;padding:15px;border:1px solid #dce5cf;border-radius:9px;background:#f3f6ed;font-size:12px;line-height:1.8;max-height:320px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}.chat-feedback h3{font-size:13px;margin-bottom:7px}.chat-feedback section[role=alert]{background:#fff3e9;border-color:#e6c7b8;color:#986a4d}
 .guided-assistant,.guided-inspection{margin:18px 0;padding:18px;border:1px solid #dce5cf;border-radius:12px;background:linear-gradient(135deg,#f2f6e9,#fffefa);font-size:12px;line-height:1.8;overflow-wrap:anywhere}
 .guided-assistant h3,.guided-assistant h4,.guided-inspection h4{margin:7px 0;color:#345c43}.guided-assistant p,.guided-inspection p{margin:7px 0}.guided-actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.guided-assistant label{display:block;margin:10px 0;font-size:11px}.guided-assistant select,.guided-assistant input,.guided-assistant textarea{display:block;width:100%;padding:9px;margin-top:5px;border:1px solid #ccd9bf;border-radius:7px;background:#fffefa;color:#35482e}.guided-assistant textarea{min-height:75px;resize:vertical}.guided-confirmation{background:#fff7e7;border:1px solid #e6d5a9;border-radius:9px;padding:14px;margin-top:12px}.guided-confirmation button{margin:5px}.guided-preflight,.guided-loan{border-top:1px solid #dce5cf;margin-top:14px;padding-top:12px}.guided-inspection pre{white-space:pre-wrap}.guided-inspection details{margin-top:10px}.guided-inspection details>div{padding:9px;border-bottom:1px solid #dce5cf}
+.guided-assistant{font-size:13px;line-height:1.55;gap:6px}
+.guided-assistant label{font-size:13px}
+.guided-assistant details,.aggregate-commentary{border:1px solid #dce5cf;border-radius:8px;padding:0 12px;margin:6px 0;background:#fffefa}
+.guided-assistant summary,.aggregate-commentary>summary{cursor:pointer;padding:10px 0;font-weight:600;line-height:1.5;color:#345c43}
+.guided-assistant details[open]{padding-bottom:12px}
+.guided-assistant pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
+.guided-demo-summary{border-left:4px solid #497447;padding:4px 14px;background:#f7faef;border-radius:6px}
+.guided-demo-summary h3{font-size:21px;line-height:1.3}
+.demo-label{display:inline-block;font-size:12px;font-weight:700;color:#345c43;letter-spacing:.02em}
+.guided-assistant .claude-explanation{margin:12px 0;padding:14px;font-size:13px}
+.guided-assistant .claude-audit{margin-top:12px}
+.guided-assistant .guided-actions{margin:8px 0;align-items:end}
+.guided-assistant .guided-actions label{flex:1 1 240px;margin:0}
+.guided-assistant .policy-result{padding:10px;margin:8px 0}

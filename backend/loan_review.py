@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field, ValidationError
 from fastapi import HTTPException
 
 from .assistant_workflow import require_loan
-from .llm import AnthropicLLM, LLMError, report_context
+from .llm import AnthropicLLM, LLMError
+from .llm_context import report_context
 from .models import LoanAIReview, LoanReviewOutput, Session
 from .prompts import (
     REVIEW_REASONING_GUIDANCE,

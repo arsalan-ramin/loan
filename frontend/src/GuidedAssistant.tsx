@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
-import type { AccountCandidate, LoanInspection, Session } from './types';
+import type { LoanCandidate, LoanInspection, Session } from './types';
 import './GuidedAssistant.css';
 import InputReadiness from './InputReadiness';
 import ClaudeExplanationText from './ClaudeExplanationText';
@@ -51,20 +51,24 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   const [preferredRecordRef, setPreferredRecordRef] = useState('');
   const attemptedReviews = useRef(new Set<string>());
   const aiRequestRunning = useRef(false);
-  const aiResult = useRef<HTMLDivElement>(null);
   const loanSelector = useRef<HTMLSelectElement>(null);
-  const accountSelector = useRef<HTMLSelectElement>(null);
-  const [focusAccountSession, setFocusAccountSession] = useState<string | null>(null);
+  const sourceLoanSelector = useRef<HTMLSelectElement>(null);
+  const [focusLoanSession, setFocusLoanSession] = useState<string | null>(null);
   const preparedReview = useRef<{ sessionId: string; reportId: string | null } | null>(null);
-  const [accountCandidates, setAccountCandidates] = useState<AccountCandidate[]>([]);
-  const [accountTotal, setAccountTotal] = useState(0);
-  const [accountSearch, setAccountSearch] = useState('');
-  const [accountLoading, setAccountLoading] = useState(false);
-  const resultPanel = useRef<HTMLDivElement>(null);
+  const [loanCandidates, setLoanCandidates] = useState<LoanCandidate[]>([]);
+  const [loanTotal, setLoanTotal] = useState(0);
+  const [loanSearch, setLoanSearch] = useState('');
+  const [loanLoading, setLoanLoading] = useState(false);
   const confirmationPanel = useRef<HTMLDivElement>(null);
   const loans = session.report?.underwriting?.loan_results ?? [];
   const reviewScope = `${session.id}:${session.report?.id ?? ''}`;
-  const selectedLoan = loans.find((loan) => loan.loan_id === selected) ?? loans[0];
+  const selectedLoan = loans.find((loan) => loan.loan_id === (selected || session.selected_loan_id)) ?? loans[0];
+  const demo = selectedLoan?.normalized_data.demo_decision as Record<string, unknown> | undefined;
+  const showDemo = session.report?.underwriting?.mode === 'TEST' && selectedLoan?.mode === 'TEST'
+    && demo?.version === 'screenshot-test-demo-v1' && demo.simulation_only === true
+    && demo.authorization === 'NOT_ISSUED' && ['Approve', 'Decline', 'Refer'].includes(String(demo.label));
+  const missingDemoSnapshot = session.report?.underwriting?.mode === 'TEST' && !!selectedLoan
+    && !showDemo;
   const recordCandidates = selectedLoan?.source_evidence.filter((item) =>
     item.record_id && /(?:Credit_Score__c|personal_fico|^fico$)/i.test(item.field)) ?? [];
   const latestAIReview = [...(session.loan_ai_reviews ?? [])].reverse().find((item) =>
@@ -77,7 +81,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   const unmappedAttributes = preflight?.unmapped_attributes ?? [];
   const unavailableInputs = preflight?.unavailable_inputs ?? [];
   const mappingWarnings = preflight?.mapping_warnings ?? [];
-  const requiresAccountSelection = !!session.policy_rules?.length || preflight?.recognized_mtb === true
+  const requiresLoanSelection = !!session.policy_rules?.length || preflight?.recognized_mtb === true
     || session.documents.some((document) => /^MTB[ _-]+Query[ _-]+(1|2|3|4)(?=$|[ _().-]).*\.xlsx$/i.test(document.name));
   const requiresWorkbookValidation = session.documents.some((document) => document.extension === '.xlsx') && !preflight;
   const queryFileSetValid = preflight?.query_file_set_valid ?? Boolean(
@@ -91,15 +95,8 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   useEffect(() => { attemptedReviews.current.clear(); setRecordChoiceLoan(null); setPreferredRecordRef(''); }, [session.id, session.report?.id]);
   useEffect(() => { setAIConfirmation(null); setAIError(''); }, [session.id, session.updated_at, selectedLoan?.loan_id]);
   useEffect(() => {
-    if (latestAIReview) {
-      aiResult.current?.focus({ preventScroll: true });
-      aiResult.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
-    }
-  }, [latestAIReview?.id]);
-  useEffect(() => {
     if (confirmation) {
       confirmationPanel.current?.focus({ preventScroll: true });
-      confirmationPanel.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
     }
   }, [confirmation]);
   useEffect(() => { setSelected(''); setNote(''); setFeedback(''); }, [session.id, session.report?.id]);
@@ -115,52 +112,39 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     if (loans.length === 1) {
       setSelected(loans[0].loan_id);
       beginLoanReview(loans[0].loan_id);
-    } else if (loans.length > 1) {
-      loanSelector.current?.focus();
-      loanSelector.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
     }
   }, [session.id, session.status, session.report?.id, disabled]);
   useEffect(() => {
     let active = true;
     if (preflight?.recognized_mtb) {
-      setAccountLoading(true);
+      setLoanLoading(true);
       const timer = setTimeout(() => {
-        void api.accounts(session.id, accountSearch).then((page) => {
+        void api.loans(session.id, loanSearch).then((page) => {
           if (active) {
-            setAccountCandidates(page.results);
-            setAccountTotal(page.total);
-            if (page.refreshed_preflight) {
-              onSession({ ...session, preflight: page.refreshed_preflight });
-            }
+            setLoanCandidates(page.results);
+            setLoanTotal(page.total);
           }
         }).catch((cause) => {
-          if (active) setFeedback(cause instanceof Error ? cause.message : 'Could not load detected borrower accounts.');
-        }).finally(() => { if (active) setAccountLoading(false); });
-      }, accountSearch.trim() ? 250 : 0);
+          if (active) setFeedback(cause instanceof Error ? cause.message : 'Could not load explicit loan numbers.');
+        }).finally(() => { if (active) setLoanLoading(false); });
+      }, loanSearch.trim() ? 250 : 0);
       return () => { active = false; clearTimeout(timer); };
     }
-    setAccountLoading(false);
+    setLoanLoading(false);
     return () => { active = false; };
-  }, [session.id, preflight?.input_fingerprint, preflight?.recognized_mtb, accountSearch]);
+  }, [session.id, preflight?.input_fingerprint, preflight?.recognized_mtb, loanSearch]);
   useEffect(() => {
-    if (!focusAccountSession) return;
-    if (focusAccountSession !== session.id) {
-      setFocusAccountSession(null);
+    if (!focusLoanSession) return;
+    if (focusLoanSession !== session.id) {
+      setFocusLoanSession(null);
       return;
     }
-    if (disabled || accountLoading || !preflight?.recognized_mtb) return;
-    if (accountSelector.current && !accountSelector.current.disabled) {
-      accountSelector.current.focus();
-      accountSelector.current.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
-      setFocusAccountSession(null);
+    if (disabled || loanLoading || !preflight?.recognized_mtb) return;
+    if (sourceLoanSelector.current && !sourceLoanSelector.current.disabled) {
+      sourceLoanSelector.current.focus({ preventScroll: true });
+      setFocusLoanSession(null);
     }
-  }, [focusAccountSession, session.id, disabled, accountLoading, preflight, accountTotal]);
-  useEffect(() => {
-    if (latestInspection) {
-      resultPanel.current?.focus({ preventScroll: true });
-      resultPanel.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
-    }
-  }, [latestInspection?.id]);
+  }, [focusLoanSession, session.id, disabled, loanLoading, preflight, loanTotal]);
 
   function inspect(topic: 'blockers' | 'rules' | 'evidence') {
     if (!selectedLoan) return;
@@ -176,16 +160,16 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     });
   }
 
-  async function loadAccounts(offset = 0) {
-    setAccountLoading(true);
+  async function loadLoans(offset = 0) {
+    setLoanLoading(true);
     try {
-      const page = await api.accounts(session.id, accountSearch, offset);
-      setAccountCandidates((current) => offset ? [...current, ...page.results] : page.results);
-      setAccountTotal(page.total);
+      const page = await api.loans(session.id, loanSearch, offset);
+      setLoanCandidates((current) => offset ? [...current, ...page.results] : page.results);
+      setLoanTotal(page.total);
     } catch (cause) {
-      setFeedback(cause instanceof Error ? cause.message : 'Could not search detected borrower accounts.');
+      setFeedback(cause instanceof Error ? cause.message : 'Could not search explicit loan numbers.');
     } finally {
-      setAccountLoading(false);
+      setLoanLoading(false);
     }
   }
 
@@ -214,32 +198,40 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     });
   }
 
-  const prepareReviewAction = !session.report && <div className="guided-actions" aria-label="Next step after account selection">
-    <button type="button" className="button primary" disabled={disabled || !session.documents.length || requiresWorkbookValidation || accountLoading || (requiresAccountSelection && (!queryFileSetValid || ((accountTotal || preflight?.account_count || 0) > 0 && !session.selected_account_id)))} onClick={() => setConfirmation(session.updated_at)}>Prepare review</button>
+  const prepareReviewAction = !session.report && <div className="guided-actions" aria-label="Next step after loan selection">
+    <button type="button" className="button primary" disabled={disabled || !session.documents.length || requiresWorkbookValidation || loanLoading || (requiresLoanSelection && (!queryFileSetValid || ((loanTotal || preflight?.loan_count || 0) > 0 && !session.selected_loan_id)))} onClick={() => setConfirmation(session.updated_at)}>Prepare review</button>
   </div>;
 
   return <section className="guided-assistant" aria-label="Guided assistant actions">
-    <span className="eyebrow">YOUR NEXT SAFE STEP</span>
-    <h3>{session.status === 'processing' ? 'Your review is running' : session.report ? 'Let’s explore the evidence' : 'Let’s validate before reviewing'}</h3>
+    {showDemo ? <section className="guided-demo-summary" aria-label={`TEST demo summary for ${selectedLoan!.loan_id}`}>
+      <span className="demo-label">TEST demo • no lending action</span>
+      <h3>{String(demo!.label)} · Loan {selectedLoan!.loan_id}</h3>
+      {typeof demo!.rationale === 'string' && <p>{demo!.rationale}</p>}
+      <p className="muted">Final lending decisions require authorized human review.</p>
+      <details><summary>Demo criteria and source evidence</summary><pre>{JSON.stringify(demo, null, 2)}</pre></details>
+    </section> : <h3>{session.status === 'processing' ? 'Your review is running' : session.report ? 'Explore this loan' : 'Select a loan and prepare review'}</h3>}
+    {session.report?.underwriting?.mode === 'PRODUCTION' && <p className="policy-disclaimer">PRODUCTION — manual review only. No automated lending decision.</p>}
+    <details className="secondary-actions"><summary>Workflow and processing details</summary>
     <ol className="workflow-steps" aria-label="Review steps">
       <li><strong>1. Upload files</strong><span>Files validate automatically after upload. No provider call.</span></li>
-      <li><strong>2. Choose account/client</strong><span>Select a detected borrower, or continue with diagnostics if none can be mapped.</span></li>
+      <li><strong>2. Search and select loan number</strong><span>Choose an explicit loan ID discovered in Query 1 and linked through the supplied relationships.</span></li>
       <li><strong>{loans.length ? '3. Select a loan' : '3. Prepare review'}</strong><span>{loans.length ? 'Selecting a loan starts its Claude review; saved reviews are reused.' : 'Review the charge disclosure, then confirm initial report processing.'}</span></li>
     </ol>
     <p>{session.status === 'processing' ? 'Progress updates automatically. No duplicate review will be started.' : 'File validation and evidence lookups are local. Selecting a loan for Claude review sends normalized context to Anthropic and may incur charges. Notes cannot change verified evidence or clear policy conflicts.'}</p>
+    {session.status === 'processing' && <ol>{session.steps.map((step) => <li key={step.agent}>{step.agent}: {step.status} — {step.detail}</li>)}</ol>}
+    </details>
     {session.status === 'completed' && session.report && session.documents.some((document) => document.extension === '.xlsx') && <div className="guided-actions">
       <button type="button" className="button primary" disabled={disabled || aiPending} onClick={() => {
-        setAccountSearch('');
-        if (preflight?.recognized_mtb) setFocusAccountSession(session.id);
-        else void run('Validating files locally to choose another account', async () => {
+        setLoanSearch('');
+        if (preflight?.recognized_mtb) setFocusLoanSession(session.id);
+        else void run('Validating files locally to choose another loan', async () => {
           const validated = await api.preflight(session.id);
           onSession(validated);
-          if (validated.preflight?.recognized_mtb) setFocusAccountSession(session.id);
+          if (validated.preflight?.recognized_mtb) setFocusLoanSession(session.id);
         });
-      }}>Choose another account</button>
-      <small>Reuse these uploaded files. No provider call or charge to choose an account. Your report stays until you select another account; preparing its review requires confirmation.</small>
+      }}>Choose another loan</button>
+      <small>Reuse these uploaded files. Search/select a loan locally; no provider call or charge occurs until you confirm processing.</small>
     </div>}
-    {session.status === 'processing' && <ol>{session.steps.map((step) => <li key={step.agent}>{step.agent}: {step.status} — {step.detail}</li>)}</ol>}
     <details className="secondary-actions"><summary>File tools and report downloads</summary><div className="guided-actions">
       <button type="button" className="button secondary" disabled={disabled || !session.documents.length} onClick={() => void run('Validating files locally', async () => onSession(await api.preflight(session.id)))}>Validate files locally</button>
       <button type="button" className="button secondary" disabled={disabled} onClick={onUpload}>Add corrected source files</button>
@@ -252,6 +244,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     {preflight && <div className="guided-preflight" role="status">
       <h4>Local validation summary</h4>
       <p>{preflight.document_count ?? session.documents.length} source file · {preflight.loan_count ?? 0} explicit loans · {preflight.issue_count ?? 0} structural issues.</p>
+      <details className="preflight-audit"><summary>Validation details, attributes and issues</summary>
       <p>{preflight.recognized_mtb ? 'MTB source roles detected. Query 1, Query 2, and Query 4 link through matching Account ID columns; header spellings may vary. No row-position or name joins are used.' : 'Generic document — extracted attributes are available; no underwriting relationship validation claimed.'}</p>
       <p>{preflight.attribute_count ?? preflightAttributes.length} distinct column attributes extracted{preflightAttributes.length < (preflight.attribute_count ?? preflightAttributes.length) ? ` · showing first ${preflightAttributes.length}` : ''}.</p>
       {!!preflightAttributes.length && <details><summary>View extracted attributes</summary><ul>{preflightAttributes.map((attribute) => <li key={attribute}>{attribute}</li>)}</ul></details>}
@@ -260,45 +253,35 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
       {!!unmappedAttributes.length && <details><summary>View unmapped source columns</summary><ul>{unmappedAttributes.map((attribute) => <li key={attribute}>{attribute}</li>)}</ul></details>}
       {!!unavailableInputs.length && <details><summary>Required canonical inputs not present in these files</summary><ul>{unavailableInputs.map((input) => <li key={input}>{input}</li>)}</ul></details>}
       {!!mappingWarnings.length && <details><summary>Relationships not resolvable from supplied columns</summary><ul>{mappingWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></details>}
-      {preflight.recognized_mtb && <>
         {!!missingQueryRoles.length && <p>Missing source roles: Query {missingQueryRoles.join(', Query ')}.</p>}
         {!!duplicateQueryRoles.length && <p>Duplicate source roles: Query {duplicateQueryRoles.join(', Query ')}; keep one workbook per role.</p>}
-        <p>{preflight.account_count ?? 0} borrower accounts detected across {preflight.loan_count ?? 0} explicit loans. Local validation indexes relationships; it does not evaluate every client's credit.</p>
-        <label>Search accounts or clients<input aria-label="Search accounts or clients" value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} placeholder="Account name or ID" /></label>
-        <div className="guided-actions">
-          <button type="button" className="button secondary" disabled={disabled || accountLoading} onClick={() => void loadAccounts(0)}>Search accounts</button>
-          <label>Choose account/client<select ref={accountSelector} aria-label="Choose account/client" value={session.selected_account_id ?? ''} disabled={disabled || accountLoading || !(accountTotal || (preflight.account_count ?? 0))}
-            onChange={(event) => {
-              const accountId = event.target.value;
-              if (accountId) void run('Selecting borrower account', async () => onSession(await api.selectAccount(session.id, accountId)));
-            }}>
-            <option value="">Select a borrower account/client</option>
-            {session.selected_account_id && !accountCandidates.some((item) => item.account_id === session.selected_account_id)
-              && <option value={session.selected_account_id}>{session.selected_account_id} · selected</option>}
-            {accountCandidates.map((item) => <option key={item.account_id} value={item.account_id}>
-              {item.name ? `${item.name} · ${item.account_id}` : item.account_id} · {item.loan_count} {item.loan_count === 1 ? 'loan' : 'loans'}
-              {accountSearch.trim() && item.loan_ids.some((loanId) => loanId.toLowerCase().startsWith(accountSearch.trim().toLowerCase()))
-                ? ` · matched loan ${item.loan_ids.find((loanId) => loanId.toLowerCase().startsWith(accountSearch.trim().toLowerCase()))}` : ''}
-            </option>)}
-          </select></label>
-          {accountSearch.trim() && accountCandidates.length > 0 && <ul aria-label="Matching borrower accounts">
-            {accountCandidates.map((item) => <li key={item.account_id}>
-              <button type="button" className="text-button" disabled={disabled || accountLoading}
-                onClick={() => void run('Selecting borrower account', async () => onSession(await api.selectAccount(session.id, item.account_id)))}>
-                Select {item.name ? `${item.name} · ` : ''}{item.account_id}
-              </button>
-              {item.loan_ids.length ? ` — linked loan${item.loan_ids.length === 1 ? '' : 's'}: ${item.loan_ids.join(', ')}` : ''}
-            </li>)}
-          </ul>}
-          {accountCandidates.length < accountTotal && <button type="button" className="button secondary" disabled={disabled || accountLoading} onClick={() => void loadAccounts(accountCandidates.length)}>Load more accounts</button>}
-        </div>
-        {requiresAccountSelection && !session.selected_account_id && <small>{!queryFileSetValid ? 'Upload one workbook each for Query 1, Query 2, and Query 4 before preparing the review.' : accountLoading ? 'Loading borrower accounts…' : accountTotal || (preflight.account_count ?? 0) ? 'Select an account/client before preparing the review.' : 'No borrower accounts could be mapped. You can still use Prepare review for a diagnostic-only report without account selection; no loan records or relationships will be invented.'}</small>}
-      </>}
-      {prepareReviewAction}
+        <p>{preflight.loan_count ?? 0} explicit loan records discovered across {preflight.account_count ?? 0} borrower accounts. Search selects by loan number; it does not join by row position or name.</p>
       <h5>Priority blockers · first {priorityIssues.length} of {preflight.issue_count ?? priorityIssues.length}</h5>
       <ul>{priorityIssues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>
       <p>{preflight.suggested_next_step ?? 'Review the extracted attributes and source relationships before processing.'}</p><p>{preflight.comparison ?? 'No previous validation comparison is available.'}</p>
       <small>All source-row attributes are extracted. Cross-file relationships use matching explicit Account ID values only; local validation is not a lending decision.</small>
+      </details>
+      {preflight.recognized_mtb && <>
+        <label>Search loan numbers<input aria-label="Search loan numbers" value={loanSearch} onChange={(event) => setLoanSearch(event.target.value)} placeholder="Enter a loan number, e.g. MTB-L001" /></label>
+        <div className="guided-actions">
+          <button type="button" className="button secondary" disabled={disabled || loanLoading} onClick={() => void loadLoans(0)}>Search loans</button>
+          <label>Choose loan number<select ref={sourceLoanSelector} aria-label="Choose loan number" value={session.selected_loan_id ?? ''} disabled={disabled || loanLoading || !(loanTotal || (preflight.loan_count ?? 0))}
+            onChange={(event) => {
+              const loanId = event.target.value;
+              if (loanId) void run('Selecting explicit loan number', async () => onSession(await api.selectLoan(session.id, loanId)));
+            }}>
+            <option value="">Select an explicit loan number</option>
+            {session.selected_loan_id && !loanCandidates.some((item) => item.loan_id === session.selected_loan_id)
+              && <option value={session.selected_loan_id}>{session.selected_loan_id} · selected</option>}
+            {loanCandidates.map((item) => <option key={`${item.loan_id}:${item.account_id}`} value={item.loan_id}>
+              {item.loan_id} · {item.account_name ? `${item.account_name} · ` : ''}{item.account_id}
+            </option>)}
+          </select></label>
+          {loanCandidates.length < loanTotal && <button type="button" className="button secondary" disabled={disabled || loanLoading} onClick={() => void loadLoans(loanCandidates.length)}>Load more loans</button>}
+        </div>
+        {requiresLoanSelection && !session.selected_loan_id && <small>{!queryFileSetValid ? 'Upload one workbook each for Query 1, Query 2, and Query 4 before preparing the review.' : loanLoading ? 'Loading explicit loan numbers…' : loanTotal || (preflight.loan_count ?? 0) ? 'Select a loan number before preparing the review.' : 'No explicit loan numbers could be mapped. You can still prepare a diagnostic-only report; no loans or relationships will be invented.'}</small>}
+      </>}
+      {prepareReviewAction}
     </div>}
     {confirmation && <div ref={confirmationPanel} tabIndex={-1} className="guided-confirmation" role="group" aria-label="Confirm external processing">
       <h4>Start {session.mode ?? 'TEST'} review?</h4>
@@ -311,6 +294,10 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
       <button type="button" className="button secondary" disabled={disabled} onClick={() => setConfirmation(null)}>Cancel review</button>
     </div>}
     {!!loans.length && <div className="guided-loan">
+      {missingDemoSnapshot && <section role="status" aria-label="Saved report requires demo refresh">
+        <h4>This saved report predates the TEST demo</h4>
+        <p>No valid TEST demo snapshot. Commentary is historical; choose another loan and prepare a new review to refresh. Confirmed processing may incur charges.</p>
+      </section>}
       <p id="loan-review-disclosure">Selecting a loan starts its Claude review automatically and confirms sending bounded normalized evidence to Anthropic; each new review may incur charges. Raw workbook rows are not sent. Saved reviews are reused. Opening this screen does not start a request, and failures are not retried automatically.</p>
       <label>Loan to explore<select ref={loanSelector} aria-label="Loan to explore" value={selected || ''} disabled={disabled || aiPending} onChange={(event) => {
         const loanId = event.target.value;
@@ -355,12 +342,16 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
       </div>}
       {aiPending && <p role="status">Claude is reviewing the selected loan. No new recommendation or decision has been issued.</p>}
       {aiError && <div className="inline-error" role="alert"><p>{aiError} Your saved report is unchanged. Another request may incur charges.</p><button type="button" className="button secondary" disabled={disabled || aiPending} onClick={() => setAIConfirmation(session.updated_at)}>Retry Claude review</button></div>}
-      {latestAIReview && <div ref={aiResult} tabIndex={-1} aria-label="Selected-loan Claude review result">
+      {latestAIReview && <div tabIndex={-1} aria-label="Selected-loan Claude review result">
         <section className="claude-explanation" aria-label="Selected-loan Claude rationale">
           <h4>Claude rationale · {latestAIReview.loan_id}</h4>
-          <p>MANUAL_REVIEW · No approval or denial · Authorized human review required.</p>
-          <p className="claude-model">Model: {latestAIReview.model}</p>
+          {!showDemo && !missingDemoSnapshot && <p>Final lending decisions require authorized human review.</p>}
           <ClaudeExplanationText text={latestAIReview.analysis.explanation} />
+          <details className="claude-audit" key={latestAIReview.id}><summary>Claude audit details · model, context and evidence</summary>
+          <p className="claude-model">Model: {latestAIReview.model}</p>
+          <p>Saved route: {latestAIReview.analysis.recommended_route} · Human review required.</p>
+          <p>Loan IDs: {latestAIReview.analysis.loan_ids.join(', ')}</p>
+          {missingDemoSnapshot && <p>Historical strict-workflow commentary — not the current TEST demo.</p>}
           {!!latestAIReview.analysis.check_reconciliation?.length && <section aria-label="Claude reconciliation of unresolved checks">
             <h5>Claude’s assessment of unresolved checks</h5>
             <p>These are AI explanations of the supplied evidence—not rule clearances or new verified facts.</p>
@@ -384,14 +375,15 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
           </details>
           <p>{latestAIReview.context_note}</p>
           <small>Saved against report {latestAIReview.report_id}. AI commentary is not new verified evidence.</small>
+          </details>
         </section>
       </div>}
       {feedback && <p role="status">{feedback}</p>}
-      {latestInspection?.inspection && <div ref={resultPanel} tabIndex={-1} aria-label="Latest loan lookup result">
+      {latestInspection?.inspection && <div tabIndex={-1} aria-label="Latest loan lookup result">
         <InspectionCard key={latestInspection.id} inspection={latestInspection.inspection} />
       </div>}
-      <p>Claude questions require Send and billable external processing. Local evidence lookups do not.</p>
       <details className="secondary-actions"><summary>Review notes and acknowledgments</summary>
+      <p>Claude questions require Send and billable external processing. Local evidence lookups do not.</p>
       <p><strong>Want an answer?</strong> Use Message Agent below and press Send. The review note field only saves a note; it does not ask the agent a question.</p>
       <label>Review note (unverified assertion)<textarea aria-label="Review note" maxLength={2000} value={note} disabled={disabled} onChange={(event) => setNote(event.target.value)} /></label>
       <label>Record as<select aria-label="Review record kind" value={kind} disabled={disabled} onChange={(event) => setKind(event.target.value as typeof kind)}><option value="note">Note</option><option value="acknowledgment">Acknowledgment — not clearance</option></select></label>

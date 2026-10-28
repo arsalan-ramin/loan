@@ -172,7 +172,7 @@ def test_completed_review_can_switch_accounts_without_reuploading(client, monkey
     submit = Mock()
     monkeypatch.setattr(client.app.state.executor, "submit", submit)
     explain = Mock(side_effect=LLMError("Mock provider unavailable"))
-    monkeypatch.setattr(AnthropicLLM, "explain", explain)
+    monkeypatch.setattr("backend.commentary.explain", explain)
     monkeypatch.setattr(main.MemoryAgent, "index", Mock(return_value="Mock memory index"))
     monkeypatch.setattr(store, "remember", Mock())
 
@@ -202,6 +202,37 @@ def test_completed_review_can_switch_accounts_without_reuploading(client, monkey
     assert submit.call_count == explain.call_count == 2
 
 
+def test_loan_number_search_and_selection_scopes_processing_to_explicit_loan(client, monkeypatch):
+    sid = upload_three(client)
+    preflight = client.post(f"/api/sessions/{sid}/preflight").json()
+    assert preflight["preflight"]["loan_count"] == 1
+
+    search = client.get(f"/api/sessions/{sid}/loans?q=L1")
+    assert search.status_code == 200
+    assert search.json()["results"] == [{
+        "loan_id": "L1", "account_id": "A1", "account_name": "PRIVATE_RAW_WORKBOOK_SENTINEL",
+    }]
+    assert client.get(f"/api/sessions/{sid}/loans?q=not-a-loan").json()["total"] == 0
+    assert client.put(f"/api/sessions/{sid}/loan", json={"loan_id": "NOT-LINKED"}).status_code == 404
+
+    selected = client.put(f"/api/sessions/{sid}/loan", json={"loan_id": "L1"})
+    assert selected.status_code == 200
+    assert selected.json()["selected_loan_id"] == "L1"
+    assert selected.json()["selected_account_id"] == "A1"
+    assert "Selected explicit loan number L1" in selected.json()["messages"][-1]["content"]
+
+    monkeypatch.setattr(client.app.state.executor, "submit", Mock())
+    monkeypatch.setattr("backend.commentary.explain", Mock(side_effect=LLMError("Mock provider unavailable")))
+    monkeypatch.setattr(main.MemoryAgent, "index", Mock(return_value="Mock memory index"))
+    monkeypatch.setattr(client.app.state.store, "remember", Mock())
+    started = client.post(f"/api/sessions/{sid}/process")
+    assert started.status_code == 202
+    main.process_session(client.app.state.store, sid)
+    result = client.get(f"/api/sessions/{sid}").json()
+    assert [loan["loan_id"] for loan in result["report"]["underwriting"]["loan_results"]] == ["L1"]
+    assert result["report"]["underwriting"]["loan_results"][0]["decision_status"] == "Human Review"
+
+
 @pytest.mark.parametrize("mode", ["TEST", "PRODUCTION"])
 def test_unmapped_workbooks_continue_to_diagnostic_report(client, monkeypatch, mode):
     sid = client.post("/api/sessions", json={"mode": mode}).json()["id"]
@@ -218,7 +249,7 @@ def test_unmapped_workbooks_continue_to_diagnostic_report(client, monkeypatch, m
     monkeypatch.setattr(client.app.state.executor, "submit", Mock())
     # Processing is explicitly confirmed (unlike local preflight). Simulate
     # unavailable provider commentary; deterministic diagnostics must survive.
-    monkeypatch.setattr(AnthropicLLM, "explain", Mock(side_effect=LLMError("Provider unavailable in test")))
+    monkeypatch.setattr("backend.commentary.explain", Mock(side_effect=LLMError("Provider unavailable in test")))
     started = client.post(f"/api/sessions/{sid}/assistant/process", json={
         "confirmed": True, "expected_updated_at": validation["updated_at"],
     })
@@ -317,7 +348,7 @@ def test_confirmed_processing_is_revision_bound_and_disallows_extra_configuratio
     assert client.post(endpoint, json={"confirmed": True, "expected_updated_at": current["updated_at"]}).status_code == 409
 
 
-def test_processing_requires_single_workbook_then_selects_detected_account(client, monkeypatch):
+def test_processing_requires_single_workbook_then_selects_explicit_loan(client, monkeypatch):
     sid = upload_three(client)
     session = client.app.state.store.get(sid)
     session.selected_account_id = None
@@ -327,12 +358,13 @@ def test_processing_requires_single_workbook_then_selects_detected_account(clien
 
     blocked = client.post(f"/api/sessions/{sid}/process")
     assert blocked.status_code == 409
-    assert "Select a detected borrower account" in blocked.json()["detail"]
+    assert "select an explicit loan number" in blocked.json()["detail"]
     assert submit.call_count == 0
 
-    page = client.get(f"/api/sessions/{sid}/accounts").json()
-    selected = client.put(f"/api/sessions/{sid}/account", json={"account_id": page["results"][0]["account_id"]})
+    page = client.get(f"/api/sessions/{sid}/loans").json()
+    selected = client.put(f"/api/sessions/{sid}/loan", json={"loan_id": page["results"][0]["loan_id"]})
     assert selected.status_code == 200
+    assert selected.json()["selected_loan_id"] == page["results"][0]["loan_id"]
     assert selected.json()["selected_account_id"] == page["results"][0]["account_id"]
 
 
@@ -503,11 +535,11 @@ def test_selected_loan_chat_focuses_report_after_first_twenty_without_mutating_i
     sid, expected = completed(client, 25)
     contexts = []
 
-    def chat(self, store, session, query):
+    def chat(llm, store, session, query):
         contexts.append(session.report.underwriting.loan_results)
         return "Focused explanation; no decision."
 
-    monkeypatch.setattr(AnthropicLLM, "chat", chat)
+    monkeypatch.setattr("backend.commentary.chat", chat)
     response = client.post(f"/api/sessions/{sid}/messages", json={"content": "Explain", "loan_id": "L25"})
     assert response.status_code == 200
     assert [loan.loan_id for loan in contexts[0]] == ["L25"]

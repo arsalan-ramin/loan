@@ -25,6 +25,7 @@ from .llm import LLMError
 from .loan_review import LoanReviewRequest, review_selected_loan
 from .models import (AGENTS, AccountCandidate, AccountCandidatePage, AccountSelectionRequest,
                      ChatRequest, CreateSession, Document, Message, ModeRequest,
+                     LoanCandidate, LoanCandidatePage, LoanSelectionRequest,
                      RulesRequest, Session, Step, ReviewNote, default_rules)
 from .reports import render_report
 from .storage import Store
@@ -53,6 +54,7 @@ def invalidate(session: Session, *, clear_selection: bool = True) -> None:
     session.preflight = None
     if clear_selection:
         session.selected_account_id = None
+        session.selected_loan_id = None
     session.error = None
     session.status = "ready" if session.documents else "awaiting_upload"
     session.steps = [Step(agent=agent) for agent in AGENTS]
@@ -380,6 +382,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             store.replace_account_candidates(latest.id, result.account_candidates)
             if latest.selected_account_id and not store.has_account_candidate(latest.id, latest.selected_account_id):
                 latest.selected_account_id = None
+            if latest.selected_loan_id:
+                linked_account = store.loan_candidate_account(latest.id, latest.selected_loan_id)
+                if linked_account is None or linked_account != latest.selected_account_id:
+                    latest.selected_loan_id = None
             latest.messages.append(Message(role="assistant", origin="local_assistant", content=(
                 f"Local validation complete: {result.document_count} files, {result.loan_count} explicit loans, "
                 f"{result.issue_count} diagnostic issues. No Anthropic request or lending decision was made. "
@@ -412,6 +418,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 store.replace_account_candidates(session_id, refreshed_preflight.account_candidates)
                 if latest.selected_account_id and not store.has_account_candidate(session_id, latest.selected_account_id):
                     latest.selected_account_id = None
+                if latest.selected_loan_id:
+                    linked_account = store.loan_candidate_account(session_id, latest.selected_loan_id)
+                    if linked_account is None or linked_account != latest.selected_account_id:
+                        latest.selected_loan_id = None
+                    latest.selected_loan_id = None
                 latest.messages.append(Message(
                     role="assistant", origin="local_assistant",
                     content=(f"Account directory refreshed: {refreshed_preflight.account_count} borrower accounts "
@@ -441,9 +452,49 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if not store.has_account_candidate(session_id, body.account_id):
                 raise HTTPException(404, "This account was not found among the validated borrower accounts.")
             session.selected_account_id = body.account_id
+            session.selected_loan_id = None
             session.report = None
             session.status = "ready"
             session.steps = [Step(agent=agent) for agent in AGENTS]
+            store.save(session)
+        return session
+
+    @application.get("/api/sessions/{session_id}/loans", response_model=LoanCandidatePage)
+    def search_loans(request: Request, session_id: str, q: str = Query("", max_length=128),
+                     offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
+        store: Store = request.app.state.store
+        session = require_session(store, session_id)
+        if session.preflight is None or not session.preflight.recognized_mtb:
+            raise HTTPException(409, "Run local validation before searching detected loan numbers.")
+        rows, total = store.loan_candidates(session_id, q, offset, limit)
+        return LoanCandidatePage(
+            results=[LoanCandidate(loan_id=row[0], account_id=row[1], account_name=row[2]) for row in rows],
+            total=total, offset=offset, limit=limit,
+            loan_count=session.preflight.loan_count if session.preflight else 0,
+        )
+
+    @application.put("/api/sessions/{session_id}/loan", response_model=Session)
+    def select_loan(request: Request, session_id: str, body: LoanSelectionRequest):
+        store: Store = request.app.state.store
+        with store.lock:
+            session = require_session(store, session_id)
+            editable(session)
+            if session.preflight is None or not session.preflight.recognized_mtb:
+                raise HTTPException(409, "Run local validation before selecting a loan number.")
+            account_id = store.loan_candidate_account(session_id, body.loan_id)
+            if account_id is None:
+                raise HTTPException(404, "This loan number was not found uniquely among validated explicit loan records.")
+            session.selected_loan_id = body.loan_id
+            session.selected_account_id = account_id
+            session.report = None
+            session.status = "ready"
+            session.steps = [Step(agent=agent) for agent in AGENTS]
+            session.messages.append(Message(
+                role="assistant", origin="local_assistant",
+                content=(f"Selected explicit loan number {body.loan_id} and its linked borrower account {account_id}. "
+                         "Processing will scope to this loan using its validated explicit relationships. "
+                         "No credit evaluation or lending decision has been made."),
+            ))
             store.save(session)
         return session
 
@@ -524,10 +575,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                    or session.preflight.duplicate_query_roles):
                 raise HTTPException(409, "Upload exactly one workbook each for Query 1, Query 2 and Query 4 before processing.")
             if recognized_mtb and session.preflight and session.preflight.account_count and (
-                not session.selected_account_id
-                or not store.has_account_candidate(session.id, session.selected_account_id)
+                not session.selected_loan_id and not session.selected_account_id
             ):
-                raise HTTPException(409, "Select a detected borrower account/client before starting the review.")
+                raise HTTPException(409, "Search and select an explicit loan number before starting the review.")
+            if recognized_mtb and session.selected_loan_id:
+                linked_account = store.loan_candidate_account(session.id, session.selected_loan_id)
+                if (linked_account is None or linked_account != session.selected_account_id
+                        or not store.has_loan_candidate(session.id, linked_account, session.selected_loan_id)):
+                    raise HTTPException(409, "Selected loan is not uniquely linked to the selected borrower account. Validate the workbooks again.")
             try:
                 IntakeAgent().check(session)
             except ValueError as exc:

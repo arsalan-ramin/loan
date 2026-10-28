@@ -265,6 +265,7 @@ export interface Session {
   title: string;
   mode?: Mode;
   selected_account_id?: string | null;
+  selected_loan_id?: string | null;
   created_at: string;
   updated_at: string;
   status: 'awaiting_upload' | 'ready' | 'processing' | 'completed' | 'failed';
@@ -297,4 +298,18 @@ export interface Session {
     document_count: number;
   };
   error: null | string;
+}
+
+export interface LoanCandidate {
+  loan_id: string;
+  account_id: string;
+  account_name: string | null;
+}
+
+export interface LoanCandidatePage {
+  results: LoanCandidate[];
+  total: number;
+  offset: number;
+  limit: number;
+  loan_count: number;
 }

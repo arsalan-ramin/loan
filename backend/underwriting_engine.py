@@ -41,6 +41,7 @@ from typing import Any, Iterable, Mapping
 
 from .datasets import soql_unavailable_inputs
 from .business_workflow import interpret_business_workflow
+from .demo_workflow import evaluate_demo
 from .entity_graph import EntityGraph, EntityNode, build_entity_graph, iso_date, observation_text
 from .expanded_spec import evaluate_expanded_spec
 from .underwriting_models import (
@@ -339,18 +340,24 @@ def _select_report(graph: EntityGraph, account_id: str, as_of: date | None,
     if as_of is None:
         return None, "report_selection_requires_explicit_as_of_date"
     reports = graph.related("CreditReport", "account_id", account_id)
-    known_statuses = (config["mapping_manifest"]["completed_report_statuses"]
-                      + config["mapping_manifest"]["incomplete_report_statuses"])
-    if any(str(report.fields.get("status", "")).strip().casefold() not in known_statuses for report in reports):
+    manifest = config["mapping_manifest"]
+    completed_statuses = {str(status).strip().casefold()
+                          for status in manifest["completed_report_statuses"]}
+    incomplete_statuses = {str(status).strip().casefold()
+                           for status in manifest["incomplete_report_statuses"]}
+    known_statuses = completed_statuses | incomplete_statuses
+    if any(str(report.fields.get("status", "")).strip().casefold() not in known_statuses
+           for report in reports):
         return None, "report_completion_status_missing_or_unknown"
-    completed = [report for report in reports if str(report.fields.get("status", "")).strip().casefold()
-                 in config["mapping_manifest"]["completed_report_statuses"]]
+    completed = [report for report in reports
+                 if str(report.fields.get("status", "")).strip().casefold() in completed_statuses]
     if not completed:
         return None, "completed_credit_report"
-    if any(iso_date(report.fields.get("report_date")) is None for report in completed):
-        return None, "completed_report_date_missing_or_ambiguous"
     dated = [(report, iso_date(report.fields.get("report_date"))) for report in completed]
-    applicable = [(report, report_date) for report, report_date in dated if report_date is not None and report_date <= as_of]
+    if any(report_date is None for _, report_date in dated):
+        return None, "completed_report_date_missing_or_ambiguous"
+    applicable = [(report, report_date) for report, report_date in dated
+                  if report_date is not None and report_date <= as_of]
     if not applicable:
         return None, "completed_report_on_or_before_as_of_date"
     latest = max(report_date for _, report_date in applicable)
@@ -538,7 +545,7 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
     party_scores: list[Decimal] = []
     fico_refs: list[str] = list(refs.get("fico", []))
     borrower_score = _number(personal_fico(report))
-    if borrower_score is not None:
+    if borrower_score is not None and report is not None:
         party_scores.append(borrower_score)
         fico_refs.extend(report.field_refs.get("personal_fico", report.field_refs.get("fico", [])))
     else:
@@ -771,6 +778,13 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
                      "identity_valid": identity,
                      "sbss_bucket": sbss_bucket(profile.get("sbss")),
                      "fico_band": fico_average_band(profile.get("fico"))})
+    features["report_selection"] = {
+        "contract": "EXPLICIT_DATED_COMPLETED_ACCOUNT_REPORT_V1",
+        "status": "SELECTED" if report is not None and report_error is None else "NOT_SELECTED",
+        "reason": report_error,
+        "as_of_date_available": as_of is not None,
+        "report_date_available": report is not None and iso_date(report.fields.get("report_date")) is not None,
+    }
     # Keep all nonmoney numeric fields lexical and avoid accidentally allowing
     # a response/report from another account to provide a replacement score.
     features["sbss"] = str(profile["sbss"]) if features["sbss_bucket"] else None
@@ -1199,6 +1213,10 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
     explanation = ("Synthetic TEST fixture diagnostics only. " if mode == "TEST" else "Production review diagnostics only. ")
     explanation += " ".join(f"{item['stage']}: {item['summary']}" for item in flow)
     explanation += " This explanation applies only the supplied screenshot flow. It is a simulated candidate/review, never an actual approval, rejection, offer, or adverse action. Authorized human review is always required."
+    # Independent TEST-only view. Never merge its selected report, candidates,
+    # missing fields or conflicts into the authoritative strict v4 trace above.
+    if mode == "TEST":
+        features["demo_decision"] = evaluate_demo(graph, loan, config, mode=mode, response=response)
     # Ensure JSON-compatible nonmoney data without float financial leakage.
     def lexical(value: Any) -> Any:
         if isinstance(value, (Decimal, date)):
@@ -1227,7 +1245,8 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
 
 def evaluate_underwriting(documents: Iterable[Any], mode: Mode = "PRODUCTION", *,
                           policy_config: Mapping[str, Any] | None = None,
-                          selected_account_id: str | None = None) -> UnderwritingBatch:
+                          selected_account_id: str | None = None,
+                          selected_loan_id: str | None = None) -> UnderwritingBatch:
     """Evaluate extracted documents, returning safe per-loan graph diagnostics.
 
     Strict uppercase mode, fresh config, no I/O except local config/PDF integrity
@@ -1267,6 +1286,47 @@ def evaluate_underwriting(documents: Iterable[Any], mode: Mode = "PRODUCTION", *
             raise ValueError("selected_account_id must be a nonempty account ID")
         selected_account_id = selected_account_id.strip()
     graph = build_entity_graph(documents, config, selected_account_id=selected_account_id)
+    if selected_loan_id is not None:
+        if not isinstance(selected_loan_id, str) or not selected_loan_id.strip():
+            raise ValueError("selected_loan_id must be a nonempty loan ID")
+        selected_loan_id = selected_loan_id.strip()
+        selected_loan = graph.table("Loan").get(selected_loan_id)
+        if selected_loan is None:
+            graph.issue("SELECTED_LOAN_NOT_FOUND_BY_EXPLICIT_ID")
+            return UnderwritingBatch(
+                mode=mode, policy_version=config["policy_version"], source_available=source_available,
+                implementation_guide_source_document=IMPLEMENTATION_GUIDE_DOCUMENT,
+                implementation_guide_source_sha256=IMPLEMENTATION_GUIDE_SHA256,
+                implementation_guide_available=implementation_guide_available,
+                expanded_spec_available=expanded_spec_available,
+                data_quality_issues=graph.issues,
+                mapping_warnings=sorted(set(graph.mapping_warnings)),
+                unmapped_source_fields=sorted(graph.unmapped_source_fields)[:500],
+                unavailable_inputs=soql_unavailable_inputs(graph.mapped_fields) if graph.has_soql_exports else [],
+                loan_results=[],
+            )
+        graph.nodes["Loan"] = {selected_loan_id: selected_loan}
+        for table in ("LoanExtension", "LCRESPONSE", "LCREntity", "DataSourceAnalysis",
+                      "Indicator", "Characteristic", "Regulation"):
+            nodes = graph.table(table)
+            if table == "LoanExtension":
+                keep = lambda node: node.fields.get("loan_id") == selected_loan_id
+            elif table == "LCRESPONSE":
+                keep = lambda node: node.fields.get("loan_id") in (None, selected_loan_id) and (
+                    node.fields.get("loan_id") == selected_loan_id
+                    or selected_loan.fields.get("response_id") == node.id)
+            elif table == "LCREntity":
+                linked_responses = {node.id for node in graph.table("LCRESPONSE").values()}
+                keep = lambda node: node.fields.get("response_id") in linked_responses
+            elif table == "DataSourceAnalysis":
+                linked_entities = set(graph.table("LCREntity"))
+                keep = lambda node: node.fields.get("entity_id") in linked_entities
+            elif table in {"Indicator", "Characteristic"}:
+                linked_analyses = set(graph.table("DataSourceAnalysis"))
+                keep = lambda node: node.fields.get("analysis_id") in linked_analyses
+            else:
+                keep = lambda node: node.fields.get("loan_id") == selected_loan_id
+            graph.nodes[table] = {node_id: node for node_id, node in nodes.items() if keep(node)}
     if not graph.table("Loan"):
         graph.issue("NO_EXPLICIT_LOAN_RECORDS")
     results = [_evaluate_loan(graph, loan, mode, config, source_available, implementation_guide_available, expanded_spec_available)

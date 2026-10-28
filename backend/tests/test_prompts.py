@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from backend import llm, loan_review, prompts
+from backend import commentary, llm, llm_context, loan_review, prompts
 
 
-# SHA-256 snapshots of the runtime strings before extraction, including whitespace.
+# SHA-256 runtime snapshots, including the explicitly versioned TEST demo update.
 @pytest.mark.parametrize("name,digest", [
     ("SYSTEM", "7a32923c79885a9a044f846870274c71beec603d6c9fcac53f87a487c9f7fc19"),
-    ("V4_SYSTEM", "645299dff12a54ec719b2363cafcaba953d942b600c7653485a5cb8190d7f34a"),
-    ("REVIEW_REASONING_GUIDANCE", "f722a5efbc79e95f941ee115aa87bc30153fac21d5e8a27ea428c1e15047724a"),
-    ("CHAT_FOLLOW_UP_INSTRUCTIONS", "d52f502448948d0cba8d7da028d11c5cf4c63d7c5928bad8bfc0646a29a65fd4"),
+    ("V4_SYSTEM", "a357a49510aaff807e48008ecec9b33155119ff0ca6c5040ebf5d3ae16bec71e"),
+    ("REVIEW_REASONING_GUIDANCE", "c39b743957d5ea91c469480085287e96ec86c71adac4c41257644be968164e8d"),
+    ("CHAT_FOLLOW_UP_INSTRUCTIONS", "9702c259a4360dc628b46db39e6327a024adcc0233f871ad5c2edb91c3d8540b"),
     ("CHAT_WORKFLOW_INSTRUCTIONS", "db37725ecda6d84a10e62ef6a5e9b685934a0bb673fb3f5b166840cd6096528a"),
     ("AGGREGATE_UNDERWRITING_INSTRUCTIONS", "5787dd958d3c74a6d8e60dc6234b13c1a30ba7f1acc9eaa931dbd17878f21457"),
     ("LEGACY_POLICY_EXPLANATION_INSTRUCTIONS", "355f91a2b2ccd307d67e19e2fa323dc92a77258688fc63f5366c2728769d0af1"),
@@ -28,14 +28,46 @@ def test_prompt_runtime_text_is_unchanged(name, digest):
     assert hashlib.sha256(getattr(prompts, name).encode("utf-8")).hexdigest() == digest
 
 
-def test_legacy_prompt_imports_remain_compatible():
-    assert llm.SYSTEM is prompts.SYSTEM
-    assert llm.V4_SYSTEM is prompts.V4_SYSTEM
-    assert llm.REVIEW_REASONING_GUIDANCE is prompts.REVIEW_REASONING_GUIDANCE
+def test_prompt_consumers_import_from_prompt_owner():
+    assert commentary.SYSTEM is prompts.SYSTEM
+    assert commentary.V4_SYSTEM is prompts.V4_SYSTEM
+    assert commentary.REVIEW_REASONING_GUIDANCE is prompts.REVIEW_REASONING_GUIDANCE
+    assert llm_context.CHAT_WORKFLOW_INSTRUCTIONS is prompts.CHAT_WORKFLOW_INSTRUCTIONS
     assert loan_review.CONTEXT_NOTE is prompts.SELECTED_LOAN_CONTEXT_NOTE
 
 
-@pytest.mark.parametrize("module,expected_calls", [(llm, 4), (loan_review, 1)])
+def test_explanations_name_requirements_instead_of_scope_jargon():
+    guidance = prompts.REVIEW_REASONING_GUIDANCE
+    assert "State each unmet or unverified requirement specifically" in guidance
+    assert "not an additional credit-decision rule" in guidance
+    assert "explicit group credit <=USD250K" in guidance
+
+
+def test_explanation_does_not_repeat_ui_disclaimers():
+    assert "do not append another disclaimer to the explanation" in prompts.REVIEW_REASONING_GUIDANCE
+    assert "A simulated candidate is not a decision." not in prompts.V4_SYSTEM
+
+
+def test_rationale_separates_observed_risk_from_blockers_and_stale_snapshots():
+    guidance = prompts.REVIEW_REASONING_GUIDANCE
+    assert "A missing input is not\na failed credit criterion" in guidance
+    assert "SAVED_REPORT_INCONSISTENT_REPROCESS_REQUIRED" in guidance
+    assert "do not assert that missing dates block all four automatically" in guidance
+    assert "Only use FICO when report_selection.fico_usable_in_commentary is true" in guidance
+    assert "per-check reconciliation holds the full audit" in guidance
+
+
+def test_test_demo_explained_first_without_changing_strict_or_operational_contract():
+    guidance = prompts.REVIEW_REASONING_GUIDANCE
+    assert "explain it FIRST" in guidance
+    assert "FIRST_ACCOUNT_MATCH_FOR_TEST_DEMO" in guidance
+    assert "Do not mix strict selection diagnostics" in guidance
+    assert "UNKNOWN\nnever clears Approve" in guidance
+    assert "decision_recommendation null" in guidance
+    assert "Report dates are not a demo selection prerequisite" in guidance
+
+
+@pytest.mark.parametrize("module,expected_calls", [(llm, 0), (llm_context, 0), (commentary, 4), (loan_review, 1)])
 def test_system_prompt_components_are_owned_by_prompts(module, expected_calls):
     tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
     imported_prompts = {

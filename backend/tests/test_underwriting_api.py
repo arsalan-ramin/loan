@@ -15,7 +15,8 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from backend.agents import DecisionAgent, RulesAgent
-from backend.llm import AnthropicLLM, LLMError, report_context
+from backend.llm import AnthropicLLM, LLMError
+from backend.llm_context import report_context
 from backend.main import create_app, process_session
 from backend.models import CreateSession, Document, Report, Session
 from backend.reports import render_report

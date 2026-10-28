@@ -31,7 +31,7 @@ stages and source evidence IDs. Never invent calculations, links, scores, policy
 thresholds, conflict resolution, or decision authority. Preserve eligibility,
 credit assessment and authorization as separate fields. Authorization MUST remain
 NOT_ISSUED; PRODUCTION final_action is MANUAL_REVIEW and TEST is
-NO_OPERATIONAL_ACTION. A simulated candidate is not a decision. Cite only supplied
+NO_OPERATIONAL_ACTION. Never describe a recommendation as lending authorization. Cite only supplied
 evidence reference IDs. Clearly list unknown/missing inputs, conflicts, out-of-scope
 checks and source integrity status. Expanded explanation prompt version:
 expanded-explanation-1. Expanded reason codes are internal diagnostics, NOT approved
@@ -40,6 +40,28 @@ NOT_EVALUATED as clearance. Never alter expanded simulated routes or reason code
 Return only the requested schema-valid JSON."""
 
 REVIEW_REASONING_GUIDANCE = """
+ISOLATED TEST DEMO (screenshot-test-demo-v1):
+When demo_decision is supplied, explain it FIRST: Result: <its exact Approve,
+Decline or Refer label>. The UI already labels the result TEST demo with no lending
+action. Do not repeat 'This is a simulated candidate, not a decision' or equivalent
+candidate disclaimers in the explanation. Explain its normalized facts, check
+statuses and branch, not raw source values. FIRST_ACCOUNT_MATCH_FOR_TEST_DEMO
+means first account-linked report in source order, not freshest/completed or
+authoritative evidence. Its normalized personal FICO may be explained within
+this demo even when strict report_selection.fico_usable_in_commentary is false.
+Report dates are not a demo selection prerequisite. Missing application as-of
+dates can independently leave age or bankruptcy recency UNKNOWN; a zero
+bankruptcy count needs no discharge date. Do not mix strict selection diagnostics,
+v4 policy-source gates or saved strict inconsistencies into the demo result.
+Known knockouts can produce Decline despite unrelated unknown inputs; UNKNOWN
+never clears Approve. Requested path, group credit and real estate are not demo
+tree gates. Never infer program equivalency, EBITDA from EBIT, personal typing,
+or missing characteristic pivots. Preserve the USD100K/USD100M conflict when its
+branch is reached. Then, if relevant, separately label the existing result STRICT
+trace and explain its guards without changing it. The strict-source instructions
+below apply only to that separate STRICT trace, never to the supplied demo.
+Keep recommended_route MANUAL_REVIEW, decision_recommendation null, authorization
+NOT_ISSUED and human review true. Never issue final approval, denial or adverse action.
 When simulation_reference is supplied, its review_date is the assumed current UTC
 review date only. It is not the credit report issue date or loan as-of date. Never
 use it to clear report selection, calculate age/discharge recency or assert freshness.
@@ -49,12 +71,40 @@ the rule catalog, or a paragraph of generic disclaimers. Use short labeled plain
 paragraphs inside explanation: Result:, Why:, What is unresolved:, Next steps:.
 Result: state the supplied review outcome for this loan (or aggregate for multiple
 loans). Distinguish the overall data/policy hold from a matched credit-risk candidate.
+Lead with one plain-language sentence, not a list of internal route codes. Explain
+the observed criterion first (for example 'SBSS 155 is below the diagram threshold
+of 160'), followed by the separate overall review outcome. A missing input is not
+a failed credit criterion and does not erase an independently supported risk finding.
+Do not open with competing QUICK_APP/UNKNOWN/DATA_REVIEW labels. Do not use the
+phrases 'scope inputs missing' or 'Quick App scope'. Name the actual unavailable
+requirements only when needed to explain the supplied workflow's stopping point.
+REPORT CONTEXT CONSISTENCY:
+Use report_selection as the supplied selection fact, not a general assumption.
+If status is SAVED_REPORT_INCONSISTENT_REPROCESS_REQUIRED or
+LEGACY_SELECTION_NOT_VERIFIED, identify a saved-report consistency issue and request
+reprocessing. Do not endorse its FICO value, recalculate a score, choose another
+report, or claim that all report-based checks were blocked in that saved run.
+Only use FICO when report_selection.fico_usable_in_commentary is true. When a report
+is SELECTED, never say that no report was selected. Discuss bankruptcy, freeze,
+OFAC-alert and FICO separately according to their supplied rule status/detail;
+do not assert that missing dates block all four automatically. An available DOB
+or mapped count/flag can still be unusable; do not call it absent merely because
+its calculation is UNKNOWN. Never treat a legacy inconsistency as a source correction.
+Keep the narrative to about 120 words; per-check reconciliation holds the full audit
+detail separately. Under What is unresolved, prioritize the actual current blocker,
+not every policy conflict or missing input. Mention a threshold conflict only if the
+affected amount/score branch was reached. Do not prescribe wait-period corrections
+for a flow that never reached an increase branch. Preserve all conflicts in the
+structured trace even when they are irrelevant to the short narrative.
 Why: explain the strongest supplied evidence and its causal effect. Give a normalized
 value and boundary only if supplied, otherwise its supplied band; never invent a value.
-Explain the order: explicit identity/data joins, Quick App scope (explicit group credit
-<=USD250K and explicitly not real-estate secured for the business diagram), knockout
-screen, then remaining SBSS/ownership/FICO/amount/NAICS strategy. If scope is unknown,
-do not assert Quick App eligibility merely because another draft diagnostic says QUICK_APP.
+Explain the order: explicit identity/data joins; the diagram's input requirements
+(Quick App application, explicit group credit <=USD250K, and explicitly not
+real-estate secured); knockout screen; then remaining SBSS/ownership/FICO/amount/NAICS
+strategy. State each unmet or unverified requirement specifically, rather than calling
+it 'Quick App scope', 'scope unknown', or 'scope inputs'. These are input requirements,
+not an additional credit-decision rule. Do not assert those requirements are satisfied
+merely because another draft diagnostic says QUICK_APP.
 A known SBSS below160 may match a standalone knockout diagnostic while eligibility/other evidence
 remains unresolved. When business_banking_workflow stages say NOT_EVALUATED, explain
 briefly that the ordered flow stopped at eligibility/data preparation. Do not imply
@@ -94,7 +144,8 @@ Next steps: request the smallest specific source corrections that unblock the re
 in order (for example exact matching IDs, report-selection dates, conflicting copies,
 then genuinely absent financial inputs), only when those gaps occur in supplied data.
 Do not claim automatic approval after corrections or historical accuracy validation.
-End with one short safety sentence: human review required; no lending action issued.
+Keep human-review and no-lending-action requirements in their structured fields.
+The UI displays that notice; do not append another disclaimer to the explanation.
 Do not repeat TEST, draft policy, authority and adverse-action disclaimers in every paragraph.
 Keep citations in the requested citation arrays, using only supplied IDs.
 """
@@ -112,7 +163,8 @@ CHAT_FOLLOW_UP_INSTRUCTIONS = (
     "Give at most 3 priority blockers and 3 next steps. Cite at most 3 supplied rule/evidence IDs. "
     "Do not enumerate the full rule catalog, all loans, all decline reasons, or repeat the input. "
     "Distinguish missing data, unresolved policy and candidate results. Never claim operational approval. "
-    "For MTB lending outcome/status questions, answer with the exact label 'Human Review' only; never output Approved or Denied. "
+    "For MTB lending outcome/status questions without demo_decision, answer with the exact label 'Human Review' only; never output Approved or Denied. "
+    "When a TEST demo_decision is supplied, lead with its exact Approve/Decline/Refer label, explicitly simulation only; explain its bounded facts separately from the STRICT trace. Never issue a final lending decision. "
     "Do not invent values or present bounded excerpts as a complete attribute inventory. No JSON or lengthy preamble."
 )
 

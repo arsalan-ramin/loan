@@ -108,6 +108,84 @@ class Store:
             ).fetchall()
         return rows, total
 
+    def loan_candidates(self, session_id: str, query: str = "", offset: int = 0, limit: int = 50):
+        term = query.strip().casefold()
+        with self.connect() as conn:
+            if term:
+                pattern = term.replace("%", "\\%").replace("_", "\\_") + "%"
+                where = "l.session_id = ? AND l.loan_id LIKE ? ESCAPE '\\' COLLATE NOCASE"
+                params = (session_id, pattern)
+            else:
+                where, params = "l.session_id = ?", (session_id,)
+            query_base = (
+                " FROM account_candidate_loans l "
+                "JOIN account_candidates a ON a.session_id=l.session_id AND a.account_id=l.account_id "
+            )
+            total = conn.execute("SELECT COUNT(*)" + query_base + f"WHERE {where}", params).fetchone()[0]
+            rows = conn.execute(
+                "SELECT l.loan_id, l.account_id, a.name" + query_base +
+                f"WHERE {where} ORDER BY l.loan_id COLLATE NOCASE, l.account_id LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+        return rows, total
+
+    def loan_candidate_account(self, session_id: str, loan_id: str) -> str | None:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT account_id FROM account_candidate_loans WHERE session_id=? AND loan_id=?",
+                (session_id, loan_id),
+            ).fetchall()
+        return rows[0][0] if len(rows) == 1 else None
+
+    def has_loan_candidate(self, session_id: str, account_id: str, loan_id: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM account_candidate_loans WHERE session_id=? AND account_id=? AND loan_id=?",
+                (session_id, account_id, loan_id),
+            ).fetchone()
+        return row is not None
+
+    def loan_candidates(self, session_id: str, query: str = "", offset: int = 0, limit: int = 50):
+        term = query.strip().casefold()
+        with self.connect() as conn:
+            if term:
+                pattern = term.replace("%", "\\%").replace("_", "\\_") + "%"
+                where = ("l.session_id = ? AND (l.loan_id LIKE ? ESCAPE '\\' COLLATE NOCASE "
+                         "OR l.account_id LIKE ? ESCAPE '\\' COLLATE NOCASE "
+                         "OR a.name LIKE ? ESCAPE '\\' COLLATE NOCASE)")
+                params = (session_id, pattern, pattern, pattern)
+            else:
+                where = "l.session_id = ?"
+                params = (session_id,)
+            total = conn.execute(
+                "SELECT COUNT(*) FROM account_candidate_loans l "
+                "JOIN account_candidates a ON a.session_id=l.session_id AND a.account_id=l.account_id "
+                f"WHERE {where}", params,
+            ).fetchone()[0]
+            rows = conn.execute(
+                "SELECT l.loan_id, l.account_id, a.name FROM account_candidate_loans l "
+                "JOIN account_candidates a ON a.session_id=l.session_id AND a.account_id=l.account_id "
+                f"WHERE {where} ORDER BY l.loan_id COLLATE NOCASE, l.account_id LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+        return rows, total
+
+    def loan_candidate_account(self, session_id: str, loan_id: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT account_id FROM account_candidate_loans WHERE session_id=? AND loan_id=?",
+                (session_id, loan_id),
+            ).fetchone()
+        return row[0] if row else None
+
+    def has_loan_candidate(self, session_id: str, account_id: str, loan_id: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM account_candidate_loans WHERE session_id=? AND account_id=? AND loan_id=?",
+                (session_id, account_id, loan_id),
+            ).fetchone()
+        return row is not None
+
     def has_account_candidate(self, session_id: str, account_id: str) -> bool:
         with self.connect() as conn:
             row = conn.execute(

@@ -35,6 +35,8 @@ async function open(active: Session, handler?: (url: string, init?: RequestInit)
 
 describe('V4 app integration', () => {
   it.each([false, true])('shows Claude output after Process without opening the report (provider failure: %s)', async (failed) => {
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, writable: true, value: scroll });
     const active = session({ status: 'ready', report: null, documents: [
       { id: 'd', name: 'evidence.txt', extension: '.txt', size: 10, metadata: {} },
     ] });
@@ -53,8 +55,12 @@ describe('V4 app integration', () => {
     await user.click(screen.getByRole('button', { name: 'Process documents' }));
     expect(screen.getByText(/Claude’s explanation will appear here/)).toBeInTheDocument();
     const text = failed ? completed.report!.llm_error! : completed.report!.llm_analysis!;
-    expect(await screen.findByText(text, {}, { timeout: 4000 })).toBeVisible();
-    expect(screen.getByLabelText('Processing explanation result')).toHaveFocus();
+    expect(await screen.findByText(text, {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Aggregate report commentary' })).toBeVisible();
+    expect(screen.getByText('Aggregate report commentary').closest('details')).toBeNull();
+    expect(screen.getByLabelText('Processing explanation result')).not.toHaveFocus();
+    expect(scroll).not.toHaveBeenCalled();
+    expect(screen.getByText(text)).toBeVisible();
     expect(screen.queryByRole('heading', { name: 'Per-loan underwriting report' })).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/process'))).toHaveLength(1);
     expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/messages'))).toBe(false);

@@ -11,6 +11,8 @@ const response = (body: unknown, status = 200) => new Response(JSON.stringify(bo
 
 describe('Agent', () => {
   it('shows follow-up failure beside the composer, preserves the question and shows the retry reply', async () => {
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, writable: true, value: scroll });
     const active = session({ status: 'ready', documents: [{ id: 'd1', name: 'notes.txt', size: 10, extension: '.txt', metadata: {} }] });
     let fail = true;
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
@@ -40,6 +42,7 @@ describe('Agent', () => {
     expect(reply).toHaveTextContent('A dated source report is missing.');
     expect(screen.queryByRole('alert')).toBeNull();
     expect(input).toHaveValue('');
+    expect(scroll).not.toHaveBeenCalled();
   });
 
   it('renders requested assistant Markdown tables as safe semantic tables', async () => {

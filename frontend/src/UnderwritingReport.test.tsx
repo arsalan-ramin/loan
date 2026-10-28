@@ -34,6 +34,52 @@ function batch(overrides: Partial<UnderwritingBatch> = {}): UnderwritingBatch {
 }
 
 describe('V4 underwriting report', () => {
+  it.each(['Approve', 'Decline', 'Refer'])('shows %s from the isolated TEST demo independently of strict review', (label) => {
+    render(<UnderwritingReport batch={batch({ mode: 'TEST', loan_results: [loan({
+      mode: 'TEST', final_action: 'NO_OPERATIONAL_ACTION', recommendation_path: 'SIMULATED_REVIEW',
+      normalized_data: { demo_decision: { version: 'screenshot-test-demo-v1', label,
+        simulation_only: true, authorization: 'NOT_ISSUED', selected_report_id: 'R1',
+        rationale: 'SBSS 155 is below 160.', criteria: [] } },
+    })] })} />);
+    const region = within(screen.getByRole('region', { name: 'Simulation recommendation for loan-1' }));
+    expect(region.getByText(label)).toBeInTheDocument();
+    expect(region.getByText('SBSS 155 is below 160.')).toBeInTheDocument();
+    expect(region.getByText(/report dates and completion are not checked/)).toBeInTheDocument();
+    expect(region.getByText(/Not a final lending decision/)).toBeInTheDocument();
+  });
+
+  it.each([
+    ['SIMULATED_APPROVE_PATH', 'Approve'],
+    ['SIMULATED_DECLINE_PATH', 'Decline'],
+    ['SIMULATED_REVIEW', 'Refer'],
+  ] as const)('labels qualified TEST path %s as a simulation-only %s recommendation', (path, label) => {
+    render(<UnderwritingReport batch={batch({ mode: 'TEST', loan_results: [loan({
+      mode: 'TEST', recommendation_path: path, final_action: 'NO_OPERATIONAL_ACTION',
+      missing_inputs: [], conflicts: [],
+    })] })} />);
+    const result = within(screen.getByRole('region', { name: 'Simulation recommendation for loan-1' }));
+    expect(result.getByText(label)).toBeInTheDocument();
+    expect(result.getByText(/Not a final lending decision/)).toBeInTheDocument();
+  });
+
+  it('does not promote a standalone approve candidate or incomplete TEST path into an approval', () => {
+    render(<UnderwritingReport batch={batch({ mode: 'TEST', loan_results: [loan({
+      mode: 'TEST', recommendation_path: 'SIMULATED_APPROVE_PATH', final_action: 'NO_OPERATIONAL_ACTION',
+      normalized_data: { business_banking_workflow: { recommendation_candidate: 'APPROVE_CANDIDATE' } },
+      missing_inputs: ['explicit_iso_as_of_date'], conflicts: [],
+    })] })} />);
+    const result = within(screen.getByRole('region', { name: 'Simulation recommendation for loan-1' }));
+    expect(result.getByText('Refer')).toBeInTheDocument();
+    expect(result.queryByText('Approve')).not.toBeInTheDocument();
+  });
+
+  it('displays Refer in PRODUCTION regardless of a diagnostic candidate', () => {
+    render(<UnderwritingReport batch={batch({ loan_results: [loan({
+      credit_assessment: 'SIMULATED_APPROVAL_CANDIDATE', missing_inputs: [], conflicts: [],
+    })] })} />);
+    expect(within(screen.getByRole('region', { name: 'Simulation recommendation for loan-1' })).getByText('Refer')).toBeInTheDocument();
+  });
+
   it('renders raw characteristic key/value pairs without deriving date precision', async () => {
     render(<UnderwritingReport batch={batch({ loan_results: [loan({ normalized_data: {
       as_of_date: null,

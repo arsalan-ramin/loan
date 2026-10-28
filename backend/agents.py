@@ -14,6 +14,7 @@ from pypdf import PdfReader
 
 from .models import (Document, Finding, PolicyEvaluation, PolicyProfileResult,
                      PolicyRuleResult, Report, Session, default_rules)
+from . import commentary
 from .llm import AnthropicLLM, LLMError
 from .storage import Store
 from .excel import extract_excel
@@ -227,6 +228,7 @@ class DecisionAgent:
             report.underwriting = evaluate_underwriting(
                 session.documents, session.mode,
                 selected_account_id=session.selected_account_id,
+                selected_loan_id=session.selected_loan_id,
             )
             report.policy_evaluation = underwriting_policy_summary(report.underwriting, session)
             report.decision = "needs_review"
@@ -240,7 +242,7 @@ class DecisionAgent:
                         len(report.underwriting.data_quality_issues))
         llm = AnthropicLLM()
         try:
-            report.llm_analysis = llm.explain(report)
+            report.llm_analysis = commentary.explain(llm, report)
             report.llm_model = llm.model
         except LLMError as exc:
             # Do not discard valid deterministic findings when the provider is unavailable.
@@ -263,4 +265,4 @@ class MemoryAgent:
         return "Document evidence and conversation saved to local ChromaDB."
 
     def respond(self, session: Session, query: str) -> str:
-        return AnthropicLLM().chat(self.store, session, query)
+        return commentary.chat(AnthropicLLM(), self.store, session, query)

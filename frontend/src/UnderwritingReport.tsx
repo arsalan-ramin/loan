@@ -74,14 +74,48 @@ function LoanCard({ loan }: { loan: LoanRecommendation }) {
     : [];
   const diagnosticFeatures = Object.entries(loan.normalized_data).filter(([key]) =>
     key !== 'implementation_guide_diagnostics' && key !== 'out_of_scope_diagnostics' && key !== 'decision_flow'
-    && key !== 'observation_groups' && key !== 'characteristic_observations');
+    && key !== 'observation_groups' && key !== 'characteristic_observations' && key !== 'demo_decision');
   const observationGroups = Array.isArray(loan.normalized_data.observation_groups)
     ? loan.normalized_data.observation_groups as Array<Record<string, unknown>> : [];
   const characteristicObservations = loan.normalized_data.characteristic_observations && typeof loan.normalized_data.characteristic_observations === 'object'
     ? loan.normalized_data.characteristic_observations as { groups?: Array<Record<string, unknown>>; note?: string } : undefined;
   const workflow = loan.normalized_data.business_banking_workflow as { eligibility?: string; recommendation_candidate?: string; stages?: Array<{ stage: string; status: string; summary: string }> } | undefined;
+  // Only an authoritative qualified TEST path can display an approve/decline
+  // simulation. A standalone diagnostic or saved workflow candidate cannot
+  // override a review path, missing inputs, conflicts or production mode.
+  const simulationReady = loan.mode === 'TEST' && loan.final_action === 'NO_OPERATIONAL_ACTION'
+    && loan.authorization === 'NOT_ISSUED' && loan.human_review_required
+    && !loan.conflicts.length && !loan.missing_inputs.length;
+  const recommendation = simulationReady && loan.recommendation_path === 'SIMULATED_APPROVE_PATH'
+    ? 'Approve' : simulationReady && loan.recommendation_path === 'SIMULATED_DECLINE_PATH'
+      ? 'Decline' : 'Refer';
+  const demo = loan.mode === 'TEST' && loan.normalized_data.demo_decision
+    ? loan.normalized_data.demo_decision as { version?: string; label?: string; simulation_only?: boolean;
+      authorization?: string; rationale?: string; selected_report_id?: string | null; candidate_route?: string | null;
+      criteria?: Array<{ criterion: string; value: unknown; status: string; detail: string; evidence_refs: string[] }> } : null;
+  const showDemo = demo?.version === 'screenshot-test-demo-v1' && demo.simulation_only === true
+    && demo.authorization === 'NOT_ISSUED' && ['Approve', 'Decline', 'Refer'].includes(demo.label ?? '');
   return <article className="underwriting-loan" aria-label={`Loan ${loan.loan_id}`}>
     <h4>Loan {loan.loan_id}</h4>
+    <section aria-label={`Simulation recommendation for ${loan.loan_id}`}>
+      <h5>{showDemo ? 'Business demo recommendation · simulation only' : 'Recommendation · simulation only'}</h5>
+      <p className="underwriting-status">{showDemo ? demo!.label : recommendation}</p>
+      {showDemo && <>
+        <p>{demo!.rationale}</p>
+        {demo!.candidate_route && <p>Product candidate: {demo!.candidate_route}</p>}
+        <p>Demo report: {demo!.selected_report_id ?? 'No account-linked report'}. Uses the first account-linked report in source order; report dates and completion are not checked and freshness is not asserted.</p>
+        <details><summary>Verify demo criteria and evidence</summary>
+          <div className="assistant-table-scroll"><table><thead><tr><th>Criterion</th><th>Value</th><th>Result</th><th>Explanation</th><th>Evidence</th></tr></thead>
+            <tbody>{demo!.criteria?.map((check, index) => <tr key={`${check.criterion}-${index}`}>
+              <td>{check.criterion.replaceAll('_', ' ')}</td><td>{displayDiagnostic(check.value)}</td>
+              <td>{check.status === 'FAIL' ? 'Knockout matched' : check.status === 'PASS' ? 'Knockout not matched' : check.status === 'UNKNOWN' ? 'Unverified' : 'Observed'}</td>
+              <td>{check.detail}</td><td>{check.evidence_refs.join(', ')}</td>
+            </tr>)}</tbody></table></div>
+        </details>
+        <p>The strict underwriting trace below is separate and may remain in review; it does not override this TEST demonstration.</p>
+      </>}
+      <p>Not a final lending decision. Authorized human review is required; no lending action is issued.</p>
+    </section>
     <p className="policy-disclaimer"><strong>Decision status: {loan.decision_status}. No automated approval or denial is issued.</strong></p>
     {loan.normalized_data.behavioral_program != null && <p>Source underwriting program: {displayDiagnostic(loan.normalized_data.behavioral_program)}. Retained as program evidence; not automatically substituted for the requested application path.</p>}
     {workflow && <section aria-label="Business banking existing-process workflow">

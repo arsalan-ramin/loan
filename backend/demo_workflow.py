@@ -1,0 +1,295 @@
+"""Isolated screenshot simulation v1; never authoritative underwriting policy.
+
+Graph insertion order is source order. The first account-linked report is used
+without checking report date/completion; poisoned fields remain unknown. No raw
+characteristics are pivoted, no EBIT is substituted, and no graph is modified.
+"""
+
+from __future__ import annotations
+
+import re
+from calendar import monthrange
+from datetime import date
+from decimal import Decimal
+from typing import Any
+
+from .entity_graph import EntityGraph, EntityNode, iso_date
+from .underwriting_models import USD_100K, USD_100M, exact_decimal
+
+VERSION = "screenshot-test-demo-v1"
+SELECTION_BASIS = "FIRST_ACCOUNT_MATCH_FOR_TEST_DEMO"
+
+
+def _number(value: Any) -> Decimal | None:
+    try:
+        return exact_decimal(value)
+    except ValueError:
+        return None
+
+
+def _anniversary(original: date, years: int) -> date:
+    year = original.year + years
+    return date(year, original.month, min(original.day, monthrange(year, original.month)[1]))
+
+
+def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], *,
+                  mode: str, response: EntityNode | None = None) -> dict[str, Any] | None:
+    """Produce only additive TEST facts; PRODUCTION does not evaluate the tree."""
+    if mode != "TEST":
+        return None
+    borrowers = graph.borrowers(loan.id)
+    borrower = next(iter(borrowers)) if len(borrowers) == 1 else None
+    account = graph.table("Account").get(borrower or "")
+    reports = graph.related("CreditReport", "account_id", borrower) if borrower else []
+    report = reports[0] if reports else None
+    criteria: list[dict[str, Any]] = []
+    facts: dict[str, Any] = {}
+    missing: list[str] = []
+    conflicts: list[str] = []
+    identity = account is not None and not ({"borrower_account_id"} & loan.poisoned)
+    profile_nodes = [loan, *graph.related("LoanExtension", "loan_id", loan.id)]
+    if account is not None:
+        profile_nodes.append(account)
+
+    def read(field: str, nodes: list[EntityNode]) -> tuple[Any, list[str]]:
+        refs = sorted({ref for node in nodes for ref in node.field_refs.get(field, [])})
+        if any(field in node.poisoned for node in nodes):
+            return None, refs
+        values = [node.fields[field] for node in nodes if node.fields.get(field) is not None]
+        if not values or any(str(value) != str(values[0]) for value in values):
+            return None, refs
+        return values[0], refs
+
+    def add(key: str, value: Any, clear: bool | None, refs: list[str], detail: str,
+            *, knockout: bool = True) -> None:
+        facts[key] = str(value) if isinstance(value, Decimal) else value
+        status = "UNKNOWN" if clear is None else "PASS" if clear else "FAIL"
+        criteria.append({"criterion": key, "value": facts[key], "status": status,
+                         "evidence_refs": refs, "detail": detail, "knockout": knockout})
+        if clear is None:
+            missing.append(key)
+
+    report_nodes = [report] if report is not None else []
+    code_raw, code_refs = read("max_delinquency_public_records", report_nodes)
+    code = _number(code_raw)
+    code = code if code in {Decimal(0), Decimal(1), Decimal(2), Decimal(3)} else None
+    add("public_record_code", code, code == 0 if code is not None else None, code_refs,
+        "Public-record codes 1, 2 or 3 match a knockout; explicit 0 does not.")
+
+    ebitda_raw, ebitda_refs = read("ebitda", profile_nodes)
+    ebitda = _number(ebitda_raw)
+    add("ebitda_usd", ebitda, ebitda >= 0 if ebitda is not None else None, ebitda_refs,
+        "Only explicit normalized EBITDA; negative EBITDA matches a knockout. EBIT is not EBITDA.")
+
+    as_of_raw, date_refs = read("as_of_date", [loan])
+    as_of = iso_date(as_of_raw)
+    count_raw, count_refs = read("bankruptcy_count", report_nodes)
+    count = _number(count_raw)
+    count = count if count is not None and count >= 0 and count == count.to_integral_value() else None
+    discharge_raw, discharge_refs = read("bankruptcy_discharge_date", report_nodes)
+    discharge = iso_date(discharge_raw)
+    bankruptcy_clear = True if count == 0 else None
+    if count is not None and count > 0 and discharge and as_of and discharge <= as_of:
+        bankruptcy_clear = as_of.year - discharge.year >= 5 and as_of >= _anniversary(discharge, 5)
+    add("bankruptcy_clear", bankruptcy_clear, bankruptcy_clear,
+        sorted(set(count_refs + discharge_refs + date_refs)),
+        "Explicit zero count needs no discharge date. Positive count needs verified discharge and application as-of dates; less than five calendar years matches a knockout.")
+    facts["bankruptcy_count"] = str(count) if count is not None else None
+
+    dob_raw, dob_refs = read("dob", profile_nodes)
+    dob = iso_date(dob_raw)
+    age = None
+    if dob and as_of and dob <= as_of:
+        age = as_of.year - dob.year - (as_of < _anniversary(dob, as_of.year - dob.year))
+    add("age_years", age, age >= 18 if age is not None else None,
+        sorted(set(dob_refs + date_refs)),
+        "Under 18 matches a knockout; explicit DOB and application as-of date are required. No report date is required.")
+
+    # A generic/business score cannot become personal FICO by convenient value.
+    fico_field = "personal_fico"
+    fico_raw, fico_refs = read(fico_field, report_nodes)
+    if report is not None and "personal_fico" not in report.fields:
+        category = str(report.fields.get("report_category", "")).strip().casefold()
+        role = str(report.fields.get("report_role", "")).strip().casefold()
+        if category in {"personal", "consumer", "personal_fico"} and role == "borrower":
+            fico_raw, fico_refs = read("fico", report_nodes)
+        fico_refs = sorted(set(fico_refs + report.field_refs.get("report_category", [])
+                               + report.field_refs.get("report_role", [])))
+    fico = _number(fico_raw)
+    fico = fico if fico is not None and 300 <= fico <= 850 and fico == fico.to_integral_value() else None
+    add("fico", fico, fico >= 650 if fico is not None else None, fico_refs,
+        "Explicitly typed borrower personal FICO below 650 matches a knockout; no business score or inferred party average.")
+
+    # Prefer the explicitly loan-scoped Query 2 scalar. A strict selected response
+    # may supply a canonical score, but this module never changes response selection.
+    sbss_raw, sbss_refs = read("sbss", [loan])
+    if sbss_raw is None and not sbss_refs and response is not None:
+        sbss_raw, sbss_refs = read("sbss", [response])
+    sbss = _number(sbss_raw)
+    sbss = sbss if sbss is not None and 0 <= sbss <= 300 and sbss == sbss.to_integral_value() else None
+    add("sbss", sbss, sbss >= 160 if sbss is not None else None, sbss_refs,
+        "SBSS below 160 matches a knockout, independently of missing report dates or other inputs.")
+
+    ownership_raw, ownership_refs = read("ownership_years", profile_nodes)
+    ownership = _number(ownership_raw)
+    ownership = ownership if ownership is not None and ownership >= 0 else None
+    amount_raw, amount_refs = read("requested_amount", profile_nodes)
+    amount = _number(amount_raw)
+    amount = amount if amount is not None and amount >= 0 else None
+    naics_raw, naics_refs = read("naics", profile_nodes)
+    naics = naics_raw if isinstance(naics_raw, str) and re.fullmatch(r"\d{2,6}", naics_raw) else None
+    vehicle_raw, vehicle_refs = read("vehicle_only", profile_nodes)
+    vehicle = vehicle_raw if type(vehicle_raw) is bool else (
+        {"true": True, "false": False, "yes": True, "no": False, "1": True, "0": False,
+         "y": True, "n": False}.get(str(vehicle_raw).strip().casefold()))
+    facts.update(ownership_years=str(ownership) if ownership is not None else None,
+                 requested_amount_usd=str(amount) if amount is not None else None,
+                 naics=naics, vehicle_only=vehicle)
+
+    label, route, branch, rationale = "Refer", None, "INPUTS_UNKNOWN", "Required diagram inputs remain unknown."
+    failures = [item for item in criteria if item["status"] == "FAIL"]
+    if not identity:
+        missing.append("explicit_unique_borrower_account_relationship")
+        rationale = "A unique explicit borrower account relationship is required."
+    elif failures:
+        label, branch = "Decline", "KNOWN_KNOCKOUT"
+        reasons = {
+            "public_record_code": f"Public-record code {facts['public_record_code']} matches a knockout",
+            "ebitda_usd": f"Explicit EBITDA {facts['ebitda_usd']} USD is negative",
+            "bankruptcy_clear": "Verified bankruptcy discharge is less than five calendar years ago",
+            "age_years": f"Age {age} is below 18",
+            "fico": f"Personal FICO {facts['fico']} is below 650",
+            "sbss": f"SBSS {facts['sbss']} is below 160",
+        }
+        rationale = "; ".join(reasons[item["criterion"]] for item in failures) + "."
+    else:
+        # Determine a branch even with unrelated unknown knockout inputs. A known
+        # amount decline is still a risk match; UNKNOWN never clears approval.
+        if sbss is not None and sbss >= 160:
+            if sbss < 190:
+                if ownership is None:
+                    missing.append("ownership_years")
+                elif ownership >= 2:
+                    route, branch = "SBA", "SBSS_160_189_OWNERSHIP_GE_2"
+                elif fico is not None and fico >= 760:
+                    route, branch = "SBA", "SBSS_160_189_OWNERSHIP_LT_2_FICO_GE_760"
+                elif fico is not None and 650 <= fico < 760:
+                    if amount is None:
+                        missing.append("requested_amount_usd")
+                    elif amount <= USD_100K:
+                        route, branch = "SBA", "SBSS_160_189_AMOUNT_LE_100K"
+                    elif amount <= USD_100M:
+                        branch = "REQUEST_THRESHOLD_CONFLICT"
+                        conflicts.append("REQUEST_THRESHOLD_100M_VS_100K")
+                        rationale = "Requested amount is above USD100K and at most USD100M; screenshot thresholds conflict."
+                    else:
+                        label, branch = "Decline", "SBSS_160_189_AMOUNT_GT_100M"
+                        rationale = "Requested amount exceeds both conflicting screenshot thresholds (USD100K and USD100M)."
+            elif sbss < 200:
+                route, branch = "SBA", "SBSS_190_199"
+            elif ownership is None:
+                missing.append("ownership_years")
+            elif ownership < 2:
+                route, branch = "SBA", "SBSS_GE_200_OWNERSHIP_LT_2"
+            elif naics is None or not config.get("high_risk_naics"):
+                missing.append("naics_or_listed_high_risk_prefixes")
+            else:
+                high_risk = any(naics.startswith(prefix) for prefix in config["high_risk_naics"])
+                route = "SBA" if high_risk else "CONVENTIONAL"
+                branch = "SBSS_GE_200_OWNERSHIP_GE_2_" + ("HIGH_RISK_NAICS" if high_risk else "OTHER_NAICS")
+        if route == "SBA":
+            if vehicle is None:
+                missing.append("vehicle_only")
+            elif vehicle:
+                route = "CONVENTIONAL"
+                branch += "_VEHICLE_ONLY_OVERRIDE"
+        if route and not missing and not conflicts:
+            label = "Approve"
+            rationale = f"All six knockout checks passed; {branch} selects {route} in this simulation."
+        elif missing and label != "Decline" and not conflicts:
+            rationale = "Unknown diagram inputs: " + ", ".join(dict.fromkeys(missing)) + "."
+
+    for key, value, refs in (("ownership_years", facts["ownership_years"], ownership_refs),
+                             ("requested_amount_usd", facts["requested_amount_usd"], amount_refs),
+                             ("naics", naics, naics_refs), ("vehicle_only", vehicle, vehicle_refs)):
+        criteria.append({"criterion": key, "value": value,
+                         "status": "UNKNOWN" if value is None else "OBSERVED",
+                         "evidence_refs": refs, "detail": "Branch input; required only where the screenshot tree uses it.",
+                         "knockout": False})
+    used_refs = {ref for item in criteria for ref in item["evidence_refs"]}
+    demo_nodes = [*profile_nodes, *report_nodes, *([response] if response is not None else [])]
+    demo_evidence = {item.id: item for node in demo_nodes for item in node.evidence if item.id in used_refs}
+    return {
+        "version": VERSION, "mode": "TEST", "label": label,
+        "simulation_only": True, "authorization": "NOT_ISSUED", "human_review_required": True,
+        "final_action": "NO_OPERATIONAL_ACTION", "selection_basis": SELECTION_BASIS,
+        "selected_report_id": report.id if report else None,
+        "report_selection_status": "FIRST_ACCOUNT_MATCH" if report else "NO_ACCOUNT_MATCH",
+        "report_date_checked": False, "report_completion_checked": False,
+        "freshness_asserted": False,
+        "reference_date": as_of.isoformat() if as_of else None,
+        "reference_date_basis": "EXPLICIT_APPLICATION_AS_OF_DATE" if as_of else "UNAVAILABLE",
+        "candidate_route": route, "branch": branch, "rationale": rationale,
+        "criteria": criteria, "normalized_facts": facts,
+        "source_evidence": [item.model_dump() for item in demo_evidence.values()],
+        "missing_inputs": sorted(set(missing)), "conflicts": conflicts,
+        "strict_trace_unchanged": True,
+    }
+
+
+def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dict[str, Any] | None:
+    """Allowlist normalized facts; never send raw source fields or free text."""
+    if (mode != "TEST" or not isinstance(data, dict) or data.get("version") != VERSION
+            or data.get("mode") != "TEST" or data.get("simulation_only") is not True
+            or data.get("authorization") != "NOT_ISSUED" or data.get("human_review_required") is not True
+            or data.get("selection_basis") != SELECTION_BASIS
+            or data.get("label") not in {"Approve", "Decline", "Refer"}):
+        return None
+    keys = {"public_record_code", "ebitda_usd", "bankruptcy_clear", "age_years", "fico", "sbss",
+            "ownership_years", "requested_amount_usd", "naics", "vehicle_only"}
+    facts = data.get("normalized_facts")
+    facts = facts if isinstance(facts, dict) else {}
+    normalized: dict[str, Any] = {}
+    for key in ("fico", "sbss", "ownership_years", "ebitda_usd", "requested_amount_usd"):
+        number = _number(facts.get(key))
+        if number is not None and len(str(number)) <= 100:
+            normalized[key] = str(number)
+    if type(facts.get("age_years")) is int and 0 <= facts["age_years"] <= 150:
+        normalized["age_years"] = facts["age_years"]
+    for key in ("bankruptcy_clear", "vehicle_only"):
+        if type(facts.get(key)) is bool:
+            normalized[key] = facts[key]
+    naics = facts.get("naics")
+    if isinstance(naics, str) and re.fullmatch(r"\d{2,6}", naics):
+        normalized["naics"] = naics
+    checks = []
+    raw_criteria = data.get("criteria")
+    for item in raw_criteria[:10] if isinstance(raw_criteria, list) else []:
+        if not isinstance(item, dict) or item.get("criterion") not in keys:
+            continue
+        key, status = item["criterion"], item.get("status")
+        if status not in {"PASS", "FAIL", "UNKNOWN", "OBSERVED"}:
+            continue
+        refs = item.get("evidence_refs")
+        checks.append({"criterion": key, "status": status, "value": normalized.get(key),
+                       "evidence_refs": [ref for ref in refs[:40] if isinstance(ref, str) and ref in allowed_refs]
+                       if isinstance(refs, list) else []})
+    branch = data.get("branch")
+    branch = branch if isinstance(branch, str) and re.fullmatch(r"[A-Z0-9_]{1,128}", branch) else None
+    known_missing = keys | {"explicit_unique_borrower_account_relationship", "naics_or_listed_high_risk_prefixes"}
+    missing = data.get("missing_inputs")
+    reference = iso_date(data.get("reference_date"))
+    return {
+        "version": VERSION, "label": data["label"], "simulation_only": True,
+        "authorization": "NOT_ISSUED", "human_review_required": True,
+        "selection_basis": SELECTION_BASIS, "report_date_checked": False,
+        "report_completion_checked": False, "freshness_asserted": False,
+        "reference_date": reference.isoformat() if reference else None,
+        "reference_date_basis": "EXPLICIT_APPLICATION_AS_OF_DATE" if reference else "UNAVAILABLE",
+        "candidate_route": data.get("candidate_route") if data.get("candidate_route") in {"SBA", "CONVENTIONAL"} else None,
+        "branch": branch, "normalized_facts": normalized, "criteria": checks,
+        "missing_inputs": [key for key in missing[:20] if isinstance(key, str) and key in known_missing]
+        if isinstance(missing, list) else [],
+        "conflicts": ["REQUEST_THRESHOLD_100M_VS_100K"] if branch == "REQUEST_THRESHOLD_CONFLICT" else [],
+        "rationale": "Separate TEST simulation; explain supplied check statuses and normalized facts only.",
+    }

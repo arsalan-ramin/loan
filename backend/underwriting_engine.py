@@ -648,6 +648,107 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
                 profile[feature] = raw
                 refs.setdefault(feature, []).extend(item.id for item in observation.evidence)
 
+    # Keep every characteristic key/value pair as raw review evidence. Query 1
+    # rows without an analysis FK may be scoped by explicit same-row loan,
+    # account and party role; response/report IDs remain null unless explicit
+    # and validated. No characteristic is parsed into an underwriting field.
+    characteristic_groups: dict[tuple[str, str, str | None, str | None, str], dict[str, Any]] = {}
+    seen_characteristics: set[tuple[Any, ...]] = set()
+    loan_party_roles = {account_id: role for linked_loan, account_id, role, _ in graph.associations
+                        if linked_loan == loan.id}
+    if borrower and borrower in graph.table("Account"):
+        loan_party_roles.setdefault(borrower, "borrower")
+    linked_accounts = set(graph.loan_accounts(loan.id))
+    for characteristic in graph.table("Characteristic").values():
+        scope = characteristic.fields.get("source_row_scope")
+        if not isinstance(scope, dict):
+            continue
+        account_id = scope.get("account_id")
+        if (scope.get("loan_id") != loan.id or account_id not in linked_accounts
+                or account_id not in graph.table("Account")
+                or scope.get("party_role") != loan_party_roles.get(account_id)):
+            continue
+        report_id = scope.get("report_id")
+        report_node = graph.table("CreditReport").get(report_id or "")
+        if (report_node is None or report_node.poisoned
+                or report_node.fields.get("account_id") not in (None, account_id)):
+            report_id = None
+        response_id = scope.get("response_id")
+        if scope.get("response_link_status") != "EXPLICIT_RESPONSE_LINK_VALIDATED":
+            response_id = None
+        party_role = scope["party_role"]
+        group_key = (account_id, loan.id, response_id, report_id, party_role)
+        group = characteristic_groups.setdefault(group_key, {
+            "account_id": account_id,
+            "loan_id": loan.id,
+            "party_role": party_role,
+            "response_id": response_id,
+            "response_link_status": scope.get("response_link_status"),
+            "report_id": report_id,
+            "report_link_status": "EXPLICIT_SAME_ROW_REPORT" if report_id else "NOT_EXPORTED_OR_UNRESOLVED",
+            "observations": [],
+        })
+        include(characteristic)
+        key_value = observation_text(characteristic.fields.get("key"))
+        raw_value = observation_text(characteristic.fields.get("value"))
+        evidence_refs = sorted({
+                *characteristic.field_refs.get("key", []),
+                *characteristic.field_refs.get("value", []),
+                *scope.get("evidence_refs", []),
+            })
+        observation_id = None if characteristic.id.startswith("observation:") else characteristic.id
+        observation_key = (observation_id, key_value, raw_value, tuple(evidence_refs))
+        if observation_key in seen_characteristics:
+            continue
+        seen_characteristics.add(observation_key)
+        group["observations"].append({"key": key_value, "value": raw_value,
+                                      "source_record_id": observation_id,
+                                      "evidence_refs": evidence_refs})
+
+    # Canonical/analysis-linked observations are also included when their full
+    # validated parent chain ties them to this loan. Preserve historical rows
+    # as separate groups, never merge/overwrite by key.
+    for parent_group in observation_groups:
+        account_id = parent_group["account_id"]
+        if account_id not in linked_accounts or account_id not in graph.table("Account"):
+            continue
+        party_role = loan_party_roles.get(account_id)
+        if party_role not in {"borrower", "guarantor"}:
+            continue
+        response_id = parent_group.get("response_id")
+        response_node = graph.table("LCRESPONSE").get(response_id or "")
+        if (response_node is None or response_node.poisoned
+                or not (response_node.fields.get("loan_id") == loan.id
+                        or (loan.fields.get("response_id") == response_id
+                            and response_node.fields.get("loan_id") is None))):
+            continue
+        report_id = parent_group.get("report_id")
+        parent_report = graph.table("CreditReport").get(report_id or "")
+        if report_id and (parent_report is None or parent_report.poisoned
+                          or parent_report.fields.get("account_id") != account_id):
+            report_id = None
+        group_key = (account_id, loan.id, response_id, report_id, party_role)
+        group = characteristic_groups.setdefault(group_key, {
+            "account_id": account_id, "loan_id": loan.id, "party_role": party_role,
+            "response_id": response_id, "response_link_status": "EXPLICIT_VALIDATED_PARENT_CHAIN",
+            "report_id": report_id,
+            "report_link_status": "EXPLICIT_VALIDATED_PARENT_CHAIN" if report_id else "NOT_EXPORTED_OR_UNRESOLVED",
+            "observations": [],
+        })
+        for item in parent_group.get("characteristics", []):
+            observation_key = (item.get("record_id"), item.get("key"), item.get("value"),
+                               tuple(item.get("evidence_refs", [])))
+            if observation_key in seen_characteristics:
+                continue
+            seen_characteristics.add(observation_key)
+            group["observations"].append({"key": item.get("key"), "value": item.get("value"),
+                                          "source_record_id": item.get("record_id"),
+                                          "evidence_refs": item.get("evidence_refs", [])})
+    characteristic_observations = {
+        "groups": list(characteristic_groups.values()),
+        "note": "Raw source key/value observations only. Values are not inferred, normalized into policy inputs, or used to select reports. Unavailable response/report links remain unlinked.",
+    }
+
     amounts = {key: profile.get(key) if isinstance(profile.get(key), Decimal) else None for key in AMOUNT_KEYS}
     tiers = amounts["tier_i"], amounts["tier_ii"]
     amounts["effective_tgc"] = max(tiers[0], tiers[1]) if tiers[0] is not None and tiers[1] is not None else None
@@ -655,6 +756,7 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
                                 if key not in AMOUNT_KEYS and key not in {"currency", "amount_scale", "personal_fico"}}
     features.update(observations)
     features["observation_groups"] = observation_groups
+    features["characteristic_observations"] = characteristic_observations
     if mode == "TEST":
         features["simulation_reference"] = {
             "review_date": datetime.now(timezone.utc).date().isoformat(),

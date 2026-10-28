@@ -93,6 +93,7 @@ export interface UnderwritingRuleResult {
 export interface LoanRecommendation {
   loan_id: string;
   borrower_account_id: string | null;
+  decision_status: 'Human Review';
   currency: 'USD';
   // Decimal money is serialized as exact strings by the backend. Never coerce to Number.
   normalized_amounts_usd: Record<string, string | null>;

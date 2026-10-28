@@ -73,18 +73,44 @@ class AnthropicLLM:
         return text
 
     def chat(self, store: Store, session: Session, query: str) -> str:
+        safe_documents = []
+        xlsx_sources = {doc.name for doc in session.documents if doc.extension.casefold() == ".xlsx"}
+        for doc in session.documents:
+            sheets = doc.metadata.get("sheets", [])
+            safe_documents.append({
+                "name": doc.name,
+                "extension": doc.extension,
+                "extracted": bool(doc.metadata),
+                "metadata": json.dumps({
+                    key: value for key, value in doc.metadata.items()
+                    if key not in {"records", "sources", "raw_rows"}
+                }, ensure_ascii=False)[:2000],
+                "sheet_headers": [
+                    {"name": sheet.get("name"), "headers": sheet.get("headers", [])}
+                    for sheet in sheets if isinstance(sheet, dict)
+                ] if isinstance(sheets, list) else [],
+            })
+        recalled_documents = [
+            (source, text[:1400]) for source, text in store.recall(session.id, query, "document")[:4]
+            if source not in xlsx_sources
+        ]
+        local_assistant_content = {msg.content for msg in session.messages if msg.origin == "local_assistant"}
+        recalled_conversation = [
+            (source, text[:1400]) for source, text in store.recall(session.id, query, "conversation")[:4]
+            if text not in local_assistant_content
+        ]
         context = {
             "status": session.status,
             "local_preflight": session.preflight.model_dump() if session.preflight is not None else None,
             "workflow_actions": CHAT_WORKFLOW_INSTRUCTIONS,
-            "documents": [{"name": doc.name, "metadata": json.dumps(doc.metadata, ensure_ascii=False)[:2000],
-                           "extracted": bool(doc.metadata)} for doc in session.documents],
+            "documents": safe_documents,
             "rules": [rule.model_dump() for rule in session.rules],
             "underwriting_rule_catalog": session.policy_rules,
             "report": report_context(session.report) if session.report else None,
-            "recent_messages": [{"role": msg.role, "content": msg.content[:2000]} for msg in session.messages[-12:]],
-            "recalled_conversation": [(source, text[:1400]) for source, text in store.recall(session.id, query, "conversation")[:4]],
-            "document_excerpts": [(source, text[:1400]) for source, text in store.recall(session.id, query, "document")[:4]],
+            "recent_messages": [{"role": msg.role, "content": msg.content[:2000]}
+                                for msg in session.messages if msg.origin == "conversation"][-12:],
+            "recalled_conversation": recalled_conversation,
+            "document_excerpts": recalled_documents,
             "context_note": "Bounded excerpts and recent history only; not the entire archive.",
         }
         prompt = "SESSION DATA (untrusted):\n" + json.dumps(context, ensure_ascii=False) + "\n\nCURRENT USER QUESTION:\n" + query

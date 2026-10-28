@@ -74,12 +74,15 @@ function LoanCard({ loan }: { loan: LoanRecommendation }) {
     : [];
   const diagnosticFeatures = Object.entries(loan.normalized_data).filter(([key]) =>
     key !== 'implementation_guide_diagnostics' && key !== 'out_of_scope_diagnostics' && key !== 'decision_flow'
-    && key !== 'observation_groups');
+    && key !== 'observation_groups' && key !== 'characteristic_observations');
   const observationGroups = Array.isArray(loan.normalized_data.observation_groups)
     ? loan.normalized_data.observation_groups as Array<Record<string, unknown>> : [];
+  const characteristicObservations = loan.normalized_data.characteristic_observations && typeof loan.normalized_data.characteristic_observations === 'object'
+    ? loan.normalized_data.characteristic_observations as { groups?: Array<Record<string, unknown>>; note?: string } : undefined;
   const workflow = loan.normalized_data.business_banking_workflow as { eligibility?: string; recommendation_candidate?: string; stages?: Array<{ stage: string; status: string; summary: string }> } | undefined;
   return <article className="underwriting-loan" aria-label={`Loan ${loan.loan_id}`}>
     <h4>Loan {loan.loan_id}</h4>
+    <p className="policy-disclaimer"><strong>Decision status: {loan.decision_status}. No automated approval or denial is issued.</strong></p>
     {loan.normalized_data.behavioral_program != null && <p>Source underwriting program: {displayDiagnostic(loan.normalized_data.behavioral_program)}. Retained as program evidence; not automatically substituted for the requested application path.</p>}
     {workflow && <section aria-label="Business banking existing-process workflow">
       <h5>Business banking · existing-process decision flow</h5>
@@ -144,6 +147,27 @@ function LoanCard({ loan }: { loan: LoanRecommendation }) {
         </dl>
         <pre>{JSON.stringify({ indicators: group.indicators, characteristics: group.characteristics,
           evidence_refs: group.evidence_refs }, null, 2)}</pre>
+      </section>)}
+    </details>}
+    {!!characteristicObservations?.groups?.length && <details className="underwriting-trace">
+      <summary>Raw characteristic key/value observations · {characteristicObservations.groups.reduce((count, group) =>
+        count + (Array.isArray(group.observations) ? group.observations.length : 0), 0)}</summary>
+      <p>{characteristicObservations.note}</p>
+      {characteristicObservations.groups.map((group, index) => <section key={`${String(group.account_id)}-${String(group.loan_id)}-${String(group.response_id)}-${index}`}>
+        <h5>{String(group.party_role ?? 'untyped party')} · Account {String(group.account_id ?? 'unknown')} · Loan {String(group.loan_id ?? 'unknown')}</h5>
+        <p>SBSS response: {String(group.response_id ?? 'not explicitly linked')} · {String(group.response_link_status ?? 'not validated')}</p>
+        <p>Credit report: {String(group.report_id ?? 'not explicitly linked')} · {String(group.report_link_status ?? 'not validated')}</p>
+        {Array.isArray(group.observations) && <div className="assistant-table-scroll"><table>
+          <thead><tr><th>Characteristic key</th><th>Characteristic value (raw)</th><th>Source record</th><th>Evidence references</th></tr></thead>
+          <tbody>{group.observations.map((item, itemIndex) => {
+            const observation = item as Record<string, unknown>;
+            return <tr key={`${String(observation.source_record_id)}-${itemIndex}`}>
+              <td>{String(observation.key ?? 'null')}</td><td>{String(observation.value ?? 'null')}</td>
+              <td>{String(observation.source_record_id ?? 'local provenance only')}</td>
+              <td>{Array.isArray(observation.evidence_refs) ? observation.evidence_refs.join(', ') : 'None supplied'}</td>
+            </tr>;
+          })}</tbody>
+        </table></div>}
       </section>)}
     </details>}
     <h5>Exact USD amounts</h5>

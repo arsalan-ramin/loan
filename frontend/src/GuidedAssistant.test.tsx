@@ -96,7 +96,7 @@ describe('Guided assistant workflow', () => {
     active.report = { id: 'r1', created_at: 'today', decision: 'needs_review', summary: 'Account A review', document_count: 3,
       findings: [], underwriting: { mode: 'TEST', currency: 'USD', policy_version: 'v4', source_document: 'LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf',
         source_available: false, data_quality_issues: [], loan_results: [{
-          loan_id: 'L1', borrower_account_id: 'A1', currency: 'USD', mode: 'TEST', policy_version: 'v4',
+          loan_id: 'L1', borrower_account_id: 'A1', decision_status: 'Human Review', currency: 'USD', mode: 'TEST', policy_version: 'v4',
           normalized_amounts_usd: {}, normalized_data: {}, rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [],
           recommendation_path: 'SIMULATED_REVIEW', final_action: 'NO_OPERATIONAL_ACTION', human_review_required: true,
           explanation: 'Saved account A result', llm_error: null,
@@ -225,7 +225,7 @@ describe('Guided assistant workflow', () => {
 
   it('offers selected-loan inspection, drafts questions without sending and records separate notes', async () => {
     const active = session();
-    const loan: LoanRecommendation = { loan_id: 'L25', borrower_account_id: 'A25', currency: 'USD', mode: 'PRODUCTION',
+    const loan: LoanRecommendation = { loan_id: 'L25', borrower_account_id: 'A25', decision_status: 'Human Review', currency: 'USD', mode: 'PRODUCTION',
       policy_version: 'draft', normalized_amounts_usd: {}, normalized_data: {}, rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [], recommendation_path: 'POLICY_REVIEW_REQUIRED', final_action: 'MANUAL_REVIEW', human_review_required: true, explanation: 'Review', llm_error: null };
     active.status = 'completed';
     active.report = { id: 'r1', created_at: 'today', decision: 'needs_review', summary: 'Review', document_count: 1, findings: [],
@@ -251,7 +251,7 @@ describe('Guided assistant workflow', () => {
     active.status = 'completed';
     active.report = { id: 'report-1', created_at: 'today', decision: 'needs_review', summary: 'Review', document_count: 3,
       findings: [], underwriting: { mode: 'TEST', currency: 'USD', policy_version: 'v4', source_document: 'LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf', source_available: false, data_quality_issues: [], loan_results: [{
-        loan_id: 'L1', borrower_account_id: 'A1', currency: 'USD', mode: 'TEST', policy_version: 'v4',
+        loan_id: 'L1', borrower_account_id: 'A1', decision_status: 'Human Review', currency: 'USD', mode: 'TEST', policy_version: 'v4',
         normalized_amounts_usd: {}, normalized_data: {}, rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [], recommendation_path: 'SIMULATED_REVIEW', final_action: 'NO_OPERATIONAL_ACTION', human_review_required: true, explanation: 'Fixed engine result', llm_error: null,
       }] } };
     const review: LoanAIReview = { id: 'review1', created_at: 'today', loan_id: 'L1', report_id: 'report-1', model: 'mock-model', context_note: 'Selected loan only; normalized context.',
@@ -292,7 +292,7 @@ describe('Guided assistant workflow', () => {
   it('places the latest matching lookup next to controls and focuses the result instead of the chat bottom', async () => {
     const active = session();
     const inspection: LoanInspection = { report_id: 'r1', loan_id: 'L25', topic: 'evidence', recommendation_path: 'POLICY_REVIEW_REQUIRED', final_action: 'MANUAL_REVIEW', missing_inputs: [], conflicts: [], rules: [], total_rules: 0, total_evidence: 0, evidence: [] };
-    active.report = { id: 'r1', created_at: 'today', decision: 'needs_review', summary: 'Review', document_count: 1, findings: [], underwriting: { mode: 'PRODUCTION', currency: 'USD', policy_version: 'draft', source_document: 'LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf', source_available: true, data_quality_issues: [], loan_results: [{ loan_id: 'L25', borrower_account_id: null, currency: 'USD', mode: 'PRODUCTION', policy_version: 'draft', normalized_amounts_usd: {}, normalized_data: {}, rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [], recommendation_path: 'POLICY_REVIEW_REQUIRED', final_action: 'MANUAL_REVIEW', human_review_required: true, explanation: 'Review', llm_error: null }] } };
+    active.report = { id: 'r1', created_at: 'today', decision: 'needs_review', summary: 'Review', document_count: 1, findings: [], underwriting: { mode: 'PRODUCTION', currency: 'USD', policy_version: 'draft', source_document: 'LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf', source_available: true, data_quality_issues: [], loan_results: [{ loan_id: 'L25', borrower_account_id: null, decision_status: 'Human Review', currency: 'USD', mode: 'PRODUCTION', policy_version: 'draft', normalized_amounts_usd: {}, normalized_data: {}, rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [], recommendation_path: 'POLICY_REVIEW_REQUIRED', final_action: 'MANUAL_REVIEW', human_review_required: true, explanation: 'Review', llm_error: null }] } };
     const p = props(active);
     const view = render(<GuidedAssistant {...p} />);
     view.rerender(<GuidedAssistant {...p} session={{ ...active, messages: [{ id: 'lookup', role: 'assistant', content: 'Lookup', created_at: 'today', origin: 'local_assistant', inspection }] }} />);
@@ -303,7 +303,7 @@ describe('Guided assistant workflow', () => {
 
   it.each([1, 2])('continues confirmed preparation into loan exploration with %s loans', async (count) => {
     const active = session();
-    const loan: LoanRecommendation = { loan_id: 'L1', borrower_account_id: 'A1', currency: 'USD', mode: 'TEST', policy_version: 'v4', normalized_amounts_usd: {}, normalized_data: {}, rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [], recommendation_path: 'SIMULATED_REVIEW', final_action: 'NO_OPERATIONAL_ACTION', human_review_required: true, explanation: 'Fixed', llm_error: null };
+    const loan: LoanRecommendation = { loan_id: 'L1', borrower_account_id: 'A1', decision_status: 'Human Review', currency: 'USD', mode: 'TEST', policy_version: 'v4', normalized_amounts_usd: {}, normalized_data: {}, rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [], recommendation_path: 'SIMULATED_REVIEW', final_action: 'NO_OPERATIONAL_ACTION', human_review_required: true, explanation: 'Fixed', llm_error: null };
     const completed: Session = { ...active, status: 'completed', report: { id: 'prepared-report', created_at: 'today', decision: 'needs_review', summary: 'Review', document_count: 3, findings: [], underwriting: { mode: 'TEST', currency: 'USD', policy_version: 'v4', source_document: 'LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf', source_available: false, data_quality_issues: [], loan_results: Array.from({ length: count }, (_, i) => ({ ...loan, loan_id: `L${i + 1}` })) } } };
     const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/assistant/process') ? { ...active, status: 'processing' } : completed), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -330,7 +330,7 @@ describe('Guided assistant workflow', () => {
 
   it('auto-reviews explicit loan selections without duplicate calls or automatic retries', async () => {
     const active = session();
-    const loan: LoanRecommendation = { loan_id: 'L1', borrower_account_id: 'A1', currency: 'USD', mode: 'TEST', policy_version: 'v4', normalized_amounts_usd: {}, normalized_data: {}, rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [], recommendation_path: 'SIMULATED_REVIEW', final_action: 'NO_OPERATIONAL_ACTION', human_review_required: true, explanation: 'Fixed', llm_error: null };
+    const loan: LoanRecommendation = { loan_id: 'L1', borrower_account_id: 'A1', decision_status: 'Human Review', currency: 'USD', mode: 'TEST', policy_version: 'v4', normalized_amounts_usd: {}, normalized_data: {}, rule_results: [], source_evidence: [], missing_inputs: [], conflicts: [], recommendation_path: 'SIMULATED_REVIEW', final_action: 'NO_OPERATIONAL_ACTION', human_review_required: true, explanation: 'Fixed', llm_error: null };
     active.status = 'completed';
     active.report = { id: 'report-auto', created_at: 'today', decision: 'needs_review', summary: 'Review', document_count: 3, findings: [], underwriting: { mode: 'TEST', currency: 'USD', policy_version: 'v4', source_document: 'LLM_Loan_Approval_Design_Guide_v4_USD_Copilot.pdf', source_available: false, data_quality_issues: [], loan_results: [loan, { ...loan, loan_id: 'L2' }] } };
     active.report.underwriting!.loan_results[1].source_evidence = [

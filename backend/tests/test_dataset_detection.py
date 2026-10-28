@@ -9,7 +9,7 @@ from openpyxl import Workbook
 from backend.agents import DecisionAgent, RulesAgent
 from backend.datasets import (SIGNATURES, SOQL_ROOT_SIGNATURES, account_reference_headers,
                               borrower_role_headers, loan_reference_headers,
-                              mtb_query_ids)
+                              mtb_query_ids, soql_account_reference_headers)
 from backend.llm import AnthropicLLM, LLMError
 from backend.main import create_app, process_session
 from backend.models import Document, Report, Session
@@ -94,6 +94,19 @@ def test_namespaced_soql_loan_and_borrower_relationship_headers_are_explicit():
     role_header = prefix + "LLC_BI__Borrower_Type__c"
     assert loan_reference_headers([loan_header, "Unrelated_Loan_Description__c", "Id"]) == [loan_header]
     assert borrower_role_headers([role_header, "Borrower_Name__c", "Name"]) == [role_header]
+
+
+def test_soql_account_foreign_keys_follow_query_specific_relationship_contract():
+    prefix = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
+    involvement_account = prefix + "LLC_BI__Account__c"
+    q4_account = "nFUSE__Account__c"
+    distractors = ["LLC_BI__Account__c", "LLC_BI__Account__r.Id", "ACCOUNT_ID"]
+
+    assert soql_account_reference_headers(1, [involvement_account, *distractors]) == [involvement_account]
+    assert soql_account_reference_headers(2, [involvement_account, *distractors]) == [involvement_account]
+    assert soql_account_reference_headers(4, [q4_account, *distractors]) == [q4_account]
+    assert soql_account_reference_headers(1, [q4_account]) == []
+    assert soql_account_reference_headers(4, [involvement_account]) == []
 
 
 def test_sample_report_runs_guideline_not_word_count(monkeypatch):

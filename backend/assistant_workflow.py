@@ -5,7 +5,9 @@ report, and never treats conversation/review notes as underwriting evidence.
 """
 
 import hashlib
+import html
 import json
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +19,7 @@ from .excel import safe_excel_error_reason
 from .datasets import (account_reference_headers, borrower_role_headers,
                        loan_reference_headers, mtb_query_ids,
                        soql_field_headers, soql_mapping_coverage,
+                       soql_account_reference_headers,
                        soql_root_table, soql_unavailable_inputs)
 from .models import AccountCandidate, LoanInspection, PreflightResult, Session
 from .entity_graph import build_entity_graph, scalar_id
@@ -79,7 +82,10 @@ def _mapped_values(manifest: dict, table: str, sheet: str, values: dict,
     candidates = {"id": mapping["id"]}
     if table == "Loan":
         candidates["id"] = list(dict.fromkeys([*candidates["id"], *loan_reference_headers(values.keys())]))
-    if table == "Account":
+    if table == "Account" and root_table:
+        query_role = {"EntityInvolvement": 1, "Indicator": 2, "CreditReport": 4}.get(root_table)
+        candidates["id"] = soql_account_reference_headers(query_role, headers or values.keys())
+    elif table == "Account":
         candidates["id"] = list(dict.fromkeys([*candidates["id"], *account_reference_headers(values.keys())]))
     candidates.update({key: [key] for key in fields} if isinstance(fields, list) else fields)
     if not canonical and root_table:
@@ -88,13 +94,18 @@ def _mapped_values(manifest: dict, table: str, sheet: str, values: dict,
         ]))
         for key in list(candidates):
             if key != "id":
-                candidates[key] = list(dict.fromkeys([
-                    *candidates[key],
-                    *soql_field_headers(table, key, headers or values.keys(), root_table=root_table),
-                ]))
+                if key in {"account_id", "borrower_account_id"}:
+                    candidates[key] = (soql_field_headers(table, key, headers or values.keys(), root_table=root_table)
+                                       if (table, key) in {("EntityInvolvement", "account_id"),
+                                                            ("CreditReport", "account_id")} else [])
+                else:
+                    candidates[key] = list(dict.fromkeys([
+                        *candidates[key],
+                        *soql_field_headers(table, key, headers or values.keys(), root_table=root_table),
+                    ]))
     output = {}
     for key, aliases in candidates.items():
-        if table != "Account" and key in {"account_id", "borrower_account_id"}:
+        if (canonical or not root_table) and table != "Account" and key in {"account_id", "borrower_account_id"}:
             aliases = list(dict.fromkeys([*aliases, *account_reference_headers(values.keys())]))
         found = [values[alias] for alias in aliases if alias in values and values[alias] not in (None, "")]
         if found and len({str(value) for value in found}) == 1:
@@ -294,3 +305,225 @@ def preflight(session: Session, root: Path) -> PreflightResult:
                      if query_file_set_valid and not account_candidates else
                      "Review extracted attributes, select the intended borrower account/client, then confirm processing. Query files link only through matching explicit Account ID columns, never row position or name. This is not a credit decision."
                              if issues else "Select the borrower account/client to scope processing. This validation is not credit clearance."))
+
+
+_INVENTORY_WORDS = re.compile(r"\b(?:attribute|attributes|field|fields|column|columns)\b", re.IGNORECASE)
+_INVENTORY_ACTIONS = re.compile(r"\b(?:list|show|display|enumerate|table|all|every)\b", re.IGNORECASE)
+_GENERIC_LOAN_WORDS = {"all", "every", "attributes", "attribute", "fields", "field", "columns", "column", "table", "data", "details", "information", "list", "show"}
+_INVENTORY_PAGE_SIZE = 100
+
+
+def is_loan_attribute_inventory_request(query: str) -> bool:
+    """Recognize explicit exhaustive loan-attribute requests for local handling."""
+    return bool(re.search(r"\bloan\b", query, re.IGNORECASE)
+                and _INVENTORY_WORDS.search(query)
+                and _INVENTORY_ACTIONS.search(query))
+
+
+def _inventory_explicit_ids(query: str, known_ids: set[str]) -> tuple[set[str], set[str]]:
+    """Return explicitly mentioned known IDs and syntactically marked unknown IDs."""
+    known = {loan_id for loan_id in known_ids if re.search(
+        rf"(?<![A-Za-z0-9_-]){re.escape(loan_id)}(?![A-Za-z0-9_-])", query)}
+    unknown: set[str] = set()
+    marker = re.compile(r"\bloan(?:\s*[_ -]?\s*(?:id|number))?\s*[:#=]?\s*([A-Za-z0-9][A-Za-z0-9_-]{0,127})", re.IGNORECASE)
+    for match in marker.finditer(query):
+        candidate = match.group(1)
+        if candidate.casefold() not in _GENERIC_LOAN_WORDS and candidate not in known_ids:
+            unknown.add(candidate)
+    return known, unknown
+
+
+def _inventory_value(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if value is None:
+        return "null"
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _markdown_cell(value: str) -> str:
+    escaped = html.escape(value, quote=True).replace("|", "&#124;").replace("`", "&#96;")
+    return escaped.replace("\r\n", "<br>").replace("\n", "<br>").replace("\r", "<br>")
+
+
+def loan_attribute_inventory(session: Session, root: Path, query: str,
+                             requested_loan_id: str | None = None) -> str:
+    """Render exact source-row attributes for one unambiguously selected loan.
+
+    The operation is local and read-only. Source workbook rows remain separate
+    observations; no graph conflict is resolved and no report field is changed.
+    """
+    report = session.report
+    loans = report.underwriting.loan_results if (
+        session.status == "completed" and report is not None and report.underwriting is not None
+    ) else []
+    by_id = {loan.loan_id: loan for loan in loans}
+    known_ids = set(by_id)
+    mentioned_ids, unknown_ids = _inventory_explicit_ids(query, known_ids)
+
+    if unknown_ids:
+        return ("I can’t match the explicitly requested loan ID "
+                + ", ".join(_markdown_cell(item) for item in sorted(unknown_ids))
+                + " to a loan in this session’s completed report. Please select an existing loan ID; no other loan was substituted.")
+    if len(mentioned_ids) > 1:
+        return "This request names multiple loans. Please request the attribute inventory for one exact loan ID at a time."
+    if requested_loan_id and requested_loan_id not in known_ids:
+        return (f"I can’t match the focused loan ID {_markdown_cell(requested_loan_id)} to a loan in this session’s completed report. "
+                "Please select an existing loan ID; no other loan was substituted.")
+    mentioned_id = next(iter(mentioned_ids), None)
+    if requested_loan_id and mentioned_id and requested_loan_id != mentioned_id:
+        return (f"The focused loan ID {_markdown_cell(requested_loan_id)} conflicts with the loan named in your message "
+                f"({_markdown_cell(mentioned_id)}). Please choose one exact loan ID.")
+    selected_id = requested_loan_id or mentioned_id
+    if selected_id is None:
+        if len(loans) == 1:
+            selected_id = loans[0].loan_id
+        elif len(loans) > 1:
+            return "This completed report contains multiple loans. Please specify one exact loan ID (for example, ‘loan L1’); no loan was selected automatically."
+        else:
+            return "A completed report with an explicit loan is required for a source-attribute inventory. No loan attributes were inferred from unrelated document text."
+
+    config = load_underwriting_config()
+    manifest = config["mapping_manifest"]
+    documents = []
+    for original in session.documents:
+        document = original.model_copy(deep=True)
+        if not isinstance(document.metadata.get("records"), list):
+            # Re-extract only from this session's fixed opaque upload location.
+            uploads_root = (root / "uploads").resolve()
+            session_dir = (uploads_root / session.id).resolve()
+            path = session_dir / document.id
+            try:
+                if (session_dir.parent != uploads_root or session_dir.is_symlink()
+                        or path.is_symlink() or path.resolve().parent != session_dir
+                        or not path.is_file()):
+                    continue
+                ExtractionAgent().extract(document, path, include_text=False)
+            except (OSError, ValueError):
+                continue
+        documents.append(document)
+
+    if not documents:
+        return (f"## Loan attribute inventory — {_markdown_cell(selected_id)}\n\n"
+                "Source row metadata is unavailable and the session’s fixed uploaded files could not be safely re-read. "
+                "No provider was called and no report data was changed.")
+
+    selected_loan = by_id[selected_id]
+    account_ids: set[str] = set()
+    report_account = scalar_id(selected_loan.borrower_account_id)
+    if report_account:
+        account_ids.add(report_account)
+    row_matches: list[tuple[object, dict, str, int, dict, str]] = []
+    sheet_maps = []
+    for document in documents:
+        query_roles = mtb_query_ids(document.name, document.metadata)
+        query_role = next(iter(query_roles)) if len(query_roles) == 1 else None
+        headers_by_sheet = {item.get("name"): item.get("headers", [])
+                            for item in document.metadata.get("sheets", []) if isinstance(item, dict)}
+        reference_sheets = {item.get("name") for item in document.metadata.get("sheets", [])
+                            if isinstance(item, dict) and item.get("is_reference")}
+        sheet_maps.append((document, query_role, headers_by_sheet, reference_sheets))
+        for record in document.metadata.get("records", []):
+            if not isinstance(record, dict) or not isinstance(record.get("values"), dict):
+                continue
+            sheet, values = record.get("sheet"), record["values"]
+            if not isinstance(sheet, str) or sheet in reference_sheets:
+                continue
+            headers = headers_by_sheet.get(sheet, list(values))
+            root_table = soql_root_table(query_role, headers)
+            loan_data = _mapped_values(manifest, "Loan", sheet, values, root_table=root_table, headers=headers)
+            row_loan_id = scalar_id(loan_data.get("id"))
+            explicit_loan_ids = {scalar_id(values[key]) for key in loan_reference_headers(values.keys())
+                                 if values.get(key) not in (None, "")}
+            explicit_loan_ids.discard(None)
+            direct_match = row_loan_id == selected_id or explicit_loan_ids == {selected_id}
+            if direct_match:
+                row_matches.append((document, record, sheet, record.get("row", 0), headers, "loan-linked source row"))
+                account_value = scalar_id(loan_data.get("borrower_account_id"))
+                if account_value:
+                    account_ids.add(account_value)
+                involvement = _mapped_values(manifest, "EntityInvolvement", sheet, values,
+                                             root_table=root_table, headers=headers)
+                if (str(involvement.get("role", "")).strip().casefold() == "borrower"
+                        and scalar_id(involvement.get("account_id"))):
+                    account_ids.add(scalar_id(involvement["account_id"]))
+
+    # Include account-level rows only when the row is explicitly an Account
+    # record with an exact matching Account ID and has no conflicting Loan FK.
+    for document, query_role, headers_by_sheet, reference_sheets in sheet_maps:
+        aliases = manifest.get("canonical_table_aliases", {})
+        for record in document.metadata.get("records", []):
+            if not isinstance(record, dict) or not isinstance(record.get("values"), dict):
+                continue
+            sheet, values = record.get("sheet"), record["values"]
+            if not isinstance(sheet, str) or sheet in reference_sheets:
+                continue
+            canonical_table = aliases.get(sheet, sheet)
+            if canonical_table != "Account":
+                continue
+            headers = headers_by_sheet.get(sheet, list(values))
+            root_table = soql_root_table(query_role, headers)
+            account_data = _mapped_values(manifest, "Account", sheet, values,
+                                          root_table=root_table, headers=headers)
+            account_id = scalar_id(account_data.get("id"))
+            direct_ids = {scalar_id(values[key]) for key in loan_reference_headers(values.keys())
+                          if values.get(key) not in (None, "")}
+            direct_ids.discard(None)
+            if account_id in account_ids and not direct_ids:
+                row_matches.append((document, record, sheet, record.get("row", 0), headers,
+                                    f"account-level context · Account ID {_markdown_cell(account_id)}"))
+
+    page_match = re.search(r"\bpage\s+(\d+)\b", query, re.IGNORECASE)
+    page = max(1, int(page_match.group(1))) if page_match else 1
+    requested_start = (page - 1) * _INVENTORY_PAGE_SIZE
+    observations = []
+    total = 0
+    for document, record, sheet, row, headers, scope in row_matches:
+        values = record["values"]
+        sources = record.get("sources") if isinstance(record.get("sources"), dict) else {}
+        for attribute in headers:
+            if not isinstance(attribute, str) or not attribute.strip():
+                continue
+            if attribute not in values:
+                value, status = "not provided (blank or absent cell)", "not provided"
+            elif values[attribute] is None:
+                value, status = "null", "null"
+            elif values[attribute] == "":
+                value, status = "not provided (blank cell)", "not provided"
+            else:
+                value, status = _inventory_value(values[attribute]), "present"
+            source = f"{document.name} / {sheet} / row {row}"
+            if isinstance(sources.get(attribute), str):
+                source += f" / {sources[attribute]}"
+            if requested_start <= total < requested_start + _INVENTORY_PAGE_SIZE:
+                observations.append((attribute, value, status, source, scope))
+            total += 1
+
+    if total == 0:
+        return (f"## Loan attribute inventory — {_markdown_cell(selected_id)}\n\n"
+                "No source rows with an exact explicit Loan ID were found, and no explicitly identified borrower Account rows were available. "
+                "Row order, names, report summaries, and other loans were not used to invent a relationship.")
+
+    page_count = (total + _INVENTORY_PAGE_SIZE - 1) // _INVENTORY_PAGE_SIZE
+    if page > page_count:
+        return (f"## Loan attribute inventory — {_markdown_cell(selected_id)}\n\n"
+                f"Page {page} is outside the available range (1–{page_count}); {total} source attribute observations remain available. "
+                "No provider was called and no report data was changed.")
+    start = requested_start
+    selected_observations = observations
+    lines = [f"## Loan attribute inventory — {_markdown_cell(selected_id)}", "",
+             f"Showing source attribute observations {start + 1}–{start + len(selected_observations)} of {total} · page {page} of {page_count}.",
+             (f"To view remaining observations, ask for page {page + 1}." if page < page_count else "This is the final page."),
+             "Each row is a preserved source observation; duplicates and disagreements are not merged or resolved. Status distinguishes present, null, and not provided.",
+             "Scope: rows with an exact explicit Loan ID; separately labeled Account rows require an exact explicit borrower Account ID. Other loans, row order, and names are not used to join data.",
+             "Source data inventory only—not an underwriting evaluation, credit decision, or change to the saved report.", "",
+             "| Attribute | Source value | Status | Workbook / sheet / row | Scope |",
+             "| --- | --- | --- | --- | --- |"]
+    lines.extend("| " + " | ".join(_markdown_cell(str(item)) for item in observation) + " |"
+                 for observation in selected_observations)
+    lines.extend(["", "No Anthropic request was made. Raw source values remain in this local assistant response and are excluded from future provider history and memory indexing."])
+    return "\n".join(lines)

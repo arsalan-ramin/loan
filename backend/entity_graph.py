@@ -22,6 +22,7 @@ from typing import Any, Iterable
 from .datasets import (account_reference_headers, borrower_role_headers,
                        loan_reference_headers, mtb_query_ids,
                        soql_field_headers, soql_root_table,
+                       soql_account_reference_headers,
                        soql_mapping_coverage, soql_tables_for_role)
 from .underwriting_models import AMOUNT_NAMES, SourceEvidence, exact_decimal
 
@@ -239,7 +240,12 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                 mapping["id"] = list(mapping["id"])
                 if table == "Loan":
                     mapping["id"].extend(loan_reference_headers(values.keys()))
-                if table == "Account":
+                if table == "Account" and not canonical and root_table:
+                    # In these exports Account is identified by the query's
+                    # explicit Account foreign key, never every account-like
+                    # relationship column present on a flattened row.
+                    mapping["id"] = soql_account_reference_headers(soql_role, headers)
+                elif table == "Account":
                     mapping["id"].extend(account_reference_headers(values.keys()))
                 raw_fields = mapping["fields"]
                 field_map = ({key: [key] for key in raw_fields} if isinstance(raw_fields, list)
@@ -251,7 +257,13 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                 if not canonical and root_table:
                     mapping["id"].extend(soql_field_headers(table, "id", headers, root_table=root_table))
                     for key, aliases in field_map.items():
-                        aliases.extend(soql_field_headers(table, key, headers, root_table=root_table))
+                        if key in {"account_id", "borrower_account_id"} and root_table:
+                            aliases = (soql_field_headers(table, key, headers, root_table=root_table)
+                                       if (table, key) in {("EntityInvolvement", "account_id"),
+                                                            ("LCREntity", "account_id"),
+                                                            ("CreditReport", "account_id")} else [])
+                        else:
+                            aliases.extend(soql_field_headers(table, key, headers, root_table=root_table))
                         field_map[key] = list(dict.fromkeys(aliases))
                 # Expanded screenshot names are unverified. New fields are
                 # accepted only as exact canonical columns on canonical sheets.
@@ -264,7 +276,7 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                     for key in ("personal_fico", "report_category", "report_role"):
                         field_map.setdefault(key, [key])
                 for key, aliases in field_map.items():
-                    if table != "Account" and key in {"account_id", "borrower_account_id"}:
+                    if (canonical or not root_table) and table != "Account" and key in {"account_id", "borrower_account_id"}:
                         aliases.extend(account_reference_headers(values.keys()))
                         field_map[key] = list(dict.fromkeys(aliases))
                     if key in AMOUNT_NAMES:
@@ -379,6 +391,85 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                     graph.associations.append((row_nodes["Loan"].id, row_nodes["Account"].id, next(iter(approved)), row_evidence))
                 elif roles:
                     graph.issue("INVALID_OR_CONFLICTING_ROLE", row_evidence)
+            if (not canonical and root_table == "EntityInvolvement"
+                    and "CreditReport" in row_nodes and "EntityInvolvement" in row_nodes):
+                # When Query 1 returns a CreditReport as an explicit nested
+                # relationship but omits nFUSE__Account__c, the report belongs
+                # to the Account on that same Entity Involvement row. Do not
+                # apply this fallback to Query 4 or unrelated rows, and do not
+                # override a separately supplied report Account FK.
+                report_node = row_nodes["CreditReport"]
+                involvement_node = row_nodes["EntityInvolvement"]
+                linked_account = scalar_id(involvement_node.fields.get("account_id"))
+                if (report_node.fields.get("account_id") is None
+                        and "account_id" not in report_node.field_refs
+                        and linked_account is not None):
+                    report_node.fields["account_id"] = linked_account
+                    report_node.field_refs["account_id"] = list(
+                        involvement_node.field_refs.get("account_id", []))
+            characteristic = row_nodes.get("Characteristic")
+            involvement = row_nodes.get("EntityInvolvement")
+            loan_node = row_nodes.get("Loan")
+            account_node = row_nodes.get("Account")
+            if (not canonical and root_table == "EntityInvolvement" and characteristic
+                    and involvement and loan_node and account_node
+                    and not (characteristic.poisoned or involvement.poisoned
+                             or loan_node.poisoned or account_node.poisoned)):
+                scoped_loan_id = scalar_id(involvement.fields.get("loan_id"))
+                scoped_account_id = scalar_id(involvement.fields.get("account_id"))
+                raw_role = involvement.fields.get("role")
+                scoped_role = (manifest["roles"].get(str(raw_role).strip().casefold())
+                               if raw_role is not None else None)
+                if (scoped_loan_id == loan_node.id and scoped_account_id == account_node.id
+                        and scoped_role in {"borrower", "guarantor"}):
+                    scope_refs = {
+                        ref for field in ("loan_id", "account_id", "role")
+                        for ref in involvement.field_refs.get(field, [])
+                    }
+                    scope_refs.update(loan_node.field_refs.get("id", []))
+                    scope_refs.update(account_node.field_refs.get("id", []))
+                    # Preserve a nested report ID only when the explicit
+                    # Query 1 relationship produced it on this same row and
+                    # its graph record is account-scoped.
+                    report_node = row_nodes.get("CreditReport")
+                    report_id = None
+                    if (report_node and not report_node.poisoned
+                            and report_node.fields.get("account_id") in (None, scoped_account_id)
+                            and report_node.id in graph.table("CreditReport")):
+                        report_id = report_node.id
+                        scope_refs.update(report_node.field_refs.get("id", []))
+                    # Query 1's known schema currently does not prove a
+                    # response parent for every characteristic row. Keep an
+                    # explicit response only when a validated same-row entity
+                    # node actually supplies it; never infer it from Query 2.
+                    entity_node = row_nodes.get("LCREntity")
+                    response_id = None
+                    if (entity_node and not entity_node.poisoned
+                            and entity_node.fields.get("account_id") in (None, scoped_account_id)):
+                        candidate_response = scalar_id(entity_node.fields.get("response_id"))
+                        if candidate_response:
+                            response_id = candidate_response
+                            scope_refs.update(entity_node.field_refs.get("response_id", []))
+                    characteristic.fields["source_row_scope"] = {
+                        "account_id": scoped_account_id,
+                        "loan_id": scoped_loan_id,
+                        "party_role": scoped_role,
+                        "response_id": response_id,
+                        "response_link_status": "EXPLICIT_REFERENCE_UNVERIFIED" if response_id else "NOT_EXPORTED_ON_CHARACTERISTIC_ROW",
+                        "report_id": report_id,
+                        "evidence_refs": sorted(scope_refs),
+                    }
+    for node in graph.table("Characteristic").values():
+        scope = node.fields.get("source_row_scope")
+        if not isinstance(scope, dict) or not scope.get("response_id"):
+            continue
+        response = graph.table("LCRESPONSE").get(scope["response_id"])
+        scope["response_link_status"] = (
+            "EXPLICIT_RESPONSE_LINK_VALIDATED"
+            if response is not None and not response.poisoned
+            and response.fields.get("loan_id") == scope.get("loan_id")
+            else "EXPLICIT_RESPONSE_LINK_UNRESOLVED"
+        )
     _validate_relationships(graph, manifest)
     return graph
 
@@ -394,26 +485,47 @@ def _scope_documents_to_borrower(documents: Iterable[Any], manifest: dict[str, A
     tables = manifest["tables"]
     aliases = manifest.get("canonical_table_aliases", {})
 
-    def mapped(table: str, sheet: Any, values: dict[str, Any]) -> dict[str, Any]:
+    def mapped(document: Any, table: str, sheet: Any, values: dict[str, Any]) -> dict[str, Any]:
         canonical_table = aliases.get(sheet, sheet)
         canonical = canonical_table in tables
         mapping = tables.get(canonical_table) if canonical else manifest.get("flattened", {}).get(table)
         if mapping is None:
             return {}
+        sheet_headers = {item.get("name"): item.get("headers", [])
+                         for item in document.metadata.get("sheets", []) if isinstance(item, dict)}
+        headers = sheet_headers.get(sheet, list(values))
+        query_roles = mtb_query_ids(document.name, document.metadata)
+        query_role = next(iter(query_roles)) if len(query_roles) == 1 else None
+        root_table = soql_root_table(query_role, headers) if not canonical else None
         raw_fields = mapping["fields"]
         field_map = ({key: [key] for key in raw_fields} if isinstance(raw_fields, list)
                      else {key: list(names) for key, names in raw_fields.items()})
         id_headers = list(mapping["id"])
         if table == "Loan":
             id_headers.extend(loan_reference_headers(values.keys()))
-        if table == "Account":
+        if table == "Account" and not canonical and root_table:
+            id_headers = soql_account_reference_headers(query_role, headers)
+        elif table == "Account":
             id_headers.extend(account_reference_headers(values.keys()))
-        if table != "Account":
+        if not canonical and root_table:
+            id_headers.extend(soql_field_headers(table, "id", headers, root_table=root_table))
+        if (canonical or not root_table) and table != "Account":
             for key in ("account_id", "borrower_account_id"):
                 if key in field_map:
                     field_map[key] = list(dict.fromkeys(
                         [*field_map[key], *account_reference_headers(values.keys())]
                     ))
+        elif not canonical and root_table:
+            for key in ("account_id", "borrower_account_id"):
+                if key in field_map:
+                    field_map[key] = (soql_field_headers(table, key, headers, root_table=root_table)
+                                      if (table, key) in {("EntityInvolvement", "account_id"),
+                                                           ("LCREntity", "account_id"),
+                                                           ("CreditReport", "account_id")} else [])
+        if not canonical and root_table:
+            for key in list(field_map):
+                if key not in {"account_id", "borrower_account_id"}:
+                    field_map[key].extend(soql_field_headers(table, key, headers, root_table=root_table))
         names = {"id": list(dict.fromkeys(id_headers))}
         names.update(field_map)
         result = {}
@@ -426,12 +538,12 @@ def _scope_documents_to_borrower(documents: Iterable[Any], manifest: dict[str, A
     rows = [(doc, record) for doc in source_documents
             for record in doc.metadata.get("records", []) if isinstance(record, dict)]
     loan_ids: set[str] = set()
-    for _, record in rows:
+    for document, record in rows:
         values = record.get("values")
         if not isinstance(values, dict):
             continue
         sheet = record.get("sheet")
-        row_loan = mapped("Loan", sheet, values)
+        row_loan = mapped(document, "Loan", sheet, values)
         direct_account = row_loan.get("borrower_account_id")
         canonical_table = aliases.get(sheet, sheet)
         is_canonical_loan = canonical_table == "Loan"
@@ -448,7 +560,7 @@ def _scope_documents_to_borrower(documents: Iterable[Any], manifest: dict[str, A
         if (scalar_id(row_loan.get("id")) and direct_borrower_id == account_id
                 and (is_canonical_loan or explicit_borrower_role)):
             loan_ids.add(scalar_id(row_loan["id"]))
-        involvement = mapped("EntityInvolvement", sheet, values)
+        involvement = mapped(document, "EntityInvolvement", sheet, values)
         role = str(involvement.get("role", "")).strip().casefold()
         if role == "borrower" and scalar_id(involvement.get("account_id")) == account_id:
             loan_id = scalar_id(involvement.get("loan_id"))
@@ -462,33 +574,33 @@ def _scope_documents_to_borrower(documents: Iterable[Any], manifest: dict[str, A
 
     related_accounts = {account_id}
     response_ids: set[str] = set()
-    for _, record in rows:
+    for document, record in rows:
         values = record.get("values")
         if not isinstance(values, dict):
             continue
         sheet = record.get("sheet")
-        loan = mapped("Loan", sheet, values)
+        loan = mapped(document, "Loan", sheet, values)
         if scalar_id(loan.get("id")) in loan_ids:
             response_id = scalar_id(loan.get("response_id"))
             if response_id:
                 response_ids.add(response_id)
-        involvement = mapped("EntityInvolvement", sheet, values)
+        involvement = mapped(document, "EntityInvolvement", sheet, values)
         if scalar_id(involvement.get("loan_id")) in loan_ids:
             linked_account = scalar_id(involvement.get("account_id"))
             if linked_account:
                 related_accounts.add(linked_account)
-        response = mapped("LCRESPONSE", sheet, values)
+        response = mapped(document, "LCRESPONSE", sheet, values)
         if scalar_id(response.get("loan_id")) in loan_ids:
             response_id = scalar_id(response.get("id"))
             if response_id:
                 response_ids.add(response_id)
 
     entity_ids: set[str] = set()
-    for _, record in rows:
+    for document, record in rows:
         values = record.get("values")
         if not isinstance(values, dict):
             continue
-        entity = mapped("LCREntity", record.get("sheet"), values)
+        entity = mapped(document, "LCREntity", record.get("sheet"), values)
         if (scalar_id(entity.get("response_id")) in response_ids
                 and scalar_id(entity.get("account_id")) in related_accounts):
             entity_id = scalar_id(entity.get("id"))
@@ -496,21 +608,40 @@ def _scope_documents_to_borrower(documents: Iterable[Any], manifest: dict[str, A
                 entity_ids.add(entity_id)
 
     analysis_ids: set[str] = set()
-    for _, record in rows:
+    for document, record in rows:
         values = record.get("values")
         if not isinstance(values, dict):
             continue
-        analysis = mapped("DataSourceAnalysis", record.get("sheet"), values)
+        analysis = mapped(document, "DataSourceAnalysis", record.get("sheet"), values)
         if scalar_id(analysis.get("entity_id")) in entity_ids:
             analysis_id = scalar_id(analysis.get("id"))
             if analysis_id:
                 analysis_ids.add(analysis_id)
 
-    def keep(record: dict[str, Any]) -> bool:
+    def keep(document: Any, record: dict[str, Any]) -> bool:
         values = record.get("values")
         if not isinstance(values, dict):
             return False
         sheet = record.get("sheet")
+        canonical_table = aliases.get(sheet, sheet)
+        # A flattened row can contain a CreditReport FK for an account that is
+        # not the row's loan borrower. If the row explicitly names a loan, it
+        # is scoped to the selected loan through its Loan/EntityInvolvement FK;
+        # a nested report alone must not pull a different loan into the batch.
+        row_loan = mapped(document, "Loan", sheet, values)
+        row_involvement = mapped(document, "EntityInvolvement", sheet, values)
+        explicit_loan_ids = set()
+        if canonical_table == "Loan":
+            explicit_loan_ids.add(scalar_id(row_loan.get("id")))
+        if canonical_table != "Account":
+            explicit_loan_ids.add(scalar_id(row_involvement.get("loan_id")))
+            explicit_loan_ids.update(
+                scalar_id(values.get(header)) for header in loan_reference_headers(values.keys())
+                if values.get(header) not in (None, "")
+            )
+        explicit_loan_ids.discard(None)
+        if explicit_loan_ids and not (explicit_loan_ids & loan_ids):
+            return False
         targets = (
             ("Account", lambda data: scalar_id(data.get("id")) in related_accounts),
             ("Loan", lambda data: scalar_id(data.get("id")) in loan_ids),
@@ -525,11 +656,11 @@ def _scope_documents_to_borrower(documents: Iterable[Any], manifest: dict[str, A
             ("Regulation", lambda data: scalar_id(data.get("loan_id")) in loan_ids),
         )
         for table, predicate in targets:
-            if predicate(mapped(table, sheet, values)):
+            if predicate(mapped(document, table, sheet, values)):
                 return True
         # Flattened rows can encode several related entities in one source row.
-        loan_data = mapped("Loan", sheet, values)
-        involvement_data = mapped("EntityInvolvement", sheet, values)
+        loan_data = row_loan
+        involvement_data = row_involvement
         if scalar_id(loan_data.get("id")) in loan_ids:
             return True
         return scalar_id(involvement_data.get("loan_id")) in loan_ids
@@ -541,7 +672,8 @@ def _scope_documents_to_borrower(documents: Iterable[Any], manifest: dict[str, A
         records = document.metadata.get("records", [])
         if isinstance(records, list):
             detached.metadata["source_record_count_before_scope"] = len(records)
-            detached.metadata["records"] = [record for record in records if isinstance(record, dict) and keep(record)]
+            detached.metadata["records"] = [record for record in records
+                                             if isinstance(record, dict) and keep(document, record)]
         scoped.append(detached)
     return scoped
 

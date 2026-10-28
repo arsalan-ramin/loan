@@ -18,7 +18,8 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from .agents import SUPPORTED, DecisionAgent, ExtractionAgent, IntakeAgent, MemoryAgent, RulesAgent
 from .assistant_workflow import (
     ACCOUNT_INDEX_VERSION, GuidedProcessRequest, InspectRequest, ReviewNoteRequest,
-    inspect_loan, preflight, require_loan,
+    inspect_loan, is_loan_attribute_inventory_request, loan_attribute_inventory,
+    preflight, require_loan,
 )
 from .llm import LLMError
 from .loan_review import LoanReviewRequest, review_selected_loan
@@ -189,26 +190,32 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         store: Store = request.app.state.store
         with store.lock:
             session = require_session(store, session_id)
-        chat_session = session
-        if body.loan_id is not None:
-            loan = require_loan(session, body.loan_id)
-            chat_session = session.model_copy(deep=True)
-            assert chat_session.report is not None and chat_session.report.underwriting is not None
-            chat_session.report.underwriting.loan_results = [loan.model_copy(deep=True)]
-        memory = MemoryAgent(store)
-        # Network calls must never hold the global persistence lock.
-        try:
-            answer = memory.respond(chat_session, body.content)
-        except LLMError as exc:
-            raise HTTPException(exc.status_code, str(exc)) from None
+        local_inventory = is_loan_attribute_inventory_request(body.content)
+        origin = "local_assistant" if local_inventory else "conversation"
+        if local_inventory:
+            answer = loan_attribute_inventory(session, store.root, body.content, body.loan_id)
+        else:
+            chat_session = session
+            if body.loan_id is not None:
+                loan = require_loan(session, body.loan_id)
+                chat_session = session.model_copy(deep=True)
+                assert chat_session.report is not None and chat_session.report.underwriting is not None
+                chat_session.report.underwriting.loan_results = [loan.model_copy(deep=True)]
+            memory = MemoryAgent(store)
+            # Network calls must never hold the global persistence lock.
+            try:
+                answer = memory.respond(chat_session, body.content)
+            except LLMError as exc:
+                raise HTTPException(exc.status_code, str(exc)) from None
         with store.lock:
             latest = require_session(store, session_id)
             if latest.updated_at != session.updated_at:
-                raise HTTPException(409, "The conversation changed while Claude was responding. Please retry your message.")
+                raise HTTPException(409, "The conversation changed while your message was being handled. Please retry.")
             session = latest
-            messages = [Message(role="user", content=body.content), Message(role="assistant", content=answer)]
+            messages = [Message(role="user", content=body.content), Message(role="assistant", content=answer, origin=origin)]
             for message in messages:
-                store.remember(session.id, message.id, message.content, "conversation", message.role)
+                if message.origin == "conversation":
+                    store.remember(session.id, message.id, message.content, "conversation", message.role)
             session.messages.extend(messages)
             store.save(session)
         return session
@@ -556,6 +563,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         stream = io.StringIO(newline="")
         writer = csv.writer(stream)
         writer.writerow(["loan_id", "borrower_account_id", "mode", "policy_version", "currency",
+                 "decision_status",
                  "eligibility_route", "credit_assessment", "authorization", "strategy_branch", "implementation_guide_diagnostics",
                  "recommendation_path", "final_action", "human_review_required", "normalized_amounts_usd",
                  "rule_results", "source_evidence", "missing_inputs", "conflicts", "explanation",
@@ -574,6 +582,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             data = loan.model_dump(mode="json")
             writer.writerow([safe_cell(value) for value in [
                                 loan.loan_id, loan.borrower_account_id or "", batch.mode, batch.policy_version, batch.currency,
+                                loan.decision_status,
                                 loan.eligibility_route or "", loan.credit_assessment or "", loan.authorization,
                                 loan.strategy_branch or "",
                                 json.dumps(loan.normalized_data.get("implementation_guide_diagnostics", {}), ensure_ascii=False),

@@ -100,12 +100,20 @@ Keep citations in the requested citation arrays, using only supplied IDs.
 """
 
 CHAT_FOLLOW_UP_INSTRUCTIONS = (
-    "\nFOLLOW-UP RESPONSE BUDGET: Answer the current question directly in at most 250 words. "
-    "For a selected-loan question discuss that loan only; other recalled data is not substitute evidence. "
+    "\nFOLLOW-UP RESPONSE FORMAT: Return readable GitHub-flavored Markdown, not an unformatted wall of text. "
+    "Use a short descriptive heading when helpful, concise paragraphs, and bullets for short lists. "
+    "When the user asks for a table, comparison, or loan attributes, provide a Markdown table; never claim that this chat supports only plain text or refuse a table for formatting reasons. "
+    "For a selected-loan summary, prefer sections: Loan / result; Supplied values (Attribute | Value | Evidence/status); Missing or unverified inputs; Conflicts; Next steps. "
+    "Include only values actually supplied in the selected-loan context. Distinguish explicit null, absent from source, unmapped, and not included in this context; do not claim a value is absent merely because it was not supplied to you. "
+    "Do not infer a product name from PRODUCT_MAPPING status or infer a requested path from Behavioral Underwriting Program. "
+    "For exhaustive source-attribute inventories, use the local extracted-attributes view when available; do not imply bounded model context is exhaustive. "
+    "A normal follow-up should be at most 250 words; when the user explicitly requests a table or detailed field listing, use up to 600 words as needed for a useful complete answer. "
+    "For a selected-loan question discuss that loan only; validation counts are not processed-report counts, and other loans are not substitute evidence. "
     "Give at most 3 priority blockers and 3 next steps. Cite at most 3 supplied rule/evidence IDs. "
     "Do not enumerate the full rule catalog, all loans, all decline reasons, or repeat the input. "
     "Distinguish missing data, unresolved policy and candidate results. Never claim operational approval. "
-    "Use concise plain text; no JSON, tables or lengthy preamble."
+    "For MTB lending outcome/status questions, answer with the exact label 'Human Review' only; never output Approved or Denied. "
+    "Do not invent values or present bounded excerpts as a complete attribute inventory. No JSON or lengthy preamble."
 )
 
 CHAT_WORKFLOW_INSTRUCTIONS = (

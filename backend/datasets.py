@@ -141,6 +141,26 @@ def account_reference_headers(headers) -> list[str]:
     return output
 
 
+def soql_account_reference_headers(query_role: int | None, headers) -> list[str]:
+    """Return only the confirmed Account foreign key for each MTB SOQL export.
+
+    Query 1 and Query 2 expose Account through the nested Entity Involvement
+    relationship. Query 4 exposes the Credit Report's Account lookup. Other
+    account-looking fields are retained as source attributes but are not
+    interchangeable join keys.
+    """
+    output = []
+    for header in headers:
+        if not isinstance(header, str):
+            continue
+        normalized = normalize_header(header)
+        if query_role in {1, 2} and normalized.endswith("entityinvolvementrllcbiaccountc"):
+            output.append(header)
+        elif query_role == 4 and normalized == "nfuseaccountc":
+            output.append(header)
+    return output
+
+
 def loan_reference_headers(headers) -> list[str]:
     """Return explicit Loan IDs/FKs, including namespaced SOQL relationship paths."""
     return [header for header in headers if isinstance(header, str) and (
@@ -181,18 +201,33 @@ def soql_field_headers(table: str, field: str, headers, *, root_table: str | Non
     if field == "id" and root_table == table:
         output.extend(header for header in headers if isinstance(header, str) and header == "Id")
     suffixes = SOQL_FIELD_SUFFIXES.get((table, field), ())
-    for header in headers:
-        if not isinstance(header, str):
-            continue
-        normalized = normalize_header(header)
-        if any(normalized.endswith(suffix) for suffix in suffixes):
-            output.append(header)
     if table == "Account" and field == "id":
-        output.extend(account_reference_headers(headers))
+        query_role = {"EntityInvolvement": 1, "Indicator": 2, "CreditReport": 4}.get(root_table)
+        output.extend(soql_account_reference_headers(query_role, headers))
+    elif table in {"EntityInvolvement", "LCREntity"} and field == "account_id":
+        query_role = {"EntityInvolvement": 1, "Indicator": 2}.get(root_table)
+        output.extend(soql_account_reference_headers(query_role, headers))
+    elif table == "CreditReport" and field == "account_id":
+        if root_table == "EntityInvolvement":
+            output.extend(header for header in headers if isinstance(header, str)
+                          and normalize_header(header).endswith("nfusecreditreportrnfuseaccountc"))
+        elif root_table == "CreditReport":
+            output.extend(soql_account_reference_headers(4, headers))
+        elif root_table == "EntityInvolvement":
+            # Query 1 nests CreditReport below the same Entity Involvement
+            # row that explicitly carries its Account FK. Preserve that
+            # same-row parent scope when Query 4 is absent; do not broaden to
+            # generic Account-looking columns.
+            output.extend(soql_account_reference_headers(1, headers))
+    else:
+        for header in headers:
+            if not isinstance(header, str):
+                continue
+            normalized = normalize_header(header)
+            if any(normalized.endswith(suffix) for suffix in suffixes):
+                output.append(header)
     if table == "Loan" and field == "id":
         output.extend(loan_reference_headers(headers))
-    if field in {"account_id", "borrower_account_id"}:
-        output.extend(account_reference_headers(headers))
     if table in {"EntityInvolvement", "Loan", "CreditReport"} and field in {"role", "report_role"}:
         output.extend(borrower_role_headers(headers))
     return list(dict.fromkeys(output))
@@ -221,7 +256,7 @@ def soql_mapping_coverage(query_role: int | None, headers, manifest: dict,
         id_candidates = list(mapping.get("id", []))
         id_candidates.extend(soql_field_headers(table, "id", headers, root_table=root_table))
         if table == "Account":
-            id_candidates.extend(account_reference_headers(headers))
+            id_candidates = soql_account_reference_headers(query_role, headers)
         if table == "Loan":
             id_candidates.extend(loan_reference_headers(headers))
         id_hits = set(headers) & set(id_candidates)
@@ -241,9 +276,12 @@ def soql_mapping_coverage(query_role: int | None, headers, manifest: dict,
         for field, aliases in field_map.items():
             candidates = list(aliases)
             if not canonical:
-                candidates.extend(soql_field_headers(table, field, headers, root_table=root_table))
-            if field in {"account_id", "borrower_account_id"}:
-                candidates.extend(account_reference_headers(headers))
+                if field in {"account_id", "borrower_account_id"}:
+                    candidates = (soql_field_headers(table, field, headers, root_table=root_table)
+                                  if (table, field) in {("EntityInvolvement", "account_id"),
+                                                        ("CreditReport", "account_id")} else [])
+                else:
+                    candidates.extend(soql_field_headers(table, field, headers, root_table=root_table))
             if amount_names and field in amount_names:
                 candidates.append(amount_names[field])
             hits = set(headers) & set(candidates)

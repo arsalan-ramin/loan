@@ -258,7 +258,8 @@ class MemoryAgent:
             for index, start in enumerate(range(0, len(doc.content), 1200)):
                 self.store.remember(session.id, f"doc:{doc.id}:{index}", doc.content[start:start + 1400], "document", doc.name)
         for message in session.messages:
-            self.store.remember(session.id, message.id, message.content, "conversation", message.role)
+            if message.origin == "conversation":
+                self.store.remember(session.id, message.id, message.content, "conversation", message.role)
         return "Document evidence and conversation saved to local ChromaDB."
 
     def respond(self, session: Session, query: str) -> str:

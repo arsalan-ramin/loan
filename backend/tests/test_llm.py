@@ -144,6 +144,37 @@ def test_chat_bounds_and_session_scoped_recall(provider):
     assert "untrusted data" in requests[0]["system"]
     assert "at most 250 words" in requests[0]["system"]
     assert "discuss that loan only" in requests[0]["system"]
+    assert "readable GitHub-flavored Markdown" in requests[0]["system"]
+    assert "never claim that this chat supports only plain text" in requests[0]["system"]
+    assert "Attribute | Value | Evidence/status" in requests[0]["system"]
+    assert "up to 600 words" in requests[0]["system"]
+    assert "validation counts are not processed-report counts" in requests[0]["system"]
+    assert "answer with the exact label 'Human Review' only" in requests[0]["system"]
+    assert "never output Approved or Denied" in requests[0]["system"]
+
+
+def test_local_assistant_inventory_is_excluded_from_future_provider_context(provider):
+    requests = provider()
+    store = Mock()
+    store.recall.side_effect = lambda _sid, _query, kind: (
+        [("MTB_Query_1.xlsx", "LOCAL-ONLY-PII-98765 from recalled workbook")]
+        if kind == "document" else [("assistant", inventory)]
+    )
+    inventory = "| private borrower attribute | LOCAL-ONLY-PII-98765 |"
+    session = Session(messages=[
+        Message(role="assistant", origin="local_assistant", content=inventory),
+        Message(role="user", content="Please explain the source values."),
+    ], documents=[Document(name="MTB_Query_1.xlsx", size=100, extension=".xlsx",
+                           metadata={"records": [{"values": {"private": "LOCAL-ONLY-PII-98765"}}],
+                                     "sheets": [{"name": "Loan", "headers": ["private"]}]})])
+
+    AnthropicLLM().chat(store, session, "What is next?")
+
+    prompt = requests[0]["messages"][0]["content"]
+    context = json.loads(prompt.split("\n", 1)[1].split("\n\nCURRENT USER QUESTION:")[0])
+    assert inventory not in prompt
+    assert "LOCAL-ONLY-PII-98765" not in prompt
+    assert context["recent_messages"] == [{"role": "user", "content": "Please explain the source values."}]
 
 
 def test_report_context_prioritizes_issues():

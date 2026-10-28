@@ -170,6 +170,39 @@ def test_canonical_salesforce_characteristic_spellings_and_selected_account_scop
     assert result.normalized_data["observation_groups"][0]["characteristics"][0]["value"] == "0005"
 
 
+def test_query1_characteristic_key_values_are_raw_and_explicitly_scoped():
+    junction = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
+    loan_fk = junction + "LLC_BI__Loan__c"
+    account_fk = junction + "LLC_BI__Account__c"
+    role_fk = junction + "LLC_BI__Borrower_Type__c"
+    values = ["19960700", "19960715"]
+    source = [("MTB Query 1", {
+        "Id": f"INV-{index}", loan_fk: "L1", account_fk: "A1", role_fk: "Borrower",
+        "SCOC__CharacteristicKey__c": "FileEstablishedDate",
+        "SCOC__CharacteristicValue__c": value,
+    }) for index, value in enumerate(values, 1)]
+
+    doc = document(source, "MTB_Query_1_Validated_Revision_SOQL.xlsx")
+    doc.metadata["sheets"] = [{"name": source[0][0], "headers": list(source[0][1]), "is_reference": False}]
+    result = evaluate_underwriting([doc]).loan_results[0]
+
+    inventory = result.normalized_data["characteristic_observations"]
+    assert len(inventory["groups"]) == 1
+    group = inventory["groups"][0]
+    assert (group["account_id"], group["loan_id"], group["party_role"]) == ("A1", "L1", "borrower")
+    assert group["response_id"] is None
+    assert group["report_id"] is None
+    assert [(item["key"], item["value"]) for item in group["observations"]] == [
+        ("FileEstablishedDate", value) for value in values]
+    serialized = result.model_dump(mode="json")["normalized_data"]["characteristic_observations"]
+    assert [item["value"] for item in serialized["groups"][0]["observations"]] == values
+    assert all("date_interpretation" not in item and "earliest_date" not in item
+               for item in serialized["groups"][0]["observations"])
+    assert result.normalized_data["as_of_date"] is None
+    assert result.normalized_data["selected_report_id"] is None
+    assert "report_selection_requires_explicit_as_of_date" in result.missing_inputs
+
+
 def test_raw_groups_and_values_never_enter_llm_report_context():
     source = grouped_rows()
     next(fields for table, fields in source if table == "Characteristic").update(
@@ -177,7 +210,9 @@ def test_raw_groups_and_values_never_enter_llm_report_context():
     batch = evaluate_underwriting([document(source)])
     report = Report(decision="needs_review", summary="Synthetic test", document_count=1, findings=[], underwriting=batch)
     context = json.dumps(report_context(report))
-    for forbidden in ("observation_groups", "characteristics", "indicators", "PRIVATE_OBSERVATION_KEY", "PRIVATE_OBSERVATION_VALUE"):
+    for forbidden in ("observation_groups", "characteristic_observations", "FileEstablishedDate",
+                      "characteristics", "indicators",
+                      "PRIVATE_OBSERVATION_KEY", "PRIVATE_OBSERVATION_VALUE"):
         assert forbidden not in context
 
 

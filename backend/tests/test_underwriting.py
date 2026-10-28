@@ -591,6 +591,42 @@ def test_selected_account_scopes_engine_to_its_loans_and_source_evidence():
     assert not {"A2", "L2", "R2"} & evidence_record_ids
 
 
+def test_selected_account_does_not_import_other_loan_via_nested_report_fk():
+    junction = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
+    loan_fk = junction + "LLC_BI__Loan__c"
+    account_fk = junction + "LLC_BI__Account__c"
+    role_fk = junction + "LLC_BI__Borrower_Type__c"
+    report_prefix = junction + "nFUSE__Credit_Report__r."
+    q1_rows = [
+        ("Data", {"Id": "IV1", loan_fk: "L1", account_fk: "A1", role_fk: "Borrower",
+                  report_prefix + "Id": "R1", report_prefix + "nFUSE__Account__c": "A1",
+                  report_prefix + "nFUSE__Status__c": "Completed"}),
+        ("Data", {"Id": "IV2", loan_fk: "L2", account_fk: "A2", role_fk: "Borrower",
+                  report_prefix + "Id": "R1", report_prefix + "nFUSE__Account__c": "A1",
+                  report_prefix + "nFUSE__Status__c": "Completed"}),
+    ]
+    q1 = document(q1_rows, "MTB_Query_1_Validated_Revision_SOQL.xlsx", "q1-scope")
+    q1.metadata["sheets"] = [{"name": "Data", "headers": [
+        *q1_rows[0][1], "SCOC__CharacteristicKey__c", "SCOC__CharacteristicValue__c",
+    ]}]
+    q2_prefix = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__LCResponse__r."
+    q2_row = {"Id": "I1", loan_fk: "L1", account_fk: "A1", role_fk: "Borrower",
+              q2_prefix + "SCOC__SBSS7Score__c": "200",
+              "SCOC__IndicatorKey__c": "thinFileIndicator", "SCOC__IndicatorValue__c": "N"}
+    q2 = document([("Data", q2_row)], "MTB_Query_2_Validated_Revision_SOQL.xlsx", "q2-scope")
+    q2.metadata["sheets"] = [{"name": "Data", "headers": list(q2_row)}]
+    q4_row = {"Id": "R1", "nFUSE__Account__c": "A1", "nFUSE__Credit_Score__c": "700"}
+    q4 = document([("Data", q4_row)], "MTB_Query_4_Validated_Revision_SOQL.xlsx", "q4-scope")
+    q4.metadata["sheets"] = [{"name": "Data", "headers": list(q4_row)}]
+
+    graph = build_entity_graph([q1, q2, q4], load_underwriting_config(), selected_account_id="A1")
+
+    assert set(graph.table("Loan")) == {"L1"}
+    assert set(graph.table("CreditReport")) == {"R1"}
+    assert graph.table("CreditReport")["R1"].fields["account_id"] == "A1"
+    assert not any(issue.startswith("CONFLICTING_DUPLICATE:CreditReport:account_id") for issue in graph.issues)
+
+
 def test_screenshot_er_diagram_labels_map_characteristics_and_relationships():
     source = [
         ("ACCOUNT", {"ACCOUNT_ID": "A1"}),
@@ -738,14 +774,19 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
     q2_response = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__LCResponse__r."
     q1doc = document([("MTB Query 1", {
         "Id": "C1", loan: "L1", account: "A1", role: "Borrower",
+        "CreatedDate": "2026-10-20T12:00:00Z",
+        "nFUSE__Account__c": "UNRELATED-Q4-ACCOUNT",
+        "LLC_BI__Account__r.Id": "UNRELATED-NESTED-ACCOUNT",
         q1 + "LLC_BI__Product__c": "Express BALOC",
         q1 + "LLC_BI__Product_Type__c": "Express BALOC",
         q1 + "LLC_BI__Amount__c": "50000.00",
+        q1 + "CreatedDate": "2026-10-20T12:00:00Z",
         q1 + "Loan_Extension__r.Behavioral_Underwriting_Program__c": "quick_app",
         q1_account + "Birth_Date__c": "1980-01-01",
         q1_account + "Number_of_Years_as_Current_Owner__c": "3",
         q1_account + "NAICS_Code_Formula__c": "541100",
         q1_report + "Id": "R1",
+        q1_report + "nFUSE__Account__c": "A1",
         q1_report + "nFUSE__Status__c": "Completed",
         q1_report + "nFUSE__Report_Category__c": "Personal",
         q1_report + "nFUSE__Credit_Score__c": "620",
@@ -754,12 +795,15 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
     })], "MTB_Query_1_Validated_Revision_SOQL.xlsx", "q1-soql")
     q2doc = document([("MTB Query 2", {
         "Id": "I1", loan: "L1", account: "A1", role: "Borrower",
+        "ACCOUNT_ID": "UNRELATED-GENERIC-ACCOUNT",
         q2_response + "SCOC__SBSS7Score__c": "175",
         "SCOC__IndicatorKey__c": "thinFileIndicator",
         "SCOC__IndicatorValue__c": "N",
     })], "MTB_Query_2_Validated_Revision_SOQL.xlsx", "q2-soql")
     q4doc = document([("MTB Query 4", {
         "Id": "R1", "nFUSE__Account__c": "A1",
+        "CreatedDate": "2026-10-19T12:00:00Z",
+        "LLC_BI__Account__c": "UNRELATED-Q1-ACCOUNT",
         "nFUSE__Credit_Score__c": "740", "nFUSE__Status__c": "Completed",
         "nFUSE__Report_Category__c": "Personal",
     })], "MTB_Query_4_Validated_Revision_SOQL.xlsx", "q4-soql")
@@ -782,7 +826,10 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
     assert graph.table("EntityInvolvement")["C1"].fields == {
         "loan_id": "L1", "account_id": "A1", "role": "Borrower",
     }
+    assert graph.table("Loan")["L1"].fields.get("borrower_account_id") is None
     assert graph.table("Loan")["L1"].fields["product"] == "express_baloc"
+    assert "as_of_date" not in graph.table("Loan")["L1"].fields
+    assert "report_date" not in graph.table("CreditReport")["R1"].fields
     assert graph.table("Loan")["L1"].fields["sbss"] == "175"
     assert graph.table("Loan")["L1"].fields["behavioral_program"] == "quick_app"
     assert "requested_path" not in graph.table("Loan")["L1"].fields
@@ -791,6 +838,7 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
     assert graph.table("Account")["A1"].fields["ownership_years"] == "3"
     assert graph.table("Account")["A1"].fields["naics"] == "541100"
     assert graph.table("CreditReport")["R1"].fields["report_role"] == "Borrower"
+    assert graph.table("CreditReport")["R1"].fields["account_id"] == "A1"
     assert graph.table("CreditReport")["R1"].fields["report_category"] == "Personal"
     assert graph.table("CreditReport")["R1"].fields["fico"] is None
     assert any(issue.startswith("CONFLICTING_DUPLICATE:CreditReport:fico") for issue in graph.issues)
@@ -812,6 +860,10 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
     assert "report_completion_status_missing_or_unknown" not in recommendation.missing_inputs
     assert "explicit_iso_as_of_date" in recommendation.missing_inputs
     assert "report_selection_requires_explicit_as_of_date" in recommendation.missing_inputs
+    assert recommendation.normalized_data["as_of_date"] is None
+    assert recommendation.normalized_data["selected_report_id"] is None
+    assert recommendation.normalized_data["fico"] is None
+    assert q1doc.metadata["records"][0]["values"]["CreatedDate"] == "2026-10-20T12:00:00Z"
     assert any(item.field == "nFUSE__Credit_Score__c" for item in recommendation.source_evidence)
     reconciliation = next(step for step in recommendation.normalized_data["decision_flow"]
                           if step["stage"] == "Query 1 / Query 2 / Query 4 source reconciliation")
@@ -833,6 +885,32 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
     conflicting = build_entity_graph([q1doc, q2doc, q4doc], load_underwriting_config())
     assert conflicting.table("CreditReport")["R1"].fields["fico"] is None
     assert any(issue.startswith("CONFLICTING_DUPLICATE:CreditReport:fico") for issue in conflicting.issues)
+
+
+def test_query1_nested_credit_report_uses_same_row_entity_involvement_account_fk():
+    junction = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
+    nested_report = junction + "nFUSE__Credit_Report__r."
+    fields = {
+        "Id": "INV-1",
+        junction + "LLC_BI__Loan__c": "L1",
+        junction + "LLC_BI__Account__c": "A1",
+        junction + "LLC_BI__Borrower_Type__c": "Borrower",
+        "SCOC__CharacteristicKey__c": "FileEstablishedDate",
+        "SCOC__CharacteristicValue__c": "19960700",
+        nested_report + "Id": "R1",
+        nested_report + "nFUSE__Status__c": "Completed",
+        nested_report + "nFUSE__Credit_Score__c": "700",
+        "nFUSE__Account__c": "UNRELATED-Q4-ACCOUNT",
+        "LLC_BI__Account__r.Id": "UNRELATED-NESTED-ACCOUNT",
+    }
+    doc = document([("MTB Query 1", fields)], "MTB_Query_1_Validated_Revision_SOQL.xlsx")
+    doc.metadata["sheets"] = [{"name": "MTB Query 1", "headers": list(fields), "is_reference": False}]
+
+    graph = build_entity_graph([doc], load_underwriting_config())
+
+    assert graph.table("CreditReport")["R1"].fields["account_id"] == "A1"
+    assert not any(issue.startswith("ORPHAN_RELATION:CreditReport:account_id") for issue in graph.issues)
+    assert graph.table("CreditReport")["R1"].fields["account_id"] != "UNRELATED-Q4-ACCOUNT"
 
 
 def test_erd_entity_involvement_link_must_match_lcr_entity_account_and_response_loan():

@@ -172,6 +172,7 @@ class LoanRecommendation(ContractModel):
     normalized_data: dict[str, Any] = Field(default_factory=dict)
     mode: Mode
     policy_version: str
+    decision_status: Literal["Human Review"] = "Human Review"
     rule_results: list[UnderwritingRuleResult] = Field(default_factory=list)
     source_evidence: list[SourceEvidence] = Field(default_factory=list)
     missing_inputs: list[str] = Field(default_factory=list)

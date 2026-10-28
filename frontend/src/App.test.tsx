@@ -42,6 +42,30 @@ describe('Agent', () => {
     expect(input).toHaveValue('');
   });
 
+  it('renders requested assistant Markdown tables as safe semantic tables', async () => {
+    const active = session({ status: 'ready' });
+    const markdown = '| Attribute | Value |\n| --- | --- |\n| Product | Express BALOC |\n| Note | &lt;script&gt;nope&lt;/script&gt; |';
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/health')) return response({ status: 'ok' });
+      if (url === '/api/sessions') return response([active]);
+      if (url.endsWith('/messages')) return response({ ...active, messages: [
+        { id: 'q', role: 'user', content: 'List all loan attributes in a table', created_at: active.created_at },
+        { id: 'a', role: 'assistant', content: markdown, created_at: active.created_at, origin: 'local_assistant' },
+      ] });
+      return response(active);
+    }));
+    const user = userEvent.setup(); render(<App />);
+    await user.click(await screen.findByRole('button', { name: /Untitled session/ }));
+    await user.type(screen.getByRole('textbox', { name: 'Message Agent' }), 'List all loan attributes in a table');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: 'Attribute' })).toBeInTheDocument();
+    expect(within(table).getByRole('cell', { name: 'Express BALOC' })).toBeInTheDocument();
+    expect(table.querySelector('script')).toBeNull();
+    expect(table).toHaveTextContent('<script>nope</script>');
+  });
+
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/health') ? response({ status: 'ok' }) : response([])));
   });

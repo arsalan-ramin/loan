@@ -187,6 +187,7 @@ def test_production_real_upload_exact_json_csv_html_and_trace(client, provider, 
     download = client.get(f"/api/sessions/{sid}/underwriting")
     assert download.json() == batch
     exported_loan = download.json()["loan_results"][0]
+    assert exported_loan["decision_status"] == "Human Review"
     guide_audit = exported_loan["normalized_data"]["implementation_guide_diagnostics"]["audit"]
     assert guide_audit["source_sha256"] == IMPLEMENTATION_GUIDE_SHA256
     assert len(guide_audit["input_fingerprint_sha256"]) == 64
@@ -197,7 +198,7 @@ def test_production_real_upload_exact_json_csv_html_and_trace(client, provider, 
     csv_reader = csv.DictReader(io.StringIO(csv_response.text))
     required_csv_fields = {
         "loan_id", "borrower_account_id", "currency", "normalized_amounts_usd", "mode",
-        "policy_version", "rule_results", "source_evidence", "missing_inputs", "conflicts",
+        "policy_version", "decision_status", "rule_results", "source_evidence", "missing_inputs", "conflicts",
         "recommendation_path", "eligibility_route", "final_action", "human_review_required", "explanation",
         "credit_assessment", "authorization", "strategy_branch", "implementation_guide_diagnostics",
         "implementation_guide_source_document", "implementation_guide_source_sha256", "implementation_guide_available",
@@ -219,6 +220,7 @@ def test_production_real_upload_exact_json_csv_html_and_trace(client, provider, 
                   "not LLM-generated", loan["source_evidence"][0]["id"]):
         assert value in html
     for value in (batch["implementation_guide_source_document"], IMPLEMENTATION_GUIDE_SHA256,
+                  "Decision status: Human Review",
                   "Eligibility route", "Credit assessment candidate", "Authorization", "NOT_ISSUED",
                   "stage_0_schema_identity", "stage_6_explanation_and_audit", "input_fingerprint_sha256",
                   "NOT_EVALUATED", "Unmapped source columns", "Canonical inputs unavailable in source files",

@@ -8,7 +8,7 @@ const hugeUsd = '90071992547409931234567890.1234567890';
 
 function loan(overrides: Partial<LoanRecommendation> = {}): LoanRecommendation {
   return {
-    loan_id: 'loan-1', borrower_account_id: 'borrower-7', currency: 'USD', mode: 'PRODUCTION', policy_version: 'v4-usd',
+    loan_id: 'loan-1', borrower_account_id: 'borrower-7', decision_status: 'Human Review', currency: 'USD', mode: 'PRODUCTION', policy_version: 'v4-usd',
     normalized_amounts_usd: { loan_requested_amount_usd: hugeUsd, ebitda_usd: '-0.00100', new_money_usd: null },
     normalized_data: {}, missing_inputs: ['risk_score'], conflicts: ['Tier inputs conflict'],
     recommendation_path: 'DATA_QUALITY_HOLD', eligibility_route: 'DATA_REVIEW', credit_assessment: 'MANUAL_REVIEW',
@@ -34,6 +34,30 @@ function batch(overrides: Partial<UnderwritingBatch> = {}): UnderwritingBatch {
 }
 
 describe('V4 underwriting report', () => {
+  it('renders raw characteristic key/value pairs without deriving date precision', async () => {
+    render(<UnderwritingReport batch={batch({ loan_results: [loan({ normalized_data: {
+      as_of_date: null,
+      selected_report_id: null,
+      characteristic_observations: {
+        note: 'Raw source values only; unlinked fields are not inferred.',
+        groups: [{ account_id: 'A1', loan_id: 'L1', party_role: 'borrower', response_id: null,
+          response_link_status: 'NOT_EXPORTED_ON_CHARACTERISTIC_ROW', report_id: null,
+          observations: [{ key: 'FileEstablishedDate', value: '19960700', source_record_id: 'C1', evidence_refs: ['cell-date'] },
+            { key: 'OtherCharacteristic', value: 'false', source_record_id: 'C2', evidence_refs: ['cell-2'] }],
+        }],
+      },
+    } })] })} />);
+
+    const card = within(screen.getByRole('article', { name: 'Loan loan-1' }));
+    await userEvent.click(card.getByText('Raw characteristic key/value observations · 2'));
+    expect(card.getByText('FileEstablishedDate')).toBeVisible();
+    expect(card.getByText('19960700')).toBeVisible();
+    expect(card.getByText('OtherCharacteristic')).toBeVisible();
+    expect(card.getByText('false')).toBeVisible();
+    expect(card.getByText(/SBSS response: not explicitly linked/)).toBeVisible();
+    expect(card.getByText(/Credit report: not explicitly linked/)).toBeVisible();
+  });
+
   it('renders optional parent-isolated observations locally without coercion or HTML interpretation', async () => {
     const { container } = render(<UnderwritingReport batch={batch({ loan_results: [loan({ normalized_data: {
       observation_groups: [
@@ -95,6 +119,7 @@ describe('V4 underwriting report', () => {
     expect(card.getByText('USD -0.00100')).toBeInTheDocument();
     expect(card.getByText('Unknown', { selector: 'dd' })).toBeInTheDocument();
     expect(card.getByText('borrower-7')).toBeInTheDocument();
+    expect(card.getByText('Decision status: Human Review. No automated approval or denial is issued.')).toBeInTheDocument();
     expect(card.getByText('DATA_QUALITY_HOLD')).toBeInTheDocument();
     expect(card.getByText('DATA_REVIEW')).toBeInTheDocument();
     expect(card.getByText('MANUAL_REVIEW')).toBeInTheDocument();

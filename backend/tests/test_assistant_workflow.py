@@ -7,9 +7,9 @@ from fastapi.testclient import TestClient
 
 import backend.main as main
 from backend.llm import AnthropicLLM, LLMError
-from backend.agents import underwriting_policy_summary
+from backend.agents import MemoryAgent, underwriting_policy_summary
 from backend.main import create_app
-from backend.models import Message, Report
+from backend.models import Message, Report, Session
 from backend.tests.test_underwriting import document, rows
 from backend.tests.test_underwriting_api import upload_three, workbook
 from backend.underwriting_engine import evaluate_underwriting
@@ -359,6 +359,122 @@ def test_processing_locks_all_local_state_changes(client):
     assert client.post(f"/api/sessions/{sid}/preflight").status_code == 409
     assert client.post(f"/api/sessions/{sid}/assistant/inspect", json={"loan_id": "L1"}).status_code == 409
     assert client.post(f"/api/sessions/{sid}/assistant/notes", json={"loan_id": "L1", "report_id": report["id"], "text": "a"}).status_code == 409
+
+
+def test_chat_attribute_inventory_is_local_complete_scoped_and_provenanced(client, monkeypatch):
+    sid, report_before = completed(client, count=2)
+    store = client.app.state.store
+    session = store.get(sid)
+    q1 = next(item for item in session.documents if "Query_1" in item.name)
+    q1.metadata["sheets"] = [
+        {"name": "Account", "headers": ["Id", "Name", "Account_Note"]},
+        {"name": "Loan", "headers": ["Id", "borrower_account_id", "requested_amount", "null_value", "zero_value", "false_value", "blank_value", "unsafe"]},
+    ]
+    q1.metadata["records"] = [
+        {"sheet": "Account", "row": 2, "values": {"Id": "A1", "Name": "Client A", "Account_Note": "account-only"}},
+        {"sheet": "Loan", "row": 3, "values": {"Id": "L1", "borrower_account_id": "A1", "requested_amount": "100.00", "null_value": None, "zero_value": 0, "false_value": False, "unsafe": "<script>alert(1)</script> | `code`\nnext"}, "sources": {"requested_amount": "Loan!C3"}},
+        {"sheet": "Loan", "row": 4, "values": {"Id": "L1", "borrower_account_id": "A1", "requested_amount": "200.00"}},
+        {"sheet": "Loan", "row": 5, "values": {"Id": "L2", "borrower_account_id": "A1", "requested_amount": "OTHER-LOAN-SECRET"}},
+    ]
+    q2 = next(item for item in session.documents if "Query_2" in item.name)
+    q2.metadata["sheets"] = [{"name": "MTB Query 2", "headers": [
+        "Id", "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r.LLC_BI__Loan__c",
+        "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r.LLC_BI__Account__c",
+        "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r.LLC_BI__Borrower_Type__c",
+        "SCOC__IndicatorKey__c", "SCOC__IndicatorValue__c"]}]
+    q2.metadata["records"] = [{"sheet": "MTB Query 2", "row": 7, "values": {
+        "Id": "IND-1",
+        "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r.LLC_BI__Loan__c": "L1",
+        "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r.LLC_BI__Account__c": "A1",
+        "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r.LLC_BI__Borrower_Type__c": "Borrower",
+        "SCOC__IndicatorKey__c": "synthetic-key", "SCOC__IndicatorValue__c": "0",
+    }}]
+    store.save(session)
+    remember = Mock(wraps=store.remember)
+    monkeypatch.setattr(store, "remember", remember)
+
+    response = client.post(f"/api/sessions/{sid}/messages", json={
+        "content": "list all loan attributes in a table", "loan_id": "L1",
+    })
+
+    assert response.status_code == 200
+    result = response.json()
+    answer = result["messages"][-1]
+    assert answer["origin"] == "local_assistant"
+    assert "| Attribute | Source value | Status | Workbook / sheet / row | Scope |" in answer["content"]
+    assert "not provided (blank or absent cell)" in answer["content"]
+    assert "null_value | null | null |" in answer["content"]
+    assert "| zero_value | 0 | present |" in answer["content"]
+    assert "| false_value | false | present |" in answer["content"]
+    assert "Loan!C3" in answer["content"] and "row 3" in answer["content"]
+    assert "requested_amount | 100.00" in answer["content"]
+    assert "requested_amount | 200.00" in answer["content"]
+    assert "synthetic-key" in answer["content"]
+    assert "account-only" in answer["content"]
+    assert "OTHER-LOAN-SECRET" not in answer["content"]
+    assert "&lt;script&gt;" in answer["content"] and "&#124;" in answer["content"] and "&#96;code&#96;" in answer["content"]
+    assert "<script>" not in answer["content"]
+    assert result["report"] == report_before
+    assert not any(call.args[2] == answer["content"] for call in remember.call_args_list)
+    assert all(call.args[4] != "assistant" for call in remember.call_args_list)
+
+
+def test_chat_attribute_inventory_clarifies_ambiguous_unknown_and_conflicting_scope(client):
+    sid, _ = completed(client, count=2)
+
+    ambiguous = client.post(f"/api/sessions/{sid}/messages", json={"content": "list all loan fields in a table"}).json()
+    assert "multiple loans" in ambiguous["messages"][-1]["content"]
+    assert ambiguous["messages"][-1]["origin"] == "local_assistant"
+
+    unknown = client.post(f"/api/sessions/{sid}/messages", json={"content": "list all loan attributes for loan L999"}).json()
+    assert "can’t match" in unknown["messages"][-1]["content"]
+    assert "no other loan was substituted" in unknown["messages"][-1]["content"]
+
+    conflicting = client.post(f"/api/sessions/{sid}/messages", json={
+        "content": "list all loan attributes for loan L1", "loan_id": "L2",
+    }).json()
+    assert "conflicts with the loan named" in conflicting["messages"][-1]["content"]
+
+    bad_focus = client.post(f"/api/sessions/{sid}/messages", json={
+        "content": "list all loan attributes", "loan_id": "NO-SUCH-LOAN",
+    }).json()
+    assert "can’t match the focused loan ID" in bad_focus["messages"][-1]["content"]
+
+
+def test_chat_attribute_inventory_paginates_without_hiding_total_count(client):
+    sid, _ = completed(client)
+    store = client.app.state.store
+    session = store.get(sid)
+    q1 = next(item for item in session.documents if "Query_1" in item.name)
+    fields = [f"source_field_{index}" for index in range(105)]
+    q1.metadata["sheets"] = [{"name": "Loan", "headers": ["Id", *fields]}]
+    q1.metadata["records"] = [{"sheet": "Loan", "row": 2,
+        "values": {"Id": "L1", **{field: f"value-{index}" for index, field in enumerate(fields)}}}]
+    store.save(session)
+
+    answer = client.post(f"/api/sessions/{sid}/messages", json={
+        "content": "list all loan attributes for loan L1 page 2",
+    }).json()["messages"][-1]["content"]
+
+    assert "Showing source attribute observations 101–109 of 109 · page 2 of 2." in answer
+    assert "source_field_99 | value-99" in answer
+    assert "source_field_104 | value-104" in answer
+    assert "source_field_95 | value-95" not in answer
+    assert "final page" in answer
+
+
+def test_memory_reindex_skips_local_assistant_inventory_content():
+    store = Mock()
+    session = Session(messages=[
+        Message(role="assistant", origin="local_assistant", content="LOCAL-ONLY-PII-98765"),
+        Message(role="user", content="list all loan attributes"),
+    ])
+
+    MemoryAgent(store).index(session)
+
+    store.forget_documents.assert_called_once_with(session.id)
+    store.remember.assert_called_once_with(session.id, session.messages[1].id,
+        "list all loan attributes", "conversation", "user")
 
 
 def test_concurrent_preflight_never_overwrites_changes(client, monkeypatch):

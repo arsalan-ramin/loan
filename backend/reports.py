@@ -92,6 +92,7 @@ def render_report(session: Session) -> str:
                     '<details><summary>Expanded rule registry and audit</summary>'
                     f'<pre>{escape(spec.model_dump_json(indent=2))}</pre></details>')
             loans.append(f'<article><h3>Loan {escape(loan.loan_id)}</h3>'
+                         f'<p><strong>Decision status: {escape(loan.decision_status)}. No automated approval or denial is issued.</strong></p>'
                          f'<p>Borrower account ID: {escape(loan.borrower_account_id or "Not provided")}</p>'
                          f'<p>Path: {escape(loan.recommendation_path)} · Final action: {escape(loan.final_action)} · Human review required.</p>'
                          '<h4>Separate non-operational outputs</h4><dl>'

@@ -20,6 +20,9 @@ def setup_review(tmp_path):
         source.extend(("Loan", {**source[1][1], "Id": f"L{i}"}) for i in range(2, 26))
         report = Report(decision="needs_review", summary="Synthetic fixture", findings=[], document_count=3,
                         underwriting=evaluate_underwriting([document(source)], mode="TEST"))
+        # This fixture exercises strict reconciliation; demo has its own tests.
+        for loan in report.underwriting.loan_results:
+            loan.normalized_data.pop("demo_decision", None)
         session = Session(status="completed", report=report)
         client.app.state.store.save(session)
         yield client, session

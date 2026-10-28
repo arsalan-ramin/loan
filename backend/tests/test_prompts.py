@@ -11,6 +11,10 @@ from backend import commentary, llm, llm_context, loan_review, prompts
 
 # SHA-256 runtime snapshots, including the explicitly versioned TEST demo update.
 @pytest.mark.parametrize("name,digest", [
+    ("DEMO_SYSTEM", "458bbfc34ed2163e170162e65e4038f2f6680b532eaee73d8b792acddba22d2b"),
+    ("DEMO_AGGREGATE_INSTRUCTIONS", "4fd1bac306fbfb8301df268b35a70b1ddd2f8c4f4b238a435ba4094b51342a22"),
+    ("DEMO_SELECTED_LOAN_INSTRUCTIONS", "e363a50540076ee7c8a669c017aeaf8ed495ff3857c6e8c892287d23237b2e50"),
+    ("DEMO_SELECTED_LOAN_CONTEXT_NOTE", "d34a861b02ad0ea91c2ac40ef878ec29eda611bcd844a9d93410cc0ed4be81e3"),
     ("SYSTEM", "7a32923c79885a9a044f846870274c71beec603d6c9fcac53f87a487c9f7fc19"),
     ("V4_SYSTEM", "a357a49510aaff807e48008ecec9b33155119ff0ca6c5040ebf5d3ae16bec71e"),
     ("REVIEW_REASONING_GUIDANCE", "c39b743957d5ea91c469480085287e96ec86c71adac4c41257644be968164e8d"),
@@ -34,6 +38,9 @@ def test_prompt_consumers_import_from_prompt_owner():
     assert commentary.REVIEW_REASONING_GUIDANCE is prompts.REVIEW_REASONING_GUIDANCE
     assert llm_context.CHAT_WORKFLOW_INSTRUCTIONS is prompts.CHAT_WORKFLOW_INSTRUCTIONS
     assert loan_review.CONTEXT_NOTE is prompts.SELECTED_LOAN_CONTEXT_NOTE
+    assert commentary.DEMO_SYSTEM is loan_review.DEMO_SYSTEM is prompts.DEMO_SYSTEM
+    assert commentary.DEMO_AGGREGATE_INSTRUCTIONS is prompts.DEMO_AGGREGATE_INSTRUCTIONS
+    assert loan_review.DEMO_SELECTED_LOAN_INSTRUCTIONS is prompts.DEMO_SELECTED_LOAN_INSTRUCTIONS
 
 
 def test_explanations_name_requirements_instead_of_scope_jargon():
@@ -80,7 +87,11 @@ def test_system_prompt_components_are_owned_by_prompts(module, expected_calls):
              and node.func.attr == "complete"]
     assert len(calls) == expected_calls
     for call in calls:
-        components = list(ast.walk(call.args[0]))
+        # Conditional routing is allowed, but both prompt branches must still
+        # be composed exclusively of constants imported from the prompt owner.
+        expressions = ([call.args[0].body, call.args[0].orelse]
+                       if isinstance(call.args[0], ast.IfExp) else [call.args[0]])
+        components = [node for expression in expressions for node in ast.walk(expression)]
         assert not any(isinstance(node, ast.Constant) for node in components)
         names = {node.id for node in components if isinstance(node, ast.Name)}
         assert names and names <= imported_prompts

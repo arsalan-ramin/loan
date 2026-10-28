@@ -1,8 +1,12 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import App from './App';
 import type { Session } from './types';
+
+const baseStyles = readFileSync('src/styles.css', 'utf8');
+const usabilityStyles = readFileSync('src/usability.css', 'utf8');
 
 const session = (overrides: Partial<Session> = {}): Session => ({
   id: 'session-1', title: 'Untitled session', created_at: '2026-10-20T12:00:00Z', updated_at: '2026-10-20T12:00:00Z', status: 'awaiting_upload', messages: [], documents: [], rules: [], steps: [], report: null, error: null, ...overrides,
@@ -10,6 +14,41 @@ const session = (overrides: Partial<Session> = {}): Session => ({
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 describe('Agent', () => {
+  it('puts upload first in DOM and keyboard order with a full-width conversation', async () => {
+    // Load the actual styles: jsdom does not apply Vite's CSS imports by itself.
+    // Match the explicit base-then-usability stylesheet order in main.tsx.
+    const style = document.createElement('style');
+    const base = baseStyles.replace(/^@import.*$/gm, '');
+    style.textContent = `${base}\n${usabilityStyles}`;
+    document.head.append(style);
+    try {
+      const { container } = render(<App />);
+      await screen.findByText(/Your sessions will live here/);
+      const upload = screen.getByRole('button', { name: 'Upload documents' });
+      const documents = screen.getByRole('heading', { name: 'Documents' }).closest('section')!;
+      const conversation = screen.getByRole('heading', { name: 'Your document conversation' }).closest('section')!;
+      const rules = screen.getByRole('heading', { name: 'Review rules' }).closest('section')!;
+      const layout = conversation.parentElement!;
+      expect(Array.from(layout.children)).toEqual([documents, conversation, rules.parentElement]);
+      expect(upload.compareDocumentPosition(screen.getByRole('textbox', { name: 'Message Agent' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(container.querySelector('.right-column, .studio-grid')).toBeNull();
+      expect(getComputedStyle(layout).display).toBe('grid');
+      expect(getComputedStyle(layout).gridTemplateColumns).toBe('minmax(0, 1fr)');
+      expect(getComputedStyle(conversation.querySelector('.conversation-body')!).maxHeight).toBe('none');
+      expect(getComputedStyle(conversation.querySelector('.conversation-body')!).overflow).toBe('visible');
+      const user = userEvent.setup();
+      screen.getByRole('button', { name: 'Add documents' }).focus();
+      await user.tab();
+      expect(upload).toHaveFocus();
+      await user.tab();
+      expect(screen.getByLabelText('Choose documents')).toHaveFocus();
+      await user.tab();
+      expect(screen.getByRole('button', { name: 'Attach documents' })).toHaveFocus();
+    } finally {
+      style.remove();
+    }
+  });
+
   it('shows follow-up failure beside the composer, preserves the question and shows the retry reply', async () => {
     const scroll = vi.fn();
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, writable: true, value: scroll });
@@ -77,7 +116,7 @@ describe('Agent', () => {
     render(<App />);
     expect(await screen.findByText('Your documents are the starting point.')).toBeInTheDocument();
     expect(await screen.findByText(/Your sessions will live here/)).toBeInTheDocument();
-    expect(screen.getByText('Start by adding your first document below.')).toBeInTheDocument();
+    expect(screen.getByText('Start by adding your first document above.')).toBeInTheDocument();
     expect(screen.getByText(/Chat context and document evidence are sent to Anthropic/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /^agent\s*\.$/ })).toBeInTheDocument();
     expect(screen.getByText('Agent assistant')).toBeInTheDocument();

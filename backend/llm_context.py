@@ -10,6 +10,48 @@ from .storage import Store
 from .underwriting_models import SOURCE_SHA256
 
 
+def demo_explanation_context(report: Report) -> dict | None:
+    """Dedicated narrative input: no strict policy, expanded or selection trace.
+
+    Bound loans before building context and share 40 citations globally, while
+    filtering each demo against its own evidence to prevent cross-loan borrowing.
+    """
+    batch = report.underwriting
+    if batch is None or batch.mode != "TEST":
+        return None
+    loans = batch.loan_results[:20]
+    demos = []
+    for loan in loans:
+        data = loan.normalized_data.get("demo_decision")
+        evidence = data.get("source_evidence") if isinstance(data, dict) else None
+        refs = {item["id"] for item in evidence[:100]
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+                and len(item["id"]) <= 128} if isinstance(evidence, list) else set()
+        demo = bounded_demo_context(data, mode=loan.mode, allowed_refs=refs)
+        demos.append((loan, data, refs, demo))
+    if not any(demo is not None for _, _, _, demo in demos):
+        return None
+    evidence_refs = list(dict.fromkeys(ref for _, _, _, demo in demos if demo
+                                     for item in demo["criteria"] for ref in item["evidence_refs"]))[:40]
+    allowed_refs = set(evidence_refs)
+    return {
+        "decision_recommendation": None, "recommended_route": "MANUAL_REVIEW",
+        "human_review_required": True,
+        "underwriting": {
+            "mode": "TEST", "explanation_basis": "BOUNDED_TEST_DEMO_ONLY",
+            "loan_count": len(batch.loan_results),
+            "loan_results": [{"loan_id": loan.loan_id,
+                              "demo_decision": bounded_demo_context(data, mode=loan.mode,
+                                                                     allowed_refs=refs & allowed_refs)}
+                             for loan, data, refs, _ in demos],
+            "evidence_refs": evidence_refs,
+            "context_note": "At most 20 loans and 40 evidence IDs globally. Facts and matched reasons "
+                            "belong only to their containing loan. Omitted loans are not assessed. "
+                            "No raw rows, attributes, strict rules or policy statuses are narrative input.",
+        },
+    }
+
+
 def chat_context(store: Store, session: Session, query: str) -> dict:
     safe_documents = []
     xlsx_sources = {doc.name for doc in session.documents if doc.extension.casefold() == ".xlsx"}

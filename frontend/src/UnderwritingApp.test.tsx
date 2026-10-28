@@ -58,6 +58,13 @@ describe('V4 app integration', () => {
     expect(await screen.findByText(text, {}, { timeout: 4000 })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Aggregate report commentary' })).toBeVisible();
     expect(screen.getByText('Aggregate report commentary').closest('details')).toBeNull();
+    const documents = screen.getByRole('heading', { name: 'Documents' }).closest('section')!;
+    const conversation = screen.getByRole('heading', { name: 'Your document conversation' }).closest('section')!;
+    const rules = screen.getByRole('heading', { name: 'Underwriting rules' }).closest('section')!;
+    expect(documents.nextElementSibling).toBe(conversation);
+    expect(conversation.nextElementSibling).toBe(rules.parentElement);
+    expect(rules.parentElement).toHaveClass('rules-row');
+    expect(screen.getByRole('region', { name: 'Aggregate report commentary' }).closest('.conversation-card')).toBe(conversation);
     expect(screen.getByLabelText('Processing explanation result')).not.toHaveFocus();
     expect(scroll).not.toHaveBeenCalled();
     expect(screen.getByText(text)).toBeVisible();

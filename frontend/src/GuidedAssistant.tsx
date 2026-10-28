@@ -207,6 +207,13 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
       <span className="demo-label">TEST demo • no lending action</span>
       <h3>{String(demo!.label)} · Loan {selectedLoan!.loan_id}</h3>
       {typeof demo!.rationale === 'string' && <p>{demo!.rationale}</p>}
+      {Array.isArray(demo!.matched_reasons) && demo!.matched_reasons.length > 0 && <div>
+        <h5>Matched reasons</h5>
+        <ul>{demo!.matched_reasons.map((item, index) => {
+          const reason = item as Record<string, unknown>;
+          return <li key={index}>{String(reason.label ?? reason.criterion ?? 'Matched criterion')}</li>;
+        })}</ul>
+      </div>}
       <p className="muted">Final lending decisions require authorized human review.</p>
       <details><summary>Demo criteria and source evidence</summary><pre>{JSON.stringify(demo, null, 2)}</pre></details>
     </section> : <h3>{session.status === 'processing' ? 'Your review is running' : session.report ? 'Explore this loan' : 'Select a loan and prepare review'}</h3>}

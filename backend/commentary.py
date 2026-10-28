@@ -5,11 +5,13 @@ import json
 from pydantic import ValidationError
 
 from .llm import AnthropicLLM, LLMError
-from .llm_context import chat_context, report_context
+from .llm_context import chat_context, demo_explanation_context, report_context
 from .models import PolicyExplanation, Report, Session, UnderwritingExplanation
 from .prompts import (
     AGGREGATE_UNDERWRITING_INSTRUCTIONS,
     CHAT_FOLLOW_UP_INSTRUCTIONS,
+    DEMO_AGGREGATE_INSTRUCTIONS,
+    DEMO_SYSTEM,
     GENERIC_EXPLANATION_INSTRUCTIONS,
     LEGACY_POLICY_EXPLANATION_INSTRUCTIONS,
     REVIEW_REASONING_GUIDANCE,
@@ -36,8 +38,10 @@ def explain(llm: AnthropicLLM, report: Report) -> str:
     if report.underwriting is not None:
         # One bounded aggregate call, regardless of the number of loans.
         # Never replace engine per-loan explanations or expose raw workbook fields.
-        context = report_context(report)
+        demo_context = demo_explanation_context(report)
+        context = demo_context if demo_context is not None else report_context(report)
         text = llm.complete(
+            DEMO_SYSTEM + DEMO_AGGREGATE_INSTRUCTIONS if demo_context is not None else
             V4_SYSTEM + REVIEW_REASONING_GUIDANCE + AGGREGATE_UNDERWRITING_INSTRUCTIONS,
             json.dumps(context, ensure_ascii=False),
         )
@@ -48,7 +52,7 @@ def explain(llm: AnthropicLLM, report: Report) -> str:
         trace = context["underwriting"]
         loan_ids = {loan["loan_id"] for loan in trace["loan_results"]}
         rule_ids = {rule["rule_id"] for loan in trace["loan_results"]
-                    for rule in loan["rule_results"] if rule["status"] == "FAIL"}
+                    for rule in loan.get("rule_results", []) if rule["status"] == "FAIL"}
         if (output.recommended_route != "MANUAL_REVIEW" or output.confidence is not None
                 or not set(output.loan_ids) <= loan_ids
                 or not set(output.triggered_rules) <= rule_ids

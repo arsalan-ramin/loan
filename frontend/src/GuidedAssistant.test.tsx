@@ -32,6 +32,17 @@ function demoSession(label = 'Decline'): Session {
 describe('Guided assistant workflow', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(session()), { status: 200 }))));
 
+  it('shows only supplied matched reason labels in the demo summary', () => {
+    const active = demoSession();
+    const demo = active.report!.underwriting!.loan_results[0].normalized_data.demo_decision as Record<string, unknown>;
+    demo.matched_reasons = [{ label: 'Derogatory personal credit', source: 'SUPPLIED_DECLINE_REASON_CATALOG' }];
+    render(<GuidedAssistant {...props(active)} />);
+    const summary = within(screen.getByRole('region', { name: 'TEST demo summary for L1' }));
+    expect(summary.getByText('Matched reasons')).toBeVisible();
+    expect(summary.getByText('Derogatory personal credit')).toBeVisible();
+    expect(summary.queryByText('Bankruptcy')).not.toBeInTheDocument();
+  });
+
   it.each(['Approve', 'Decline', 'Refer'])('leads with the selected TEST demo %s and preserves its collapsed evidence', async (label) => {
     const active = demoSession(label);
     const p = props(active);

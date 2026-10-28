@@ -14,10 +14,28 @@ from decimal import Decimal
 from typing import Any
 
 from .entity_graph import EntityGraph, EntityNode, iso_date
+from .expanded_spec import REASONS
 from .underwriting_models import USD_100K, USD_100M, exact_decimal
 
 VERSION = "screenshot-test-demo-v1"
 SELECTION_BASIS = "FIRST_ACCOUNT_MATCH_FOR_TEST_DEMO"
+
+
+def _matched_reasons(criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Only six mapped demo predicates; the expanded registry stays independent."""
+    catalog = {code: label for code, label, *_ in REASONS}
+    mappings = {
+        "bankruptcy_clear": (catalog["BANKRUPTCY"], "SUPPLIED_DECLINE_REASON_CATALOG"),
+        "ebitda_usd": (catalog["EXPENSES_EXCEED_INCOME"], "SUPPLIED_DECLINE_REASON_CATALOG"),
+        "public_record_code": (catalog["DEROGATORY_PERSONAL"], "SUPPLIED_DECLINE_REASON_CATALOG"),
+        "fico": ("Average personal FICO below 650", "SUPPLIED_STRATEGY"),
+        "sbss": ("SBSS below 160", "SUPPLIED_STRATEGY"),
+        "age_years": ("Age below 18", "SUPPLIED_STRATEGY"),
+    }
+    return [{"criterion": item["criterion"], "label": mappings[item["criterion"]][0],
+             "source": mappings[item["criterion"]][1], "status": "MATCHED",
+             "evidence_refs": list(item["evidence_refs"]), "adverse_action_code": None}
+            for item in criteria if item["criterion"] in mappings and item["status"] == "FAIL"]
 
 
 def _number(value: Any) -> Decimal | None:
@@ -231,6 +249,7 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "reference_date_basis": "EXPLICIT_APPLICATION_AS_OF_DATE" if as_of else "UNAVAILABLE",
         "candidate_route": route, "branch": branch, "rationale": rationale,
         "criteria": criteria, "normalized_facts": facts,
+        "matched_reasons": _matched_reasons(criteria),
         "source_evidence": [item.model_dump() for item in demo_evidence.values()],
         "missing_inputs": sorted(set(missing)), "conflicts": conflicts,
         "strict_trace_unchanged": True,
@@ -250,6 +269,9 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
     facts = data.get("normalized_facts")
     facts = facts if isinstance(facts, dict) else {}
     normalized: dict[str, Any] = {}
+    code = _number(facts.get("public_record_code"))
+    if code in {Decimal(0), Decimal(1), Decimal(2), Decimal(3)}:
+        normalized["public_record_code"] = str(code)
     for key in ("fico", "sbss", "ownership_years", "ebitda_usd", "requested_amount_usd"):
         number = _number(facts.get(key))
         if number is not None and len(str(number)) <= 100:
@@ -270,6 +292,18 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
         key, status = item["criterion"], item.get("status")
         if status not in {"PASS", "FAIL", "UNKNOWN", "OBSERVED"}:
             continue
+        # A stale saved status cannot contradict the normalized value sent to
+        # the model (e.g. SBSS 177 must never be described as below 160).
+        value = normalized.get(key)
+        if status != "UNKNOWN" and key in {
+            "public_record_code", "ebitda_usd", "bankruptcy_clear", "age_years", "fico", "sbss"}:
+            clear = None
+            if value is not None:
+                clear = (value if key == "bankruptcy_clear" else
+                         _number(value) == 0 if key == "public_record_code" else
+                         _number(value) >= {"ebitda_usd": 0, "age_years": 18,
+                                            "fico": 650, "sbss": 160}[key])
+            status = "UNKNOWN" if clear is None else "PASS" if clear else "FAIL"
         refs = item.get("evidence_refs")
         checks.append({"criterion": key, "status": status, "value": normalized.get(key),
                        "evidence_refs": [ref for ref in refs[:40] if isinstance(ref, str) and ref in allowed_refs]
@@ -288,6 +322,7 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
         "reference_date_basis": "EXPLICIT_APPLICATION_AS_OF_DATE" if reference else "UNAVAILABLE",
         "candidate_route": data.get("candidate_route") if data.get("candidate_route") in {"SBA", "CONVENTIONAL"} else None,
         "branch": branch, "normalized_facts": normalized, "criteria": checks,
+        "matched_reasons": _matched_reasons(checks),
         "missing_inputs": [key for key in missing[:20] if isinstance(key, str) and key in known_missing]
         if isinstance(missing, list) else [],
         "conflicts": ["REQUEST_THRESHOLD_100M_VS_100K"] if branch == "REQUEST_THRESHOLD_CONFLICT" else [],

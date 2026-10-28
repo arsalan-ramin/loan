@@ -92,6 +92,7 @@ function LoanCard({ loan }: { loan: LoanRecommendation }) {
   const demo = loan.mode === 'TEST' && loan.normalized_data.demo_decision
     ? loan.normalized_data.demo_decision as { version?: string; label?: string; simulation_only?: boolean;
       authorization?: string; rationale?: string; selected_report_id?: string | null; candidate_route?: string | null;
+      matched_reasons?: Array<{ label: string; source: string; evidence_refs: string[] }>;
       criteria?: Array<{ criterion: string; value: unknown; status: string; detail: string; evidence_refs: string[] }> } : null;
   const showDemo = demo?.version === 'screenshot-test-demo-v1' && demo.simulation_only === true
     && demo.authorization === 'NOT_ISSUED' && ['Approve', 'Decline', 'Refer'].includes(demo.label ?? '');
@@ -102,6 +103,12 @@ function LoanCard({ loan }: { loan: LoanRecommendation }) {
       <p className="underwriting-status">{showDemo ? demo!.label : recommendation}</p>
       {showDemo && <>
         <p>{demo!.rationale}</p>
+        {!!demo!.matched_reasons?.length && <div><h5>Matched reasons</h5><ul>
+          {demo!.matched_reasons.map((reason, index) => <li key={index}>{reason.label}
+            <small> · {reason.source === 'SUPPLIED_DECLINE_REASON_CATALOG' ? 'Provided decline reason' : 'Strategy criterion'}
+              {reason.evidence_refs.length > 0 && ` · Evidence: ${reason.evidence_refs.join(', ')}`}</small>
+          </li>)}
+        </ul></div>}
         {demo!.candidate_route && <p>Product candidate: {demo!.candidate_route}</p>}
         <p>Demo report: {demo!.selected_report_id ?? 'No account-linked report'}. Uses the first account-linked report in source order; report dates and completion are not checked and freshness is not asserted.</p>
         <details><summary>Verify demo criteria and evidence</summary>

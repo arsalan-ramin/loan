@@ -4,14 +4,33 @@
 .claude-bullets ul { margin: 0; padding-left: 22px; }
 .claude-bullets li { padding-left: 4px; margin-bottom: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.8; }
 .claude-bullets li::marker { color: #527a43; }
-.conversation-body,
-.document-list,
-.chat-feedback section {
+.studio-layout .conversation-body,
+.studio-layout .document-list,
+.studio-layout .chat-feedback section {
   max-height: none;
   overflow: visible;
 }
-.studio-grid { align-items: start; }
-.conversation-card, .right-column, .guided-assistant { min-width: 0; }
+.studio-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+.studio-layout > * { min-width: 0; }
+.conversation-card, .guided-assistant { min-width: 0; }
+.rules-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.rules-row > :only-child { grid-column: 1 / -1; }
+
+/* Upload controls and notices share a compact row, never the agent's width. */
+.studio-layout .documents-content { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr); gap: 16px 24px; }
+.upload-controls, .upload-notices { min-width: 0; }
+.studio-layout .dropzone { min-height: 132px; padding: 14px; }
+.studio-layout .upload-icon { width: 34px; height: 34px; margin-bottom: 8px; }
+.studio-layout .dropzone strong { font-size: 13px; }
+.studio-layout .dropzone > span:not(.upload-icon) { font-size: 12px; }
+.studio-layout .dropzone small { max-width: none; font-size: 11px; line-height: 1.6; margin-top: 8px; }
+.upload-notices .dataset-note { margin: 0; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.upload-notices .dataset-note + .dataset-note { margin-top: 10px; }
+.studio-layout .document-list, .studio-layout .no-documents { grid-column: 1 / -1; margin: 0; }
+.studio-layout .document-list li { align-items: flex-start; }
+.studio-layout .document-list strong { font-size: 13px; line-height: 1.6; }
+.studio-layout .document-list small { font-size: 12px; }
+.studio-layout .excel-metadata { font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .document-list strong { white-space: normal; overflow-wrap: anywhere; }
 .conversation-body, .guided-assistant, .claude-explanation { scroll-margin-top: 24px; }
 .assistant-markdown { min-width: 0; white-space: normal; }
@@ -58,8 +77,7 @@ summary:focus-visible { outline: 3px solid #497447; outline-offset: 3px; }
 @media (max-width: 700px) {
   .workflow-steps { grid-template-columns: 1fr; }
   .guided-actions > .button { flex: 1 1 100%; }
-  .right-column { display: flex; flex-direction: column; }
-  .right-column > .card { width: 100%; }
+  .studio-layout .documents-content, .rules-row { grid-template-columns: minmax(0, 1fr); }
   .pipeline-footer .process-actions { flex-direction: column; }
 }
 .excel-metadata summary { cursor: pointer; min-height: 44px; padding: 12px 0; font-size: 12px; }

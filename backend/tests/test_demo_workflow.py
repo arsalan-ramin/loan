@@ -2,13 +2,18 @@
 
 import copy
 import json
+from unittest.mock import Mock
 
 import pytest
 
 from backend.demo_workflow import SELECTION_BASIS, bounded_demo_context, evaluate_demo
 from backend.entity_graph import build_entity_graph
-from backend.llm_context import report_context
-from backend.models import Report
+from backend import commentary, prompts
+from backend.expanded_spec import REASONS
+from backend.llm import AnthropicLLM, LLMError
+from backend.llm_context import demo_explanation_context, report_context
+from backend.loan_review import review_selected_loan
+from backend.models import Report, Session
 from backend.tests.test_underwriting import document, rows
 from backend.underwriting_engine import evaluate_underwriting, load_underwriting_config
 
@@ -303,3 +308,193 @@ def test_context_global_budgets_remain_bounded_with_many_demo_loans():
     assert len(context["evidence_refs"]) <= 40
     assert sum(len(item["rule_results"]) for item in context["loan_results"]) <= 40
     assert all(len(item["demo_decision"]["criteria"]) <= 10 for item in context["loan_results"])
+
+
+def demo_report(source=None):
+    return Report(decision="needs_review", summary="Review", findings=[], document_count=1,
+                  underwriting=evaluate(source))
+
+
+def response(loan_ids, **changes):
+    return json.dumps({"recommended_route": "MANUAL_REVIEW", "decision_recommendation": None,
+                       "confidence": None, "requires_human_approval": True, "loan_ids": loan_ids,
+                       "positive_factors": [], "risk_factors": [], "missing_information": [],
+                       "explanation": "Result: Refer. Why: SBSS 177 is above the knockout boundary.",
+                       "triggered_rules": [], "evidence_refs": [], **changes})
+
+
+@pytest.mark.parametrize("criterion_key,field,value,label,provenance", [
+    ("bankruptcy_clear", "bankruptcy_discharge_date", "2025-01-01", "Bankruptcy", "SUPPLIED_DECLINE_REASON_CATALOG"),
+    ("ebitda_usd", "ebitda", "-1", "Business expenses exceed business income", "SUPPLIED_DECLINE_REASON_CATALOG"),
+    ("public_record_code", "max_delinquency_public_records", "2", "Derogatory personal credit", "SUPPLIED_DECLINE_REASON_CATALOG"),
+    ("fico", "personal_fico", "620", "Average personal FICO below 650", "SUPPLIED_STRATEGY"),
+    ("sbss", "sbss", "155", "SBSS below 160", "SUPPLIED_STRATEGY"),
+    ("age_years", "dob", "2010-01-01", "Age below 18", "SUPPLIED_STRATEGY"),
+])
+def test_demo_matched_reason_labels_and_provenance(criterion_key, field, value, label, provenance):
+    source = rows()
+    node = 0 if field in {"ebitda", "dob"} else 3 if field == "sbss" else 2
+    source[node][1][field] = value
+    if criterion_key == "bankruptcy_clear":
+        source[2][1]["bankruptcy_count"] = "1"
+    report = demo_report(source)
+    view = report.underwriting.loan_results[0].normalized_data["demo_decision"]
+    assert view["matched_reasons"] == [{
+        "criterion": criterion_key, "label": label, "source": provenance, "status": "MATCHED",
+        "evidence_refs": criterion(view, criterion_key)["evidence_refs"], "adverse_action_code": None,
+    }]
+    bounded = demo_explanation_context(report)["underwriting"]["loan_results"][0]["demo_decision"]
+    assert bounded["matched_reasons"] == view["matched_reasons"]
+
+
+def test_demo_does_not_activate_unmapped_catalog_or_clear_unknowns():
+    source = rows()
+    source[0][1].pop("ebitda")
+    source[0][1].update(EBIT="100", attr={"ebitda": "100"})
+    report = demo_report(source)
+    loan = report.underwriting.loan_results[0]
+    assert loan.normalized_data["demo_decision"]["matched_reasons"] == []
+    assert criterion(loan.normalized_data["demo_decision"], "ebitda_usd")["status"] == "UNKNOWN"
+    assert len(REASONS) == len(loan.expanded_spec.decline_reasons) == 43
+    assert {item.label for item in loan.expanded_spec.decline_reasons} == {item[1] for item in REASONS}
+    assert all(item.status == "NOT_EVALUATED" for item in loan.expanded_spec.decline_reasons
+               if item.disposition in {"OUT_OF_SCOPE", "NOT_USED"})
+    assert all(item.adverse_action_code is None for item in loan.expanded_spec.decline_reasons)
+
+
+def test_aggregate_demo_177_isolated_from_strict_failures_and_raw_attributes():
+    source = rows()
+    source[3][1]["sbss"] = "177"
+    source[0][1].pop("ebitda")
+    report = demo_report(source)
+    loan = report.underwriting.loan_results[0]
+    loan.rule_results[0].status = "FAIL"
+    loan.rule_results[0].detail = "STRICT_SBSS_BELOW_160_SENTINEL"
+    loan.normalized_data["demo_decision"]["attr"] = {"raw": "RAW_SENTINEL"}
+    # Saved stale FAIL statuses must not defeat the normalized score boundary.
+    criterion(loan.normalized_data["demo_decision"], "sbss")["status"] = "FAIL"
+    provider = Mock(spec=AnthropicLLM)
+    provider.complete.return_value = response(["L1"])
+    before = report.model_dump_json()
+    commentary.explain(provider, report)
+    provider.complete.assert_called_once()
+    system, payload = provider.complete.call_args.args
+    assert system == prompts.DEMO_SYSTEM + prompts.DEMO_AGGREGATE_INSTRUCTIONS
+    assert prompts.V4_SYSTEM not in system and prompts.REVIEW_REASONING_GUIDANCE not in system
+    assert "STRICT_SBSS_BELOW_160_SENTINEL" not in payload and "RAW_SENTINEL" not in payload
+    context = json.loads(payload)
+    scoped = context["underwriting"]["loan_results"][0]
+    assert set(scoped) == {"loan_id", "demo_decision"}
+    assert criterion(scoped["demo_decision"], "sbss")["status"] == "PASS"
+    assert scoped["demo_decision"]["normalized_facts"]["sbss"] == "177"
+    assert scoped["demo_decision"]["matched_reasons"] == []
+    for key in ("rule_results", "expanded_spec", "normalized_features", "report_selection", "policy_evaluation"):
+        assert key not in payload
+    assert before == report.model_dump_json()
+    provider.complete.return_value = response(["L1"], triggered_rules=[loan.rule_results[0].rule_id])
+    with pytest.raises(LLMError, match="unsupported"):
+        commentary.explain(provider, report)
+
+
+def test_demo_aggregate_per_loan_low_score_and_evidence_isolation():
+    source = rows()
+    source[3][1]["sbss"] = "177"
+    source.extend([
+        ("Account", {"Id": "A2"}),
+        ("Loan", {"Id": "L2", "borrower_account_id": "A2"}),
+        ("CreditReport", {"Id": "R2", "account_id": "A2", "personal_fico": "620"}),
+        ("LCRESPONSE", {"Id": "S2", "loan_id": "L2", "sbss": "155"}),
+    ])
+    report = demo_report(source)
+    context = demo_explanation_context(report)["underwriting"]
+    views = {loan["loan_id"]: loan["demo_decision"] for loan in context["loan_results"]}
+    assert views["L1"]["normalized_facts"]["sbss"] == "177"
+    assert views["L1"]["matched_reasons"] == []
+    assert {r["label"] for r in views["L2"]["matched_reasons"]} == {
+        "Average personal FICO below 650", "SBSS below 160"}
+    refs = [{ref for item in view["criteria"] for ref in item["evidence_refs"]} for view in views.values()]
+    assert not refs[0] & refs[1]
+    assert "another loan's" in prompts.DEMO_SYSTEM
+    assert "identify the loan ID" in prompts.DEMO_SYSTEM
+
+
+def test_demo_dedicated_context_global_limits_and_production_fallback():
+    report = demo_report()
+    report.underwriting.loan_results = [report.underwriting.loan_results[0].model_copy(deep=True)
+                                        for _ in range(25)]
+    context = demo_explanation_context(report)["underwriting"]
+    assert len(context["loan_results"]) == 20 and context["loan_count"] == 25
+    assert len(context["evidence_refs"]) <= 40
+    production = report.model_copy(update={
+        "underwriting": report.underwriting.model_copy(update={"mode": "PRODUCTION"})})
+    assert demo_explanation_context(production) is None
+    for loan in report.underwriting.loan_results:
+        loan.normalized_data["demo_decision"]["version"] = "untrusted"
+    assert demo_explanation_context(report) is None
+
+
+def test_selected_demo_prompt_excludes_strict_reconciliation_and_rejects_strict_ids(monkeypatch):
+    session = Session(status="completed", report=demo_report())
+    provider = Mock(model="test-model")
+    provider.complete.return_value = response(["L1"], check_reconciliation=[])
+    monkeypatch.setattr("backend.loan_review.AnthropicLLM", Mock(return_value=provider))
+    before = session.report.model_dump_json()
+    review = review_selected_loan(session, "L1")
+    provider.complete.assert_called_once()
+    system, payload = provider.complete.call_args.args
+    assert system == prompts.DEMO_SYSTEM + prompts.DEMO_SELECTED_LOAN_INSTRUCTIONS
+    context = json.loads(payload)
+    assert context["checks_to_reconcile"] == []
+    assert "reconciliation_scope" not in context
+    assert "rule_results" not in payload and "expanded_spec" not in payload
+    assert review.analysis.check_reconciliation == []
+    assert review.context_note == prompts.DEMO_SELECTED_LOAN_CONTEXT_NOTE
+    assert session.report.model_dump_json() == before
+    provider.complete.return_value = response(["L1"], check_reconciliation=[{
+        "rule_id": "STRICT_UNKNOWN", "evidence_state": "POLICY_UNRESOLVED",
+        "rationale": "Unknown", "next_step": "Review", "evidence_refs": [],
+    }])
+    with pytest.raises(LLMError, match="reconcile"):
+        review_selected_loan(session, "L1")
+
+
+def test_selected_demo_after_twenty_scoped_before_bounds_and_preference_retained(monkeypatch):
+    report = demo_report()
+    template = report.underwriting.loan_results[0]
+    report.underwriting.loan_results = [template.model_copy(deep=True, update={"loan_id": f"L{i}"})
+                                        for i in range(1, 26)]
+    selected = report.underwriting.loan_results[-1]
+    selected.normalized_data["demo_decision"]["normalized_facts"]["sbss"] = "177"
+    refs = {item["id"] for item in selected.normalized_data["demo_decision"]["source_evidence"]}
+    preferred = criterion(selected.normalized_data["demo_decision"], "sbss")["evidence_refs"][0]
+    assert preferred in refs
+    session = Session(status="completed", report=report)
+    provider = Mock(model="test-model")
+    provider.complete.return_value = response(["L25"], check_reconciliation=[])
+    monkeypatch.setattr("backend.loan_review.AnthropicLLM", Mock(return_value=provider))
+    review_selected_loan(session, "L25", preferred)
+    context = json.loads(provider.complete.call_args.args[1])
+    assert context["user_review_preference"]["evidence_ref"] == preferred
+    loans = context["underwriting"]["loan_results"]
+    assert len(loans) == 1 and loans[0]["loan_id"] == "L25"
+    assert loans[0]["demo_decision"]["normalized_facts"]["sbss"] == "177"
+    assert not loans[0]["demo_decision"]["matched_reasons"]
+
+
+def test_mixed_legacy_demo_batch_never_falls_back_to_strict_for_other_loans():
+    report = demo_report()
+    legacy = report.underwriting.loan_results[0].model_copy(deep=True, update={"loan_id": "LEGACY"})
+    legacy.normalized_data.pop("demo_decision")
+    report.underwriting.loan_results.append(legacy)
+    context = demo_explanation_context(report)
+    assert context["underwriting"]["loan_results"][1] == {"loan_id": "LEGACY", "demo_decision": None}
+    assert "rule_results" not in json.dumps(context)
+
+
+def test_bounded_demo_never_promotes_unknown_status_to_clearance():
+    report = demo_report()
+    view = report.underwriting.loan_results[0].normalized_data["demo_decision"]
+    criterion(view, "sbss")["status"] = "UNKNOWN"
+    bounded = demo_explanation_context(report)["underwriting"]["loan_results"][0]["demo_decision"]
+    assert criterion(bounded, "sbss")["status"] == "UNKNOWN"
+    assert bounded["matched_reasons"] == []

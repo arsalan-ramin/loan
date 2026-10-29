@@ -25,10 +25,16 @@ class AnthropicLLM:
     def __init__(self):
         self.model = os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
         self.base_url = os.getenv("ANTHROPIC_BASE_URL", DEFAULT_BASE_URL).strip() or DEFAULT_BASE_URL
+        try:
+            self.max_retries = max(0, min(5, int(os.getenv("ANTHROPIC_MAX_RETRIES", "2"))))
+        except ValueError:
+            self.max_retries = 2
 
     def complete(self, system: str, prompt: str) -> str:
         request_id = str(uuid.uuid4())
         started = time.perf_counter()
+        attempts = 0
+        retry_exhausted = False
         response_chars = 0
         stop_category = "not_received"
         token_counts: dict[str, int | None] = {"input_tokens": None, "output_tokens": None}
@@ -39,10 +45,12 @@ class AnthropicLLM:
             LOGGER.log(
                 logging.WARNING if event == "failed" else logging.INFO,
                 "llm_invocation_%s request_id=%s duration_ms=%.3f category=%s "
-                "http_status=%s response_chars=%d stop_category=%s input_tokens=%s output_tokens=%s",
+                "http_status=%s response_chars=%d stop_category=%s input_tokens=%s output_tokens=%s "
+                "attempts=%d retry_exhausted=%s",
                 event, request_id, (time.perf_counter() - started) * 1000,
                 category, http_status, response_chars, stop_category,
                 token_counts["input_tokens"], token_counts["output_tokens"],
+                attempts, retry_exhausted,
             )
 
         key = os.getenv("ANTHROPIC_API_KEY", "").strip()
@@ -51,11 +59,48 @@ class AnthropicLLM:
             raise LLMError("Anthropic is not configured. Set ANTHROPIC_API_KEY in the backend environment and restart the API.", 503)
         try:
             # Endpoint overrides are backend deployment configuration only.
-            with anthropic.Anthropic(api_key=key, base_url=self.base_url, timeout=60.0, max_retries=1) as client:
-                response = client.messages.create(
-                    model=self.model, max_tokens=MAX_OUTPUT_TOKENS, system=system,
-                    messages=[{"role": "user", "content": prompt}],
-                )
+            # Only this loop owns retries; SDK retries would multiply the budget.
+            with anthropic.Anthropic(api_key=key, base_url=self.base_url, timeout=60.0, max_retries=0) as client:
+                while True:
+                    attempts += 1
+                    try:
+                        response = client.messages.create(
+                            model=self.model, max_tokens=MAX_OUTPUT_TOKENS, system=system,
+                            messages=[{"role": "user", "content": prompt}],
+                        )
+                        break
+                    except (anthropic.APIConnectionError, anthropic.APIStatusError) as error:
+                        if isinstance(error, anthropic.APITimeoutError):
+                            category = "timeout"
+                        elif isinstance(error, anthropic.APIConnectionError):
+                            category = "connection"
+                        elif isinstance(error, anthropic.RateLimitError):
+                            category = "rate_limit"
+                        elif (not isinstance(error, (anthropic.AuthenticationError,
+                                                    anthropic.PermissionDeniedError, anthropic.NotFoundError))
+                              and (error.status_code in (408, 409) or error.status_code >= 500)):
+                            category = "api_status"
+                        else:
+                            raise
+                        if attempts > self.max_retries:
+                            retry_exhausted = True
+                            raise
+                        delay = min(0.5 * (2 ** (attempts - 1)), 4.0)
+                        if isinstance(error, anthropic.APIStatusError):
+                            # Optional numeric Retry-After seconds: ignore malformed,
+                            # negative and nonfinite values; never log raw headers.
+                            try:
+                                retry_after = float(error.response.headers.get("retry-after", ""))
+                            except (TypeError, ValueError, OverflowError):
+                                pass
+                            else:
+                                if 0 <= retry_after < float("inf"):
+                                    delay = min(retry_after, 30.0)
+                        LOGGER.warning(
+                            "llm_invocation_retry request_id=%s attempt=%d category=%s delay_seconds=%.3f",
+                            request_id, attempts, category, delay,
+                        )
+                        time.sleep(delay)
         except anthropic.AuthenticationError:
             log_terminal("failed", "authentication", 503)
             raise LLMError("Anthropic authentication failed. Check the backend ANTHROPIC_API_KEY.", 503) from None

@@ -22,6 +22,8 @@ SENTINELS = {
 @pytest.fixture
 def sdk(monkeypatch, caplog):
     monkeypatch.setenv("ANTHROPIC_API_KEY", SENTINELS["KEY"])
+    monkeypatch.setenv("ANTHROPIC_MAX_RETRIES", "0")
+    monkeypatch.setattr("backend.llm.time.sleep", Mock())
     monkeypatch.setenv("ANTHROPIC_MODEL", SENTINELS["MODEL"])
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid/" + SENTINELS["URL"])
     client = Mock()
@@ -74,7 +76,7 @@ def test_success_is_content_free_and_preserves_sdk_payload(sdk, caplog, stop):
     assert f"stop_category={stop} " in end
     assert "input_tokens=12 output_tokens=7" in end
     factory.assert_called_once_with(api_key=SENTINELS["KEY"],
-        base_url="https://example.invalid/" + SENTINELS["URL"], timeout=60.0, max_retries=1)
+        base_url="https://example.invalid/" + SENTINELS["URL"], timeout=60.0, max_retries=0)
     client.messages.create.assert_called_once_with(model=SENTINELS["MODEL"], max_tokens=8192,
         system=SENTINELS["SYSTEM"], messages=[{"role": "user", "content": SENTINELS["PROMPT"]}])
 

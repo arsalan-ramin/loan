@@ -22,6 +22,8 @@ from backend.reports import render_report
 @pytest.fixture
 def provider(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-only-not-a-real-key")
+    monkeypatch.delenv("ANTHROPIC_MAX_RETRIES", raising=False)
+    monkeypatch.setattr("backend.llm.time.sleep", Mock())
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
     monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
     original = anthropic.Anthropic
@@ -41,9 +43,9 @@ def provider(monkeypatch):
 
         def factory(**kwargs):
             assert kwargs["timeout"] == 60
-            assert kwargs["max_retries"] == 1
+            assert kwargs["max_retries"] == 0
             assert kwargs["base_url"] == (os.getenv("ANTHROPIC_BASE_URL", "").strip() or "https://api.anthropic.com")
-            # Disable retry sleeps in mock transport tests only.
+            # SDK retries stay disabled; transport backoff is mocked above.
             return original(api_key=kwargs["api_key"], base_url=kwargs["base_url"], max_retries=0,
                             http_client=httpx.Client(transport=httpx.MockTransport(handle)))
         monkeypatch.setattr("backend.llm.anthropic.Anthropic", factory)

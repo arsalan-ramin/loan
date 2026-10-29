@@ -3,7 +3,7 @@
 Graph insertion order is source order. The first account-linked report is used
 without checking report date/completion; poisoned fields remain unknown. No raw
 characteristics are pivoted, no EBIT/net income is substituted for EBITDA, and
-no graph is modified. EBITDA and public records are non-gating diagnostics.
+no graph is modified. Age, EBITDA and public records are non-gating diagnostics.
 """
 
 from __future__ import annotations
@@ -28,13 +28,12 @@ OWNERSHIP_UNKNOWN_BASIS = "UNAVAILABLE_OR_INVALID"
 
 
 def _matched_reasons(criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Only four knockout demo predicates; the expanded registry stays independent."""
+    """Only three knockout demo predicates; the expanded registry stays independent."""
     catalog = {code: label for code, label, *_ in REASONS}
     mappings = {
         "bankruptcy_clear": (catalog["BANKRUPTCY"], "SUPPLIED_DECLINE_REASON_CATALOG"),
         "fico": ("Average personal FICO below 650", "SUPPLIED_STRATEGY"),
         "sbss": ("SBSS below 160", "SUPPLIED_STRATEGY"),
-        "age_years": ("Age below 18", "SUPPLIED_STRATEGY"),
     }
     return [{"criterion": item["criterion"], "label": mappings[item["criterion"]][0],
              "source": mappings[item["criterion"]][1], "status": "MATCHED",
@@ -186,20 +185,21 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         age_refs.update(refs)
         age_audit.append({"account_id": account_id, "party_roles": sorted(roles),
                           "age_years": person_age, "age_status": age_status,
-                          "status": "UNKNOWN" if person_age is None else "FAIL" if person_age < 18 else "PASS",
+                          "status": "UNKNOWN" if person_age is None else "OBSERVED",
+                          "knockout": False,
                           "evidence_refs": sorted(refs)})
     age_complete = bool(ages) and len(ages) == len(party_roles)
     underage = any(value < 18 for value in ages)
     age = min(ages) if ages and (age_complete or underage) else None
-    add("age_years", age, False if underage else True if age_complete else None, sorted(age_refs),
-        "Each linked borrower/guarantor must be at least 18 using only that Account DOB and explicit loan as-of date, "
+    add("age_years", age, None, sorted(age_refs),
+        "Observed diagnostic only; DOB/age is excluded from the TEST demo decision flow. "
+        "Each linked borrower/guarantor age uses only that Account DOB and explicit loan as-of date, "
         "or the recorded current UTC date for age only when the loan as-of date is absent. "
         "Completed calendar ages (0–150) are never averaged; the scalar is the minimum when all are valid, "
-        "or the minimum known underage age. Any known under-18 is FAIL even with unresolved parties; "
-        "otherwise any unresolved party is UNKNOWN. Invalid/conflicting loan dates stay UNKNOWN; report dates are never used.")
-    if len(ages) < len(party_roles):
-        # A known knockout does not erase the other parties' unresolved ages.
-        missing.append("age_years")
+        "or the minimum known underage age. Otherwise any unresolved party is UNKNOWN. "
+        "Invalid/conflicting loan dates stay UNKNOWN; report dates are never used. No clearance implied.",
+        knockout=False)
+    criteria[-1]["status"] = "OBSERVED" if age is not None else "UNKNOWN"
 
     fico_audit: list[dict[str, Any]] = []
     fico_nodes: list[EntityNode] = []
@@ -293,7 +293,6 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         label, branch = "Decline", "KNOWN_KNOCKOUT"
         reasons = {
             "bankruptcy_clear": "Verified bankruptcy discharge is less than five calendar years ago",
-            "age_years": f"Age {age} is below 18",
             "fico": f"Average personal FICO {facts['fico']} is below 650",
             "sbss": f"SBSS {facts['sbss']} is below 160",
         }
@@ -342,7 +341,7 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         if (route and not missing and not conflicts
                 and all(item["status"] == "PASS" for item in criteria if item["knockout"])):
             label = "Approve"
-            rationale = f"All four knockout checks passed; {branch} selects {route} in this simulation."
+            rationale = f"All three knockout checks passed; {branch} selects {route} in this simulation."
         elif missing and label != "Decline" and not conflicts:
             rationale = "Unknown diagram inputs: " + ", ".join(dict.fromkeys(missing)) + "."
 
@@ -446,17 +445,16 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
         # A stale saved status cannot contradict the normalized value sent to
         # the model (e.g. SBSS 177 must never be described as below 160).
         value = normalized.get(key)
-        knockout = (key in {"bankruptcy_clear", "age_years", "fico", "sbss"}
+        knockout = (key in {"bankruptcy_clear", "fico", "sbss"}
                     and item.get("knockout", True) is not False)
         if not knockout:
             status = "OBSERVED" if value is not None else "UNKNOWN"
-        elif knockout and (status != "UNKNOWN" or (key == "age_years" and value is not None and value < 18)):
+        elif status != "UNKNOWN":
             clear = None
             if value is not None:
                 number = _number(value)
                 clear = (value if key == "bankruptcy_clear" else
-                         number >= {"age_years": 18,
-                                    "fico": 650, "sbss": 160}[key] if number is not None else None)
+                         number >= {"fico": 650, "sbss": 160}[key] if number is not None else None)
             status = "UNKNOWN" if clear is None else "PASS" if clear else "FAIL"
         refs = item.get("evidence_refs")
         checks.append({"criterion": key, "status": status, "value": normalized.get(key), "knockout": knockout,
@@ -464,7 +462,7 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
                        if isinstance(refs, list) else []})
     branch = data.get("branch")
     branch = branch if isinstance(branch, str) and re.fullmatch(r"[A-Z0-9_]{1,128}", branch) else None
-    known_missing = (keys - {"public_record_code", "ebitda_usd"}) | {
+    known_missing = (keys - {"public_record_code", "ebitda_usd", "age_years"}) | {
         "explicit_unique_borrower_account_relationship", "naics_or_listed_high_risk_prefixes"}
     missing = data.get("missing_inputs")
     reference = iso_date(data.get("reference_date"))
@@ -505,5 +503,7 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
         "missing_inputs": [key for key in missing[:20] if isinstance(key, str) and key in known_missing]
         if isinstance(missing, list) else [],
         "conflicts": ["REQUEST_THRESHOLD_100M_VS_100K"] if branch == "REQUEST_THRESHOLD_CONFLICT" else [],
-        "rationale": "Separate TEST simulation; explain supplied check statuses and normalized facts only.",
+        "rationale": "Separate TEST simulation; explain supplied check statuses and normalized facts only. "
+                 "DOB/age, EBITDA and public records are nonblocking diagnostics, not missing decision inputs "
+                 "or decline reasons. Historical labels are preserved; reprocess to update the decision.",
     }

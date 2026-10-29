@@ -101,7 +101,7 @@ The orchestrator executes specialized Python agents sequentially in a bounded ba
 
 SQLite is the source of truth for sessions, chat, mode, documents, rules, pipeline state and reports. ChromaDB stores searchable document chunks and conversation entries with session metadata filters. Embeddings remain local, normalized, 384-dimensional stable feature-hashing vectors: **lexical similarity, not neural semantic understanding**. Chat sends bounded current-session context to Anthropic: the most recent **12 messages**, each capped at **2,000 characters**, recalled memory/document excerpts, rules, metadata and report context. V4 report commentary uses **one aggregate provider call**, bounded to **20 loans, 40 rules and 40 evidence IDs globally**, with normalized exact amounts but no raw documents, source-cell values or conversation. Generic report context uses at most 40 prioritized findings. These budgets do not truncate the authoritative saved report.
 
-Reports add nullable `llm_analysis`, `llm_model`, and `llm_error` fields (default `null`). The frontend tolerates absent fields in legacy reports and displays Claude explanation, model, and warnings separately from deterministic findings, as escaped plain text. If Anthropic is unavailable, the deterministic report is still saved and downloadable, with `llm_error` explaining the missing commentary. Chat instead returns actionable **503 / 429 / 504 / 502** errors for configuration, availability, rate-limit, timeout, or provider failures, without silent fallback. Provider requests use a **60-second network timeout**, **1 retry**, and **8,192 maximum output tokens** for chat and report commentary; larger outputs may increase provider charges and latency. Retries can increase total elapsed time.
+Reports add nullable `llm_analysis`, `llm_model`, and `llm_error` fields (default `null`). The frontend tolerates absent fields in legacy reports and displays Claude explanation, model, and warnings separately from deterministic findings, as escaped plain text. If Anthropic is unavailable, the deterministic report is still saved and downloadable, with `llm_error` explaining the missing commentary. Chat instead returns actionable **503 / 429 / 504 / 502** errors for configuration, availability, rate-limit, timeout, or provider failures, without silent fallback. Provider requests use a **60-second network timeout per attempt**, **2 transport retries by default (3 total attempts)**, and **8,192 maximum output tokens** for chat and report commentary; larger outputs may increase provider charges and latency. SDK retries are disabled. Only connection failures (including timeouts), rate limits, and HTTP 408, 409, or 5xx (including 529) are retried; authentication, permission, not-found, and other request errors fail immediately. Backoff is deterministic exponential (0.5, 1, 2, then capped at 4 seconds); a finite nonnegative numeric `Retry-After` header overrides it, capped at 30 seconds. Retries can increase total elapsed time and provider charges. All attempts share one invocation ID; content-free logs record retry category/delay and terminal attempt count/exhaustion.
 
 ## Troubleshooting Claude commentary
 
@@ -110,6 +110,8 @@ validation stage (JSON/schema, loan scope, rules, evidence, or reconciliation)
 and safe field paths/error categories. Requests include the explicit output JSON
 schema; a single complete JSON code fence is accepted, but unsupported citations,
 invalid routes, and incomplete outputs are still rejected without automatic retries.
+This no-auto-retry behavior applies to completed-response JSON/business validation,
+truncation, empty responses, and abnormal stops, not the transient transport failures above.
 Existing saved errors are historical and are not rewritten.
 
 Application logs are written to `backend/data/logs/application.log` by default
@@ -196,6 +198,7 @@ Agent retains the legacy `FOLIO_*` environment variable names and `folio_memory`
 
 - `ANTHROPIC_API_KEY`: required backend-only credential for Claude chat; the example value is blank.
 - `ANTHROPIC_MODEL`: optional override, default `claude-sonnet-5-5`.
+- `ANTHROPIC_MAX_RETRIES`: optional transport retry count, default 2; integers are clamped to 0–5, malformed values safely use 2. Zero disables retries.
 - `FOLIO_DATA_DIR`: defaults to the backend data directory; relative overrides resolve from the launch working directory.
 - `FOLIO_CORS_ORIGINS`: comma-separated explicit browser origins, defaults to localhost/127.0.0.1 on port 5174.
 - `FOLIO_MAX_FILE_MB`: default 20.

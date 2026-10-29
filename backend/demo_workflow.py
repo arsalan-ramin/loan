@@ -25,6 +25,23 @@ AGE_AGGREGATION_BASIS = "LINKED_BORROWER_GUARANTOR_MIN_COMPLETED_CALENDAR_AGE"
 OWNERSHIP_FALLBACK_BASIS = "ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED"
 OWNERSHIP_EXPLICIT_BASIS = "EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS"
 OWNERSHIP_UNKNOWN_BASIS = "UNAVAILABLE_OR_INVALID"
+NAICS_MATCH_BASIS = "SUPPLIED_HIGH_RISK_PREFIX_LIST_ONLY"
+NAICS_MAX_LENGTH = 128
+
+
+def _demo_naics(value: Any) -> str | None:
+    """A supplied category, not syntax/catalog validation or a USD amount."""
+    if type(value) is str:
+        return value.strip()[:NAICS_MAX_LENGTH] or None
+    if type(value) not in {int, float, Decimal}:
+        return None
+    if type(value) is int and not 0 <= value < 10 ** NAICS_MAX_LENGTH:
+        return None
+    number = Decimal(str(value))
+    if (not number.is_finite() or number < 0 or number >= 10 ** NAICS_MAX_LENGTH
+            or number != number.to_integral_value()):
+        return None
+    return str(int(number))
 
 
 def _matched_reasons(criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -275,14 +292,18 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     amount = _number(amount_raw)
     amount = amount if amount is not None and amount >= 0 else None
     naics_raw, naics_refs = read("naics", profile_nodes)
-    naics = naics_raw if isinstance(naics_raw, str) and re.fullmatch(r"\d{2,6}", naics_raw) else None
+    naics = _demo_naics(naics_raw)
+    prefixes = config.get("high_risk_naics")
+    high_risk = (any(naics.startswith(prefix) for prefix in prefixes)
+                 if naics is not None and isinstance(prefixes, list) and prefixes
+                 and all(type(prefix) is str and prefix for prefix in prefixes) else None)
     vehicle_raw, vehicle_refs = read("vehicle_only", profile_nodes)
     vehicle = vehicle_raw if type(vehicle_raw) is bool else (
         {"true": True, "false": False, "yes": True, "no": False, "1": True, "0": False,
          "y": True, "n": False}.get(str(vehicle_raw).strip().casefold()))
     facts.update(ownership_years=str(ownership) if ownership is not None else None,
                  requested_amount_usd=str(amount) if amount is not None else None,
-                 naics=naics, vehicle_only=vehicle)
+                 naics=naics, high_risk_naics=high_risk, vehicle_only=vehicle)
 
     label, route, branch, rationale = "Refer", None, "INPUTS_UNKNOWN", "Required diagram inputs remain unknown."
     failures = [item for item in criteria if item["knockout"] and item["status"] == "FAIL"]
@@ -326,10 +347,9 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                 missing.append("ownership_years")
             elif ownership < 2:
                 route, branch = "SBA", "SBSS_GE_200_OWNERSHIP_LT_2"
-            elif naics is None or not config.get("high_risk_naics"):
+            elif high_risk is None:
                 missing.append("naics_or_listed_high_risk_prefixes")
             else:
-                high_risk = any(naics.startswith(prefix) for prefix in config["high_risk_naics"])
                 route = "SBA" if high_risk else "CONVENTIONAL"
                 branch = "SBSS_GE_200_OWNERSHIP_GE_2_" + ("HIGH_RISK_NAICS" if high_risk else "OTHER_NAICS")
         if route == "SBA":
@@ -357,6 +377,11 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                       "Current-owner years from loan, extension or borrower profile; explicit zero means less "
                       "than one year for this TEST demo. Invalid/conflicting supplied values stay UNKNOWN; "
                       "not DOB or corporation formation age.")
+        elif key == "naics":
+            detail = ("Supplied category compared only with configured high-risk prefixes using startswith; "
+                      "no valid-code catalogue or syntax gate. Trimmed canonical text is capped at 128 "
+                      "characters; integral Excel numbers become digit strings. Missing/conflicting "
+                      "values stay UNKNOWN; original source values remain in local evidence.")
         criteria.append({"criterion": key, "value": value,
                          "status": "UNKNOWN" if value is None else "OBSERVED",
                          "evidence_refs": refs, "detail": detail,
@@ -366,6 +391,11 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                   *graph.related("EntityInvolvement", "loan_id", loan.id),
                   *([response] if response is not None else [])]
     demo_evidence = {item.id: item for node in demo_nodes for item in node.evidence if item.id in used_refs}
+    # The shared graph intentionally omits float evidence for strict monetary
+    # fields. Integral Excel NAICS is categorical: retain its original lexical
+    # value in this local trace only, never the canonicalized digit string.
+    naics_evidence = ({ref: str(naics_raw) for ref in naics_refs}
+                      if type(naics_raw) is float and naics is not None else {})
     return {
         "version": VERSION, "mode": "TEST", "label": label,
         "simulation_only": True, "authorization": "NOT_ISSUED", "human_review_required": True,
@@ -380,6 +410,7 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "age_reference_date_basis": age_reference_basis,
         "candidate_route": route, "branch": branch, "rationale": rationale,
         "criteria": criteria, "normalized_facts": facts,
+        "naics_match_basis": NAICS_MATCH_BASIS if high_risk is not None else None,
         "ownership_years_basis": ownership_basis,
         "age_aggregation": {"basis": AGE_AGGREGATION_BASIS, "account_count": len(party_roles)},
         "age_account_audit": age_audit,
@@ -387,7 +418,9 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "fico_account_audit": fico_audit,
         "matched_reasons": _matched_reasons(criteria),
         # Retain DOB provenance, not another copy of sensitive source values.
-        "source_evidence": [{**item.model_dump(), **({"value": None} if item.id in dob_refs else {})}
+        "source_evidence": [{**item.model_dump(),
+                     **({"value": naics_evidence[item.id]} if item.id in naics_evidence else {}),
+                     **({"value": None} if item.id in dob_refs else {})}
                     for item in demo_evidence.values()],
         "missing_inputs": sorted(set(missing)), "conflicts": conflicts,
         "strict_trace_unchanged": True,
@@ -431,9 +464,16 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
     for key in ("bankruptcy_clear", "vehicle_only"):
         if type(facts.get(key)) is bool:
             normalized[key] = facts[key]
-    naics = facts.get("naics")
-    if isinstance(naics, str) and re.fullmatch(r"\d{2,6}", naics):
+    naics = _demo_naics(facts.get("naics"))
+    # Freeform categories remain supplied observations, but never provider text.
+    # Carry only digit-only categories and an allowlisted derived classification.
+    if naics is not None and re.fullmatch(r"[0-9]{1,128}", naics):
         normalized["naics"] = naics
+    naics_context = {}
+    if (naics is not None and data.get("naics_match_basis") == NAICS_MATCH_BASIS
+            and type(facts.get("high_risk_naics")) is bool):
+        normalized["high_risk_naics"] = facts["high_risk_naics"]
+        naics_context["naics_match_basis"] = NAICS_MATCH_BASIS
     checks = []
     raw_criteria = data.get("criteria")
     for item in raw_criteria[:10] if isinstance(raw_criteria, list) else []:
@@ -448,7 +488,8 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
         knockout = (key in {"bankruptcy_clear", "fico", "sbss"}
                     and item.get("knockout", True) is not False)
         if not knockout:
-            status = "OBSERVED" if value is not None else "UNKNOWN"
+            observed = naics is not None if key == "naics" else value is not None
+            status = "OBSERVED" if observed else "UNKNOWN"
         elif status != "UNKNOWN":
             clear = None
             if value is not None:
@@ -496,6 +537,7 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
         "reference_date_basis": "EXPLICIT_APPLICATION_AS_OF_DATE" if reference else "UNAVAILABLE",
         "candidate_route": data.get("candidate_route") if data.get("candidate_route") in {"SBA", "CONVENTIONAL"} else None,
         "branch": branch, "normalized_facts": normalized, "criteria": checks,
+        **naics_context,
         **ownership_context,
         **age_context,
         **aggregate_context,

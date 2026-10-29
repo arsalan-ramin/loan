@@ -207,13 +207,43 @@ This exclusion does not change strict underwriting public-record checks.
   `REQUEST_THRESHOLD_100M_VS_100K`. Amount above USD100M → Decline.
 - SBSS 190–199 → SBA.
 - SBSS at least 200: ownership below two years → SBA; otherwise configured listed
-  high-risk NAICS prefixes → SBA, other valid NAICS → conventional.
+  high-risk NAICS prefixes → SBA, any other supplied nonempty NAICS → conventional.
 - Vehicle-only true overrides SBA to conventional; missing vehicle flag when
   SBA is reached → Refer.
 
 Requested application path, group-credit and real-estate inputs are not demo
 tree gates. No underwriting-program equivalence, EBIT-to-EBITDA conversion,
 characteristic pivots, report freshness or approved policy is inferred.
+
+### NAICS — high-risk list only
+
+The TEST demo has **no valid-code catalogue and no NAICS syntax gate**. A supplied
+nonempty string is trimmed and capped at 128 characters; even an unknown or
+malformed category is supplied, not an “invalid NAICS” blocker. Nonnegative,
+finite integral numeric Excel values (`int`, `float`, `Decimal`) become digit
+strings, without a `.0` suffix; this categorical conversion does not relax USD
+parsing. Numeric values must fit within 128 digits. Booleans, fractional or
+nonfinite numbers, arbitrary objects, absent/blank values and poisoned/conflicting
+profile values remain UNKNOWN, with no default category or source precedence.
+
+Compare the canonical category with the configured `high_risk_naics` list using
+`startswith` (including prefixes `23`, `4451`, `45`, `8111`, `8121`, `8123`).
+With SBSS at least 200 and ownership at least two years, a match selects SBA;
+a supplied nonmatch selects conventional, subject to existing knockout/identity
+and applicable vehicle gates. An absent/empty high-risk list stays unresolved,
+not an empty-list conventional default. `normalized_facts.high_risk_naics` is a
+derived boolean, or null when the input/list is unresolved; `naics_match_basis`
+is `SUPPLIED_HIGH_RISK_PREFIX_LIST_ONLY` only when classification is available.
+Original source values remain in local evidence (numeric values retain their
+source lexical representation), not the trimmed/truncated canonical value.
+
+Both commentary paths use the same scalar sanitizer, but send only ASCII
+digit-only NAICS strings and the allowlisted derived boolean/match basis.
+**Nonnumeric freeform categories never enter provider context**, including
+criterion values, raw evidence and detail text. A supplied redacted category
+still has criterion status OBSERVED with provider value null, not a false UNKNOWN.
+The branch and derived classification explain its routing without exposing text.
+No configuration, strict TEST/PRODUCTION rule, source document or graph is changed.
 
 ## Isolation and explanation
 

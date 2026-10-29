@@ -2,14 +2,15 @@
 
 Graph insertion order is source order. The first account-linked report is used
 without checking report date/completion; poisoned fields remain unknown. No raw
-characteristics are pivoted, no EBIT is substituted, and no graph is modified.
+characteristics are pivoted, no EBIT/net income is substituted for EBITDA, and
+no graph is modified. EBITDA and public records are non-gating diagnostics.
 """
 
 from __future__ import annotations
 
 import re
 from calendar import monthrange
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -24,12 +25,10 @@ AGE_AGGREGATION_BASIS = "LINKED_BORROWER_GUARANTOR_MIN_COMPLETED_CALENDAR_AGE"
 
 
 def _matched_reasons(criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Only six mapped demo predicates; the expanded registry stays independent."""
+    """Only four knockout demo predicates; the expanded registry stays independent."""
     catalog = {code: label for code, label, *_ in REASONS}
     mappings = {
         "bankruptcy_clear": (catalog["BANKRUPTCY"], "SUPPLIED_DECLINE_REASON_CATALOG"),
-        "ebitda_usd": (catalog["EXPENSES_EXCEED_INCOME"], "SUPPLIED_DECLINE_REASON_CATALOG"),
-        "public_record_code": (catalog["DEROGATORY_PERSONAL"], "SUPPLIED_DECLINE_REASON_CATALOG"),
         "fico": ("Average personal FICO below 650", "SUPPLIED_STRATEGY"),
         "sbss": ("SBSS below 160", "SUPPLIED_STRATEGY"),
         "age_years": ("Age below 18", "SUPPLIED_STRATEGY"),
@@ -37,7 +36,8 @@ def _matched_reasons(criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"criterion": item["criterion"], "label": mappings[item["criterion"]][0],
              "source": mappings[item["criterion"]][1], "status": "MATCHED",
              "evidence_refs": list(item["evidence_refs"]), "adverse_action_code": None}
-            for item in criteria if item["criterion"] in mappings and item["status"] == "FAIL"]
+            for item in criteria if item["criterion"] in mappings and item["status"] == "FAIL"
+            and item.get("knockout", True) is not False]
 
 
 def _number(value: Any) -> Decimal | None:
@@ -53,7 +53,8 @@ def _anniversary(original: date, years: int) -> date:
 
 
 def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], *,
-                  mode: str, response: EntityNode | None = None) -> dict[str, Any] | None:
+                  mode: str, response: EntityNode | None = None,
+                  age_reference_date: date | None = None) -> dict[str, Any] | None:
     """Produce only additive TEST facts; PRODUCTION does not evaluate the tree."""
     if mode != "TEST":
         return None
@@ -86,23 +87,37 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         status = "UNKNOWN" if clear is None else "PASS" if clear else "FAIL"
         criteria.append({"criterion": key, "value": facts[key], "status": status,
                          "evidence_refs": refs, "detail": detail, "knockout": knockout})
-        if clear is None:
+        if clear is None and knockout:
             missing.append(key)
 
     report_nodes = [report] if report is not None else []
     code_raw, code_refs = read("max_delinquency_public_records", report_nodes)
     code = _number(code_raw)
     code = code if code in {Decimal(0), Decimal(1), Decimal(2), Decimal(3)} else None
-    add("public_record_code", code, code == 0 if code is not None else None, code_refs,
-        "Public-record codes 1, 2 or 3 match a knockout; explicit 0 does not.")
+    add("public_record_code", code, None, code_refs,
+        "Observed diagnostic only; public records are excluded from the TEST demo decision flow.",
+        knockout=False)
+    criteria[-1]["status"] = "OBSERVED" if code is not None else "UNKNOWN"
 
     ebitda_raw, ebitda_refs = read("ebitda", profile_nodes)
     ebitda = _number(ebitda_raw)
-    add("ebitda_usd", ebitda, ebitda >= 0 if ebitda is not None else None, ebitda_refs,
-        "Only explicit normalized EBITDA; negative EBITDA matches a knockout. EBIT is not EBITDA.")
+    add("ebitda_usd", ebitda, None, ebitda_refs,
+        "Observed diagnostic only; EBITDA is excluded from the TEST demo decision flow. "
+        "Only explicit normalized EBITDA; neither EBIT nor net income is substituted. No clearance implied.",
+        knockout=False)
+    criteria[-1]["status"] = "OBSERVED" if ebitda is not None else "UNKNOWN"
 
     as_of_raw, date_refs = read("as_of_date", [loan])
     as_of = iso_date(as_of_raw)
+    age_reference = as_of
+    age_reference_basis = "EXPLICIT_APPLICATION_AS_OF_DATE" if as_of else "UNAVAILABLE"
+    # Only an absent date can use today's UTC calendar date for age. Invalid or
+    # poisoned supplied dates must stay unresolved, even with an injected date.
+    if as_of_raw is None and not date_refs and "as_of_date" not in loan.poisoned:
+        if age_reference_date is not None and type(age_reference_date) is not date:
+            raise TypeError("age_reference_date must be a calendar date")
+        age_reference = age_reference_date if age_reference_date is not None else datetime.now(timezone.utc).date()
+        age_reference_basis = "CURRENT_UTC_DATE_FOR_AGE"
     count_raw, count_refs = read("bankruptcy_count", report_nodes)
     count = _number(count_raw)
     count = count if count is not None and count >= 0 and count == count.to_integral_value() else None
@@ -153,12 +168,13 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                 age_status = "CONFLICTING_ACCOUNT"
             elif dob is None:
                 age_status = "MISSING_OR_INVALID_DOB"
-            elif as_of is None:
+            elif age_reference is None:
                 age_status = "MISSING_OR_INVALID_AS_OF_DATE"
-            elif dob > as_of:
+            elif dob > age_reference:
                 age_status = "FUTURE_DOB"
             else:
-                completed = as_of.year - dob.year - (as_of < _anniversary(dob, as_of.year - dob.year))
+                completed = (age_reference.year - dob.year
+                             - (age_reference < _anniversary(dob, age_reference.year - dob.year)))
                 if 0 <= completed <= 150:
                     person_age, age_status = completed, "VALID_COMPLETED_CALENDAR_AGE"
                     ages.append(completed)
@@ -173,10 +189,11 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     underage = any(value < 18 for value in ages)
     age = min(ages) if ages and (age_complete or underage) else None
     add("age_years", age, False if underage else True if age_complete else None, sorted(age_refs),
-        "Each linked borrower/guarantor must be at least 18 using only that Account DOB and explicit loan as-of date. "
+        "Each linked borrower/guarantor must be at least 18 using only that Account DOB and explicit loan as-of date, "
+        "or the recorded current UTC date for age only when the loan as-of date is absent. "
         "Completed calendar ages (0–150) are never averaged; the scalar is the minimum when all are valid, "
         "or the minimum known underage age. Any known under-18 is FAIL even with unresolved parties; "
-        "otherwise any unresolved party is UNKNOWN. No fallback or report date is used.")
+        "otherwise any unresolved party is UNKNOWN. Invalid/conflicting loan dates stay UNKNOWN; report dates are never used.")
     if len(ages) < len(party_roles):
         # A known knockout does not erase the other parties' unresolved ages.
         missing.append("age_years")
@@ -257,15 +274,13 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                  naics=naics, vehicle_only=vehicle)
 
     label, route, branch, rationale = "Refer", None, "INPUTS_UNKNOWN", "Required diagram inputs remain unknown."
-    failures = [item for item in criteria if item["status"] == "FAIL"]
+    failures = [item for item in criteria if item["knockout"] and item["status"] == "FAIL"]
     if not identity:
         missing.append("explicit_unique_borrower_account_relationship")
         rationale = "A unique explicit borrower account relationship is required."
     if failures:
         label, branch = "Decline", "KNOWN_KNOCKOUT"
         reasons = {
-            "public_record_code": f"Public-record code {facts['public_record_code']} matches a knockout",
-            "ebitda_usd": f"Explicit EBITDA {facts['ebitda_usd']} USD is negative",
             "bankruptcy_clear": "Verified bankruptcy discharge is less than five calendar years ago",
             "age_years": f"Age {age} is below 18",
             "fico": f"Average personal FICO {facts['fico']} is below 650",
@@ -313,9 +328,10 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
             elif vehicle:
                 route = "CONVENTIONAL"
                 branch += "_VEHICLE_ONLY_OVERRIDE"
-        if route and not missing and not conflicts:
+        if (route and not missing and not conflicts
+                and all(item["status"] == "PASS" for item in criteria if item["knockout"])):
             label = "Approve"
-            rationale = f"All six knockout checks passed; {branch} selects {route} in this simulation."
+            rationale = f"All four knockout checks passed; {branch} selects {route} in this simulation."
         elif missing and label != "Decline" and not conflicts:
             rationale = "Unknown diagram inputs: " + ", ".join(dict.fromkeys(missing)) + "."
 
@@ -341,6 +357,8 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "freshness_asserted": False,
         "reference_date": as_of.isoformat() if as_of else None,
         "reference_date_basis": "EXPLICIT_APPLICATION_AS_OF_DATE" if as_of else "UNAVAILABLE",
+        "age_reference_date": age_reference.isoformat() if age_reference else None,
+        "age_reference_date_basis": age_reference_basis,
         "candidate_route": route, "branch": branch, "rationale": rationale,
         "criteria": criteria, "normalized_facts": facts,
         "age_aggregation": {"basis": AGE_AGGREGATION_BASIS, "account_count": len(party_roles)},
@@ -398,25 +416,34 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
         # A stale saved status cannot contradict the normalized value sent to
         # the model (e.g. SBSS 177 must never be described as below 160).
         value = normalized.get(key)
-        if (status != "UNKNOWN" or (key == "age_years" and value is not None and value < 18)) and key in {
-            "public_record_code", "ebitda_usd", "bankruptcy_clear", "age_years", "fico", "sbss"}:
+        knockout = (key in {"bankruptcy_clear", "age_years", "fico", "sbss"}
+                    and item.get("knockout", True) is not False)
+        if not knockout:
+            status = "OBSERVED" if value is not None else "UNKNOWN"
+        elif knockout and (status != "UNKNOWN" or (key == "age_years" and value is not None and value < 18)):
             clear = None
             if value is not None:
                 number = _number(value)
                 clear = (value if key == "bankruptcy_clear" else
-                         number == 0 if key == "public_record_code" else
-                         number >= {"ebitda_usd": 0, "age_years": 18,
+                         number >= {"age_years": 18,
                                     "fico": 650, "sbss": 160}[key] if number is not None else None)
             status = "UNKNOWN" if clear is None else "PASS" if clear else "FAIL"
         refs = item.get("evidence_refs")
-        checks.append({"criterion": key, "status": status, "value": normalized.get(key),
+        checks.append({"criterion": key, "status": status, "value": normalized.get(key), "knockout": knockout,
                        "evidence_refs": [ref for ref in refs[:40] if isinstance(ref, str) and ref in allowed_refs]
                        if isinstance(refs, list) else []})
     branch = data.get("branch")
     branch = branch if isinstance(branch, str) and re.fullmatch(r"[A-Z0-9_]{1,128}", branch) else None
-    known_missing = keys | {"explicit_unique_borrower_account_relationship", "naics_or_listed_high_risk_prefixes"}
+    known_missing = (keys - {"public_record_code", "ebitda_usd"}) | {
+        "explicit_unique_borrower_account_relationship", "naics_or_listed_high_risk_prefixes"}
     missing = data.get("missing_inputs")
     reference = iso_date(data.get("reference_date"))
+    age_reference = iso_date(data.get("age_reference_date"))
+    age_reference_basis = data.get("age_reference_date_basis")
+    age_context = {}
+    if age_reference and age_reference_basis in {"EXPLICIT_APPLICATION_AS_OF_DATE", "CURRENT_UTC_DATE_FOR_AGE"}:
+        age_context = {"age_reference_date": age_reference.isoformat(),
+                       "age_reference_date_basis": age_reference_basis}
     # Legacy snapshots have no aggregation metadata: preserve their facts but
     # do not guess an account count or reinterpret a saved single-party score.
     aggregate = data.get("fico_aggregation")
@@ -441,6 +468,7 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
         "reference_date_basis": "EXPLICIT_APPLICATION_AS_OF_DATE" if reference else "UNAVAILABLE",
         "candidate_route": data.get("candidate_route") if data.get("candidate_route") in {"SBA", "CONVENTIONAL"} else None,
         "branch": branch, "normalized_facts": normalized, "criteria": checks,
+        **age_context,
         **aggregate_context,
         "matched_reasons": _matched_reasons(checks),
         "missing_inputs": [key for key in missing[:20] if isinstance(key, str) and key in known_missing]

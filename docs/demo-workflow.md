@@ -22,8 +22,9 @@ No provider request is needed to evaluate this local deterministic trace.
 - `candidate_route`: `SBA`, `CONVENTIONAL`, or null; candidate, not program eligibility.
 - `branch`, `rationale`: reached branch and short business explanation.
 - `criteria`: list of `criterion`, normalized `value`, `status`, `evidence_refs`,
-  `detail`, and `knockout`. Six knockout statuses use PASS/FAIL/UNKNOWN;
-  additional branch inputs use OBSERVED/UNKNOWN, not invented clearance.
+  `detail`, and `knockout`. Four knockout statuses use PASS/FAIL/UNKNOWN;
+  EBITDA/public-record diagnostics and additional branch inputs use OBSERVED/UNKNOWN,
+  with `knockout=false`, not invented clearance.
 - `normalized_facts`: normalized scores, explicit EBITDA/amount, age, bankruptcy
   clearance/count, ownership, NAICS and vehicle flag; missing facts stay null.
 - `fico_aggregation`: `basis=LINKED_BORROWER_GUARANTOR_ACCOUNT_AVERAGE` and
@@ -47,11 +48,16 @@ No provider request is needed to evaluate this local deterministic trace.
 - `missing_inputs`, `conflicts`: demo-only unresolved inputs/conflicts.
 - `reference_date`: explicit application as-of date or null;
   `reference_date_basis`: `EXPLICIT_APPLICATION_AS_OF_DATE` or `UNAVAILABLE`.
+- `age_reference_date`: actual calendar date used for age, or null;
+  `age_reference_date_basis`: `EXPLICIT_APPLICATION_AS_OF_DATE`,
+  `CURRENT_UTC_DATE_FOR_AGE`, or `UNAVAILABLE`. The fallback date is persisted
+  with the trace, not recomputed when viewing/explaining a saved report.
 
-No report date/as-of prerequisite applies to demo report selection. Age and
-positive-bankruptcy discharge recency still require their explicit date inputs;
-missing dates make those checks UNKNOWN individually. No fallback date is used.
-Explicit zero bankruptcies need no discharge date.
+No report date/as-of prerequisite applies to demo report selection. Age alone
+uses the current UTC calendar date when the loan request/as-of date is absent.
+Positive-bankruptcy discharge recency still requires verified discharge and
+explicit loan as-of dates; it never uses the age fallback. Missing dates make
+that check UNKNOWN. Explicit zero bankruptcies need no discharge date.
 
 ### Linked-account personal FICO
 
@@ -89,8 +95,16 @@ invented from a guarantor.
 
 Age uses the same deduplicated explicitly linked borrower/guarantor Account set
 as FICO. Each person's completed calendar age uses **only that Account's `dob`**
-and the loan's explicit valid `as_of_date`. Never use another person's DOB, a
-loan/extension/report DOB, today's date, report date or creation timestamp.
+and the loan's explicit valid `as_of_date`. Only when that loan date is absent,
+use `datetime.now(timezone.utc).date()` once for all linked parties and record
+the actual date with basis `CURRENT_UTC_DATE_FOR_AGE`. `evaluate_demo` accepts an
+optional keyword `age_reference_date` (a calendar `date`) for deterministic
+fallback tests; it never overrides a supplied date. Omitted, null and empty
+cells are absent under the existing graph normalization. Malformed dates,
+timestamps and conflicting date evidence remain UNKNOWN, with no fallback.
+Never use another person's DOB, a loan/extension/report DOB, report date or
+creation timestamp. The age-only date never changes report selection or
+bankruptcy discharge recency, and is never added to the strict graph.
 Birthdays are calendar anniversaries; February 29 becomes February 28 in a
 non-leap year. Future DOBs, invalid dates, poisoned/conflicting Accounts or DOBs,
 and completed ages outside 0–150 are unresolved. Duplicate Accounts are merged
@@ -109,10 +123,33 @@ other borrower-specific fields.
 
 ## Tree
 
-Any known knockout (public record codes 1/2/3, negative explicit EBITDA, verified
+Any known knockout (verified bankruptcy
 discharge less than five calendar years, under 18, average personal FICO below 650, SBSS
 below 160) produces **Decline** even when unrelated inputs remain unknown.
-UNKNOWN never clears **Approve**.
+UNKNOWN on these four knockout checks never clears **Approve**.
+
+EBITDA requirements are explicitly excluded from the TEST demo decision flow,
+despite the screenshot's top knockout list. `ebitda_usd` mirrors the public-record
+diagnostic: valid explicit normalized EBITDA (including negative or zero) is
+OBSERVED; missing, invalid or conflicting EBITDA is UNKNOWN, always with
+`knockout=false`. Neither condition blocks either SBA or conventional simulation
+approval, enters `missing_inputs`, causes Decline or generates a demo match for
+`EXPENSES_EXCEED_INCOME`. No EBIT or net-income substitution is permitted.
+OBSERVED is not PASS, financial clearance, income verification or evidence that
+expenses do not exceed income; excluding a requirement implies no clearance.
+Only age, bankruptcy, FICO and SBSS are knockout failure/approval gates, and the
+approval rationale counts four checks. Identity and applicable tree-branch inputs
+still apply, including the existing requested-amount decline branch.
+Strict TEST/PRODUCTION EBITDA checks and the expanded decline-reason catalog
+remain unchanged.
+
+Public-record requirements are explicitly excluded from the DEMO decision flow,
+even though they appear in the screenshot's top knockout box. `public_record_code`
+remains an observed diagnostic: valid codes 0/1/2/3 are OBSERVED, unavailable or
+invalid codes are UNKNOWN, always with `knockout=false`. Neither unknown nor
+positive codes block approval, enter `missing_inputs`, cause Decline or produce
+`matched_reasons`. Failure and approval gates consider knockout checks only.
+This exclusion does not change strict underwriting public-record checks.
 
 - SBSS 160–189: ownership at least two years → SBA; otherwise FICO at least 760
   → SBA; otherwise FICO at least 650 and below 760 and amount at most USD100K → SBA.
@@ -146,6 +183,14 @@ not sent. Ages are bounded integers 0–150. A known underage age remains FAIL i
 bounded context even if a stale status says UNKNOWN; unresolved-party gaps are
 preserved alongside that FAIL. An adult scalar never promotes UNKNOWN to PASS.
 Raw DOBs and per-account age audits are excluded from provider context.
+The recorded age-reference date and allowlisted basis are included without
+consulting the clock. EBITDA and public records stay diagnostic in bounded context even
+when a legacy saved status says FAIL or `knockout=true` (or omits the flag):
+valid values become OBSERVED, otherwise UNKNOWN, always with `knockout=false`.
+Their missing inputs and matches
+are excluded. Explicit `knockout=false` is respected when reconciling checks
+and generating matched reasons. Saved statuses and labels are not rewritten;
+reprocess historical reports to obtain the updated demo decision.
 Older saved demo snapshots without aggregation metadata remain
 explainable as saved facts, without guessing a count, reconstructing an average,
 or adding linked parties retroactively; reprocess to obtain the new audit.

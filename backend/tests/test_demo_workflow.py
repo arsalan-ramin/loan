@@ -2,6 +2,7 @@
 
 import copy
 import json
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import Mock
 
 import pytest
@@ -17,6 +18,14 @@ from backend.loan_review import review_selected_loan
 from backend.models import Report, Session
 from backend.tests.test_underwriting import document, rows
 from backend.underwriting_engine import evaluate_underwriting, load_underwriting_config
+
+
+@pytest.fixture(autouse=True)
+def demo_clock(monkeypatch):
+    clock = Mock(wraps=datetime)
+    clock.now.return_value = datetime(2026, 10, 20, tzinfo=timezone.utc)
+    monkeypatch.setattr("backend.demo_workflow.datetime", clock)
+    return clock
 
 
 def evaluate(source=None, mode="TEST"):
@@ -227,8 +236,8 @@ def test_unresolved_account_age_never_borrows_another_dob(dob, expected):
     assert "DOB_PRIVATE_SENTINEL" not in json.dumps(view)
 
 
-@pytest.mark.parametrize("as_of", [None, "invalid", "2026-02-30", "2026-10-20T12:00:00Z"])
-def test_age_requires_explicit_valid_loan_date_not_today_or_report_timestamp(as_of):
+@pytest.mark.parametrize("as_of", [" ", "invalid", "2026-02-30", "2026-10-20T12:00:00Z", True])
+def test_invalid_supplied_loan_date_never_uses_today_or_report_timestamp(as_of, demo_clock):
     source = linked_party(rows())
     source[1][1]["as_of_date"] = as_of
     source[0][1]["as_of_date"] = "2026-10-20"
@@ -238,6 +247,95 @@ def test_age_requires_explicit_valid_loan_date_not_today_or_report_timestamp(as_
     assert criterion(view, "age_years")["status"] == "UNKNOWN"
     assert all(item["age_status"] == "MISSING_OR_INVALID_AS_OF_DATE"
                for item in view["age_account_audit"])
+    assert view["age_reference_date"] is None
+    assert view["age_reference_date_basis"] == "UNAVAILABLE"
+    demo_clock.now.assert_not_called()
+
+
+@pytest.mark.parametrize("absent", ["omitted", "null", "blank"])
+def test_absent_date_uses_recorded_utc_date_for_all_linked_ages_only(absent, demo_clock):
+    source = linked_party(rows())
+    if absent == "omitted":
+        source[1][1].pop("as_of_date")
+    else:
+        source[1][1]["as_of_date"] = None if absent == "null" else ""
+    source[0][1]["as_of_date"] = "2000-01-01"  # not the loan date
+    source[4][1]["dob"] = "2008-10-20"
+    source[2][1].update(report_date="2030-01-01", status="pending")
+    view = demo(source)
+    assert view["label"] == "Approve"
+    assert view["normalized_facts"]["age_years"] == 18
+    assert [item["age_years"] for item in view["age_account_audit"]] == [46, 18]
+    assert view["reference_date"] is None and view["reference_date_basis"] == "UNAVAILABLE"
+    assert view["age_reference_date"] == "2026-10-20"
+    assert view["age_reference_date_basis"] == "CURRENT_UTC_DATE_FOR_AGE"
+    assert view["selected_report_id"] == "R1"
+    assert not view["report_date_checked"] and not view["report_completion_checked"]
+    demo_clock.now.assert_called_once_with(timezone.utc)
+
+
+def test_explicit_date_wins_over_injection_and_clock(demo_clock):
+    config = load_underwriting_config()
+    graph = build_entity_graph([document(rows())], config)
+    view = evaluate_demo(graph, graph.table("Loan")["L1"], config, mode="TEST",
+                         response=graph.table("LCRESPONSE")["S1"], age_reference_date=date(2040, 1, 1))
+    assert view["age_reference_date"] == view["reference_date"] == "2026-10-20"
+    assert view["age_reference_date_basis"] == "EXPLICIT_APPLICATION_AS_OF_DATE"
+    assert view["normalized_facts"]["age_years"] == 46
+    demo_clock.now.assert_not_called()
+
+
+def test_age_date_is_injectable_without_clock_or_graph_mutation(demo_clock):
+    source = rows()
+    source[1][1].pop("as_of_date")
+    source[0][1]["dob"] = "2008-10-21"
+    config = load_underwriting_config()
+    graph = build_entity_graph([document(source)], config)
+    before = copy.deepcopy(graph)
+    view = evaluate_demo(graph, graph.table("Loan")["L1"], config, mode="TEST",
+                         response=graph.table("LCRESPONSE")["S1"], age_reference_date=date(2026, 10, 20))
+    assert view["normalized_facts"]["age_years"] == 17
+    assert view["label"] == "Decline"
+    assert view["age_reference_date"] == "2026-10-20"
+    assert view["age_reference_date_basis"] == "CURRENT_UTC_DATE_FOR_AGE"
+    assert graph == before
+    demo_clock.now.assert_not_called()
+
+
+def test_utc_midnight_boundary_and_saved_fallback_remain_stable(demo_clock):
+    source = rows()
+    source[1][1].pop("as_of_date")
+    source[0][1]["dob"] = "2008-10-21"
+    # Local date is still October 20; UTC has reached the eighteenth birthday.
+    instant = datetime(2026, 10, 20, 17, 30, tzinfo=timezone(timedelta(hours=-7)))
+    demo_clock.now.side_effect = lambda tz: instant.astimezone(tz)
+    report = demo_report(source)
+    view = report.underwriting.loan_results[0].normalized_data["demo_decision"]
+    assert view["normalized_facts"]["age_years"] == 18 and view["label"] == "Approve"
+    assert view["age_reference_date"] == "2026-10-21"
+    demo_clock.now.assert_called_once_with(timezone.utc)
+    saved = report.model_dump_json()
+    restored = Report.model_validate_json(saved)
+    demo_clock.now.side_effect = AssertionError("Saved context must not consult today's clock")
+    for context in (demo_explanation_context(restored), report_context(restored)):
+        bounded = context["underwriting"]["loan_results"][0]["demo_decision"]
+        assert bounded["age_reference_date"] == "2026-10-21"
+        assert bounded["age_reference_date_basis"] == "CURRENT_UTC_DATE_FOR_AGE"
+        assert bounded["reference_date"] is None
+        assert bounded["normalized_facts"]["age_years"] == 18
+    assert restored.model_dump_json() == saved
+
+
+def test_absent_date_partial_age_keeps_known_underage_and_unresolved_party():
+    source = linked_party(rows())
+    source[1][1].pop("as_of_date")
+    source[0][1]["dob"] = "2008-10-21"
+    source[4][1]["dob"] = None
+    view = demo(source)
+    assert view["normalized_facts"]["age_years"] == 17
+    assert view["label"] == "Decline"
+    assert "age_years" in view["missing_inputs"]
+    assert {item["status"] for item in view["age_account_audit"]} == {"FAIL", "UNKNOWN"}
 
 
 @pytest.mark.parametrize("unknown_first", [False, True])
@@ -307,12 +405,26 @@ def test_conflicting_account_or_dob_is_unknown_and_keeps_conflict_evidence(field
                 if item["id"] in refs and item["record_id"] == "G1" and item["field"] == field]) == 2
 
 
-def test_conflicting_loan_asof_does_not_choose_a_convenient_date():
+def test_conflicting_loan_asof_does_not_choose_a_convenient_date(demo_clock):
     source = linked_party(rows())
     source.append(("Loan", {"Id": "L1", "as_of_date": "2026-10-21"}))
     view = demo(source)
     assert criterion(view, "age_years")["status"] == "UNKNOWN"
     assert view["reference_date"] is None
+    assert view["age_reference_date"] is None
+    demo_clock.now.assert_not_called()
+
+
+def test_unresolved_date_alias_evidence_never_allows_injected_fallback(demo_clock):
+    config = load_underwriting_config()
+    graph = build_entity_graph([document(rows())], config)
+    loan = graph.table("Loan")["L1"]
+    # Conflicting aliases can leave field evidence without a resolved value.
+    loan.fields.pop("as_of_date")
+    view = evaluate_demo(graph, loan, config, mode="TEST", age_reference_date=date(2040, 1, 1))
+    assert criterion(view, "age_years")["status"] == "UNKNOWN"
+    assert view["age_reference_date_basis"] == "UNAVAILABLE"
+    demo_clock.now.assert_not_called()
 
 
 def test_missing_borrower_dob_never_uses_loan_extension_or_guarantor_dob():
@@ -485,7 +597,7 @@ def test_known_low_scores_decline_without_any_dates_and_without_other_inputs():
     assert view["freshness_asserted"] is False
     assert criterion(view, "fico")["status"] == "FAIL"
     assert criterion(view, "sbss")["status"] == "FAIL"
-    assert criterion(view, "age_years")["status"] == "UNKNOWN"
+    assert criterion(view, "age_years")["status"] == "PASS"
     assert view["simulation_only"] and view["human_review_required"]
     assert view["authorization"] == "NOT_ISSUED"
     assert result.normalized_data["selected_report_id"] is None
@@ -527,19 +639,25 @@ def test_two_loans_keep_separate_account_reports_and_scores():
     assert not first_refs & second_refs
 
 
-def test_missing_asof_blocks_only_age_and_positive_bankruptcy_not_report_selection():
+def test_missing_asof_uses_age_fallback_but_not_for_positive_bankruptcy_or_selection():
     source = rows()
     source[1][1].pop("as_of_date")
     source[2][1].pop("report_date")
     view = demo(source)
-    assert view["label"] == "Refer"
+    assert view["label"] == "Approve"
     assert view["selected_report_id"] == "R1"
     assert criterion(view, "bankruptcy_clear")["status"] == "PASS"
     assert criterion(view, "fico")["status"] == "PASS"
-    assert criterion(view, "age_years")["status"] == "UNKNOWN"
+    assert criterion(view, "age_years")["status"] == "PASS"
     assert "as-of" in criterion(view, "age_years")["detail"]
-    source[2][1]["bankruptcy_count"] = "1"
-    assert criterion(demo(source), "bankruptcy_clear")["status"] == "UNKNOWN"
+    for discharge in (None, "2021-10-20", "2025-01-01", "invalid"):
+        source[2][1].update(bankruptcy_count="1", bankruptcy_discharge_date=discharge)
+        positive = demo(source)
+        assert criterion(positive, "bankruptcy_clear")["status"] == "UNKNOWN"
+        assert criterion(positive, "age_years")["status"] == "PASS"
+        assert positive["label"] == "Refer"
+        assert "bankruptcy_clear" in positive["missing_inputs"]
+        assert positive["matched_reasons"] == []
 
 
 def test_source_order_and_multi_account_isolation_not_latest_or_best_report():
@@ -606,7 +724,7 @@ def test_vehicle_flag_required_only_for_sba_and_no_outside_tree_gates():
     assert "vehicle_only" in view["missing_inputs"]
 
 
-@pytest.mark.parametrize("field,value", [("dob", None), ("ebitda", None)])
+@pytest.mark.parametrize("field,value", [("dob", None)])
 def test_missing_knockout_inputs_never_clear_approval(field, value):
     source = rows()
     source[0][1][field] = value
@@ -614,19 +732,158 @@ def test_missing_knockout_inputs_never_clear_approval(field, value):
     assert demo(source)["label"] == "Refer"
 
 
-@pytest.mark.parametrize("field,value", [("ebitda", "-0.01"), ("dob", "2008-10-21")])
-def test_known_account_knockout_shortcircuits_missing_report(field, value):
+@pytest.mark.parametrize("field,value,label", [("ebitda", "-0.01", "Refer"), ("dob", "2008-10-21", "Decline")])
+def test_only_known_account_knockout_shortcircuits_missing_report(field, value, label):
     source = [row for row in rows() if row[0] != "CreditReport"]
     source[0][1][field] = value
-    assert demo(source)["label"] == "Decline"
+    assert demo(source)["label"] == label
 
 
-@pytest.mark.parametrize("code", ["1", "2", "3"])
-def test_known_public_record_codes(code):
+@pytest.mark.parametrize("score,route", [("190", "SBA"), ("200", "CONVENTIONAL")])
+@pytest.mark.parametrize("ebitda,status", [
+    (None, "UNKNOWN"), ("", "UNKNOWN"), ("invalid", "UNKNOWN"),
+    ("NaN", "UNKNOWN"), ("Infinity", "UNKNOWN"), (True, "UNKNOWN"),
+    ("-0.01", "OBSERVED"), ("0.00", "OBSERVED"), ("100", "OBSERVED"),
+])
+def test_ebitda_diagnostic_never_blocks_either_demo_route(score, route, ebitda, status, monkeypatch):
+    provider = Mock(side_effect=AssertionError("Deterministic demo must not call a provider"))
+    monkeypatch.setattr(AnthropicLLM, "complete", provider)
+    source = rows()
+    source[0][1]["ebitda"] = ebitda
+    source[0][1].update(EBIT__c="100", Business_Net_Income__c="100")
+    source[3][1]["sbss"] = score
+    report = demo_report(source)
+    view = report.underwriting.loan_results[0].normalized_data["demo_decision"]
+    assert (view["label"], view["candidate_route"]) == ("Approve", route)
+    assert criterion(view, "ebitda_usd")["status"] == status
+    assert criterion(view, "ebitda_usd")["knockout"] is False
+    assert view["normalized_facts"]["ebitda_usd"] == (ebitda if status == "OBSERVED" else None)
+    assert "ebitda_usd" not in view["missing_inputs"]
+    assert view["matched_reasons"] == []
+    assert {item["criterion"] for item in view["criteria"] if item["knockout"]} == {
+        "bankruptcy_clear", "age_years", "fico", "sbss"}
+    assert "four knockout checks passed" in view["rationale"]
+    for context in (demo_explanation_context(report), report_context(report)):
+        bounded = context["underwriting"]["loan_results"][0]["demo_decision"]
+        assert criterion(bounded, "ebitda_usd")["status"] == status
+        assert criterion(bounded, "ebitda_usd")["knockout"] is False
+        assert bounded["matched_reasons"] == []
+        assert "ebitda_usd" not in bounded["missing_inputs"]
+    provider.assert_not_called()
+
+
+@pytest.mark.parametrize("score,route", [("190", "SBA"), ("200", "CONVENTIONAL")])
+def test_omitted_ebitda_and_public_records_allow_otherwise_complete_demo(score, route):
+    source = rows()
+    source[0][1].pop("ebitda")
+    source[2][1].pop("max_delinquency_public_records")
+    source[3][1]["sbss"] = score
+    view = demo(source)
+    assert (view["label"], view["candidate_route"]) == ("Approve", route)
+    assert view["missing_inputs"] == [] and view["matched_reasons"] == []
+    for key in ("ebitda_usd", "public_record_code"):
+        assert criterion(view, key)["status"] == "UNKNOWN"
+        assert criterion(view, key)["knockout"] is False
+
+
+def test_conflicting_explicit_ebitda_is_unknown_nonblocking_with_evidence():
+    source = rows() + [("LoanExtension", {"Id": "X1", "loan_id": "L1", "ebitda": "-1"})]
+    view = demo(source)
+    assert view["label"] == "Approve"
+    check = criterion(view, "ebitda_usd")
+    assert check["status"] == "UNKNOWN" and check["knockout"] is False
+    assert len(check["evidence_refs"]) == 2
+    assert set(check["evidence_refs"]) <= {item["id"] for item in view["source_evidence"]}
+    assert "ebitda_usd" not in view["missing_inputs"] and view["matched_reasons"] == []
+
+
+@pytest.mark.parametrize("knockout", [None, False, True])
+@pytest.mark.parametrize("ebitda", [None, "bad", "-1", "0", "100"])
+def test_legacy_ebitda_fail_is_diagnostic_in_prompt_context_without_rewriting(knockout, ebitda):
+    report = demo_report()
+    view = report.underwriting.loan_results[0].normalized_data["demo_decision"]
+    view["normalized_facts"]["ebitda_usd"] = ebitda
+    check = criterion(view, "ebitda_usd")
+    check["status"] = "FAIL"
+    if knockout is None:
+        check.pop("knockout")
+    else:
+        check["knockout"] = knockout
+    view["label"] = "Decline"
+    view["missing_inputs"] = ["ebitda_usd", "age_years"]
+    view["matched_reasons"] = [{"criterion": "ebitda_usd", "code": "EXPENSES_EXCEED_INCOME"}]
+    before = report.model_dump_json()
+    contexts = [bounded_demo_context(view, mode="TEST", allowed_refs=set())]
+    contexts.extend(context["underwriting"]["loan_results"][0]["demo_decision"]
+                    for context in (demo_explanation_context(report), report_context(report)))
+    for bounded in contexts:
+        assert criterion(bounded, "ebitda_usd")["status"] == (
+            "UNKNOWN" if ebitda in {None, "bad"} else "OBSERVED")
+        assert criterion(bounded, "ebitda_usd")["knockout"] is False
+        assert bounded["matched_reasons"] == []
+        assert bounded["missing_inputs"] == ["age_years"]
+        assert bounded["label"] == "Decline"  # Reprocessing, not explanation, changes saved labels.
+        assert "EXPENSES_EXCEED_INCOME" not in json.dumps(bounded)
+    assert report.model_dump_json() == before
+
+
+@pytest.mark.parametrize("code", [None, "", "bad", "4", "0", "1", "2", "3"])
+def test_public_records_are_nonblocking_diagnostics_never_matched_reasons(code):
     source = rows()
     source[2][1]["max_delinquency_public_records"] = code
+    report = demo_report(source)
+    view = report.underwriting.loan_results[0].normalized_data["demo_decision"]
+    expected = "OBSERVED" if code in {"0", "1", "2", "3"} else "UNKNOWN"
+    assert criterion(view, "public_record_code")["status"] == expected
+    assert criterion(view, "public_record_code")["knockout"] is False
+    assert "public_record_code" not in view["missing_inputs"]
+    assert view["matched_reasons"] == [] and view["label"] == "Approve"
+    assert "four knockout checks passed" in view["rationale"]
+    for context in (demo_explanation_context(report), report_context(report)):
+        bounded = context["underwriting"]["loan_results"][0]["demo_decision"]
+        assert criterion(bounded, "public_record_code")["status"] == expected
+        assert criterion(bounded, "public_record_code")["knockout"] is False
+        assert bounded["matched_reasons"] == [] and bounded["label"] == "Approve"
     source[0][1].pop("dob")
-    assert demo(source)["label"] == "Decline"
+    assert demo(source)["label"] == "Refer"
+
+
+@pytest.mark.parametrize("knockout", [None, False, True])
+@pytest.mark.parametrize("code", [None, "0", "1", "2", "3"])
+def test_stale_saved_public_status_is_diagnostic_in_bounded_context_without_rewriting(knockout, code):
+    view = demo()
+    view["normalized_facts"]["public_record_code"] = code
+    check = criterion(view, "public_record_code")
+    check["status"] = "FAIL"
+    if knockout is None:
+        check.pop("knockout")
+    else:
+        check["knockout"] = knockout
+    view["label"] = "Decline"  # Historical labels are not retroactively recomputed.
+    view["missing_inputs"] = ["public_record_code", "age_years"]
+    view["matched_reasons"] = [{"criterion": "public_record_code", "status": "MATCHED"}]
+    before = copy.deepcopy(view)
+    bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    assert criterion(bounded, "public_record_code")["status"] == ("OBSERVED" if code else "UNKNOWN")
+    assert criterion(bounded, "public_record_code")["knockout"] is False
+    assert bounded["matched_reasons"] == []
+    assert bounded["missing_inputs"] == ["age_years"]
+    assert bounded["label"] == "Decline"
+    assert view == before
+
+
+def test_bounded_context_respects_explicit_nonknockout_when_matching_reasons():
+    view = demo()
+    view["normalized_facts"]["sbss"] = "155"
+    check = criterion(view, "sbss")
+    check.update(knockout=False, status="OBSERVED")
+    bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    assert criterion(bounded, "sbss")["status"] == "OBSERVED"
+    assert bounded["matched_reasons"] == []
+    check["status"] = "FAIL"
+    bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    assert criterion(bounded, "sbss")["status"] == "OBSERVED"
+    assert bounded["matched_reasons"] == []
 
 
 @pytest.mark.parametrize("discharge,label", [("2021-10-20", "Approve"), ("2021-10-21", "Decline"),
@@ -656,9 +913,60 @@ def test_query2_mapped_scalar_score_works_without_response_id():
     assert any(item["field"] == score for item in view["source_evidence"])
 
 
+@pytest.mark.parametrize("score,route", [("190", "SBA"), ("200", "CONVENTIONAL")])
+def test_actual_source_shaped_soql_without_ebitda_approves_locally(score, route, monkeypatch):
+    """Synthetic cells with actual source headers; no uploads, main app or provider needed."""
+    provider = Mock(side_effect=AssertionError("Source fixture evaluation must stay local"))
+    monkeypatch.setattr(AnthropicLLM, "complete", provider)
+    junction = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
+    sbss_field = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__LCResponse__r.SCOC__SBSS7Score__c"
+    relationship = {junction + "LLC_BI__Loan__c": "L1",
+                    junction + "LLC_BI__Account__c": "A1",
+                    junction + "LLC_BI__Borrower_Type__c": "Borrower"}
+    values = {
+        1: {"Id": "J1", **relationship,
+            junction + "LLC_BI__Account__r.Birth_Date__c": "1980-10-20",
+            junction + "LLC_BI__Account__r.Number_of_Years_as_Current_Owner__c": "2",
+            junction + "LLC_BI__Account__r.NAICS_Code_Formula__c": "541100",
+            junction + "LLC_BI__Account__r.Business_Net_Income__c": "-100",
+            junction + "LLC_BI__Account__r.SBSS7_earn_before_int_and_taxes__c": "100",
+            "SCOC__CharacteristicKey__c": "uninterpreted", "SCOC__CharacteristicValue__c": "raw"},
+        2: {"Id": "I1", **relationship, sbss_field: score,
+            "SCOC__IndicatorKey__c": "uninterpreted", "SCOC__IndicatorValue__c": "raw"},
+        4: {"Id": "R1", "nFUSE__Account__c": "A1", "nFUSE__Credit_Score__c": "740",
+            "nFUSE__Report_Category__c": "personal", "LLC_BI__Borrower_Type__c": "Borrower",
+            "nFUSE__Number_Of_Bankruptcies__c": "0"},
+    }
+    documents = []
+    for query, cells in values.items():
+        doc = document([("Data", cells)], f"MTB_Query_{query}_SOQL_Only.xlsx", f"q{query}")
+        doc.metadata["sheets"] = [{"name": "Data", "headers": list(cells)}]
+        documents.append(doc)
+    # Explicit branch flag supplements exports; no synthetic EBITDA or dates.
+    documents.append(document([("Loan", {"Id": "L1", "vehicle_only": False})], document_id="branch"))
+    before = copy.deepcopy(documents)
+    loan = evaluate_underwriting(documents, mode="TEST").loan_results[0]
+    view = loan.normalized_data["demo_decision"]
+    assert (view["label"], view["candidate_route"]) == ("Approve", route)
+    assert view["missing_inputs"] == [] and view["matched_reasons"] == []
+    assert view["normalized_facts"]["ebitda_usd"] is None
+    assert criterion(view, "ebitda_usd")["status"] == "UNKNOWN"
+    assert criterion(view, "ebitda_usd")["knockout"] is False
+    assert str(loan.normalized_amounts_usd["business_net_income_usd"]) == "-100"
+    assert loan.normalized_amounts_usd["ebitda_usd"] is None
+    assert view["age_reference_date_basis"] == "CURRENT_UTC_DATE_FOR_AGE"
+    assert view["selected_report_id"] == "R1" and view["reference_date"] is None
+    assert documents == before
+    provider.assert_not_called()
+
+
 @pytest.mark.parametrize("parties", ["borrower", "borrower_guarantor", "guarantors_only"])
-def test_graph_documents_and_strict_result_are_immutable(monkeypatch, parties):
+@pytest.mark.parametrize("as_of", ["2026-10-20", None, "invalid"])
+@pytest.mark.parametrize("public_code", [None, "2"])
+def test_graph_documents_and_strict_result_are_immutable(monkeypatch, parties, as_of, public_code):
     source_rows = rows()
+    source_rows[1][1]["as_of_date"] = as_of
+    source_rows[2][1]["max_delinquency_public_records"] = public_code
     if parties != "borrower":
         linked_party(source_rows, "G1", "650")
     if parties == "guarantors_only":
@@ -689,6 +997,27 @@ def test_production_does_not_invoke_demo_or_include_trace(monkeypatch):
     assert result.decision_status == "Human Review"
     assert result.final_action == "MANUAL_REVIEW"
     assert evaluate_demo(None, None, {}, mode="PRODUCTION") is None
+
+
+@pytest.mark.parametrize("ebitda,status", [(None, "UNKNOWN"), ("-1", "FAIL"), ("bad", "UNKNOWN")])
+@pytest.mark.parametrize("mode", ["TEST", "PRODUCTION"])
+def test_ebitda_demo_exclusion_never_changes_strict_results(ebitda, status, mode, monkeypatch):
+    source = rows()
+    source[0][1]["ebitda"] = ebitda
+    actual = evaluate(source, mode=mode).model_dump()
+    loan = actual["loan_results"][0]
+    assert loan["normalized_data"]["ebitda_nonnegative"] is (False if ebitda == "-1" else None)
+    assert next(item for item in loan["rule_results"]
+                if item["rule_id"] == "EBITDA_NONNEGATIVE_DIAGNOSTIC")["status"] == (
+                    status if actual["source_available"] else "UNKNOWN")
+    view = loan["normalized_data"].pop("demo_decision", None)
+    assert (view is None) == (mode == "PRODUCTION")
+    if view is not None:
+        assert view["label"] == "Approve" and view["matched_reasons"] == []
+    monkeypatch.setattr("backend.underwriting_engine.evaluate_demo", lambda *a, **k: None)
+    strict = evaluate(source, mode=mode).model_dump()
+    strict["loan_results"][0]["normalized_data"].pop("demo_decision", None)
+    assert actual == strict
 
 
 def test_bounded_context_has_simulated_scores_not_raw_bureau_or_source_values():
@@ -772,15 +1101,13 @@ def response(loan_ids, **changes):
 
 @pytest.mark.parametrize("criterion_key,field,value,label,provenance", [
     ("bankruptcy_clear", "bankruptcy_discharge_date", "2025-01-01", "Bankruptcy", "SUPPLIED_DECLINE_REASON_CATALOG"),
-    ("ebitda_usd", "ebitda", "-1", "Business expenses exceed business income", "SUPPLIED_DECLINE_REASON_CATALOG"),
-    ("public_record_code", "max_delinquency_public_records", "2", "Derogatory personal credit", "SUPPLIED_DECLINE_REASON_CATALOG"),
     ("fico", "personal_fico", "620", "Average personal FICO below 650", "SUPPLIED_STRATEGY"),
     ("sbss", "sbss", "155", "SBSS below 160", "SUPPLIED_STRATEGY"),
     ("age_years", "dob", "2010-01-01", "Age below 18", "SUPPLIED_STRATEGY"),
 ])
 def test_demo_matched_reason_labels_and_provenance(criterion_key, field, value, label, provenance):
     source = rows()
-    node = 0 if field in {"ebitda", "dob"} else 3 if field == "sbss" else 2
+    node = 0 if field == "dob" else 3 if field == "sbss" else 2
     source[node][1][field] = value
     if criterion_key == "bankruptcy_clear":
         source[2][1]["bankruptcy_count"] = "1"

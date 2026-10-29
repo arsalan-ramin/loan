@@ -1,13 +1,18 @@
 """Contract and workflow tests against real temporary SQLite and Chroma stores."""
 
+import ast
 import io
+import inspect
 import json
+import zipfile
 
 import pytest
 from docx import Document as WordDocument
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
+from pypdf._page import PageObject
 
+from backend import agents, main
 from backend.agents import ExtractionAgent
 from backend.main import create_app, process_session
 from backend.models import Document
@@ -247,22 +252,117 @@ def test_pdf_extraction_and_encryption(tmp_path):
         ExtractionAgent().extract(doc, path)
 
 
-def test_oversized_upload_rolls_back_all_files(client, monkeypatch):
+@pytest.mark.parametrize("name,raw", [("empty.txt", b""), ("unsupported.exe", b"invalid")])
+def test_invalid_batch_rolls_back_only_new_files(client, name, raw):
     sid = new_session(client)
-    monkeypatch.setenv("FOLIO_MAX_FILE_MB", "1")
+    assert upload(client, sid, content=b"existing source").status_code == 200
+    before = client.get(f"/api/sessions/{sid}").json()
+    directory = client.app.state.store.root / "uploads" / sid
+    existing = {path.name: path.read_bytes() for path in directory.iterdir()}
     response = client.post(f"/api/sessions/{sid}/documents", files=[
         ("files", ("small.txt", b"valid file")),
-        ("files", ("too-large.txt", b"x" * (1024 * 1024 + 1))),
+        ("files", (name, raw)),
     ])
-    assert response.status_code == 413
-    assert client.get(f"/api/sessions/{sid}").json()["documents"] == []
-    assert list((client.app.state.store.root / "uploads" / sid).iterdir()) == []
+    assert response.status_code == 400
+    assert client.get(f"/api/sessions/{sid}").json() == before
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == existing
 
 
-def test_xlsx_upload_allows_more_than_previous_20_mb_default(client):
+@pytest.mark.parametrize("extension", [".txt", ".xlsx"])
+def test_upload_ignores_retired_size_environment_settings(client, monkeypatch, extension):
+    monkeypatch.setenv("FOLIO_MAX_FILE_MB", "1")
+    monkeypatch.setenv("FOLIO_MAX_XLSX_MB", "1")
     sid = new_session(client)
+    raw = b"x" * (1024 * 1024 + 1)
     response = client.post(f"/api/sessions/{sid}/documents", files=[
-        ("files", ("large.xlsx", b"x" * (20 * 1024 * 1024 + 1))),
+        ("files", (f"large{extension}", raw)),
     ])
     assert response.status_code == 200
-    assert response.json()["documents"][0]["size"] == 20 * 1024 * 1024 + 1
+    document, = response.json()["documents"]
+    assert document["size"] == len(raw)
+    assert (client.app.state.store.root / "uploads" / sid / document["id"]).read_bytes() == raw
+
+
+def test_generic_upload_has_no_conversation_or_multipart_file_count_cap(client):
+    sid = new_session(client)
+    assert upload(client, sid).status_code == 200
+    response = client.post(f"/api/sessions/{sid}/documents", files=[
+        ("files", (f"source-{index}.txt", b"synthetic")) for index in range(1001)
+    ])
+    assert response.status_code == 200
+    assert len(response.json()["documents"]) == 1002
+
+
+def test_upload_still_requires_files_and_documents_openapi(client):
+    sid = new_session(client)
+    assert client.post(f"/api/sessions/{sid}/documents").status_code == 400
+    schema = client.get("/openapi.json").json()["paths"]["/api/sessions/{session_id}/documents"]["post"]
+    files = schema["requestBody"]["content"]["multipart/form-data"]["schema"]["properties"]["files"]
+    assert files == {"type": "array", "items": {"type": "string", "format": "binary"}}
+
+
+@pytest.mark.parametrize("first,second", [(".txt", ".xlsx"), (".xlsx", ".txt")])
+def test_upload_still_rejects_mixed_workbook_and_generic_sources(client, first, second):
+    sid = new_session(client)
+    assert upload(client, sid, name=f"first{first}").status_code == 200
+    before = client.get(f"/api/sessions/{sid}").json()
+    assert upload(client, sid, name=f"second{second}").status_code == 400
+    assert client.get(f"/api/sessions/{sid}").json() == before
+    other = new_session(client)
+    response = client.post(f"/api/sessions/{other}/documents", files=[
+        ("files", ("source.xlsx", b"synthetic")), ("files", ("source.txt", b"synthetic")),
+    ])
+    assert response.status_code == 400
+    assert client.get(f"/api/sessions/{other}").json()["documents"] == []
+
+
+def test_file_resource_guard_code_is_removed():
+    agent_tree = ast.parse(inspect.getsource(agents))
+    assert not any(isinstance(node, ast.Name) and node.id in {"MAX_CONTENT", "zipfile"}
+                   for node in ast.walk(agent_tree))
+    main_tree = ast.parse(inspect.getsource(main))
+    assert not any(isinstance(node, ast.Constant) and node.value in
+                   ("FOLIO_MAX_FILE_MB", "FOLIO_MAX_XLSX_MB") for node in ast.walk(main_tree))
+
+
+@pytest.mark.parametrize("extension", [".txt", ".md", ".csv", ".json", ".docx"])
+def test_generic_extraction_accepts_more_than_two_million_characters(tmp_path, extension):
+    text = "synthetic " * 200_001
+    if extension == ".docx":
+        word = WordDocument()
+        word.add_paragraph(text)
+        stream = io.BytesIO()
+        word.save(stream)
+        raw = stream.getvalue()
+    elif extension == ".json":
+        raw = json.dumps({"description": text}).encode()
+    else:
+        raw = text.encode()
+    path = tmp_path / f"synthetic{extension}"
+    path.write_bytes(raw)
+    document = Document(name=path.name, extension=extension, size=len(raw))
+    ExtractionAgent().extract(document, path)
+    assert document.metadata["character_count"] == len(document.content) > 2_000_000
+    assert text in document.content
+
+
+def test_pdf_accepts_more_than_500_pages_and_two_million_characters(tmp_path, monkeypatch):
+    writer = PdfWriter()
+    for _ in range(501):
+        writer.add_blank_page(width=72, height=72)
+    path = tmp_path / "synthetic.pdf"
+    writer.write(path)
+    # Real 501-page PDF, synthetic page text: no large PDF asset or OCR/provider call.
+    monkeypatch.setattr(PageObject, "extract_text", lambda self: "synthetic " * 400)
+    document = Document(name=path.name, extension=".pdf", size=path.stat().st_size)
+    ExtractionAgent().extract(document, path)
+    assert document.metadata["pages"] == 501
+    assert document.metadata["character_count"] == len(document.content) > 2_000_000
+
+
+def test_invalid_docx_package_is_still_rejected(tmp_path):
+    path = tmp_path / "invalid.docx"
+    path.write_bytes(b"not a ZIP package")
+    document = Document(name=path.name, extension=".docx", size=path.stat().st_size)
+    with pytest.raises(zipfile.BadZipFile):
+        ExtractionAgent().extract(document, path)

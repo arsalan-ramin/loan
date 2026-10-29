@@ -1,6 +1,9 @@
 """XLSX extraction and local dataset imports, without touching original workbooks."""
 
+import ast
 import io
+import inspect
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -49,10 +52,14 @@ def test_excel_records_metadata_and_formula_text(tmp_path):
     assert "[MTB Query 1!row 2] A2=SYNTHETIC-001" in doc.content
 
 
-def test_xlsx_expanded_size_limit_is_above_previous_50_mb():
-    assert excel.MAX_EXPANDED_BYTES == 512 * 1024 * 1024
-    assert excel.MAX_CELLS == 5_000_000
-    assert excel.MAX_SCAN_CELLS == 50_000_000
+def test_excel_resource_guards_are_removed():
+    # Check the removed guards without allocating millions of cells/ZIP bytes.
+    tree = ast.parse(inspect.getsource(excel))
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert not {"MAX_CELLS", "MAX_SCAN_CELLS", "MAX_TEXT", "MAX_EXPANDED_BYTES"} & names
+    assert not any(isinstance(node, ast.Compare) and any(
+        isinstance(child, ast.Name) and child.id == "expanded_size"
+        for child in ast.walk(node)) for node in ast.walk(tree))
 
 
 @pytest.mark.parametrize("include_text", [False, True])
@@ -77,12 +84,22 @@ def test_large_query_one_exceeds_old_million_cell_limit(tmp_path, include_text, 
     assert bool(doc.content) is include_text
 
 
-def test_excel_cell_budget_remains_enforced(monkeypatch):
-    monkeypatch.setattr(excel, "MAX_CELLS", 2)
-    # The first row contains three meaningful headers, not just padding.
-    with pytest.raises(ValueError, match="meaningful-cell limit") as caught:
-        excel.extract_excel(workbook_bytes(), include_text=False)
-    assert excel.safe_excel_error_reason(caught.value).startswith("CELL_LIMIT:")
+@pytest.mark.parametrize("include_text", [False, True])
+def test_excel_accepts_more_than_thirty_sheets(include_text):
+    book = Workbook()
+    book.remove(book.active)
+    for index in range(31):
+        sheet = book.create_sheet(f"Sheet {index}")
+        sheet.append(["Id"])
+        sheet.append([f"SYNTHETIC-{index}"])
+    buffer = io.BytesIO()
+    book.save(buffer)
+    book.close()
+    text, metadata = excel.extract_excel(buffer.getvalue(), include_text=include_text)
+    assert len(metadata["sheet_names"]) == metadata["data_row_count"] == 31
+    assert metadata["meaningful_cell_count"] == metadata["visited_cell_count"] == 62
+    assert metadata["records"][-1]["values"] == {"Id": "SYNTHETIC-30"}
+    assert bool(text) is include_text
 
 
 def padded_workbook_bytes():
@@ -101,14 +118,12 @@ def padded_workbook_bytes():
 
 
 @pytest.mark.parametrize("include_text", [False, True])
-def test_styled_padding_uses_scan_budget_not_meaningful_budget(monkeypatch, include_text):
-    monkeypatch.setattr(excel, "MAX_CELLS", 4)
-    monkeypatch.setattr(excel, "MAX_SCAN_CELLS", 36)
+def test_styled_padding_counts_visited_and_meaningful_cells(include_text):
     text, metadata = excel.extract_excel(padded_workbook_bytes(), include_text=include_text)
     assert metadata["meaningful_cell_count"] == 4
     assert metadata["visited_cell_count"] == 36
-    assert metadata["meaningful_cell_limit"] == 4
-    assert metadata["visited_cell_limit"] == 36
+    assert metadata["meaningful_cell_limit"] is None
+    assert metadata["visited_cell_limit"] is None
     assert metadata["sheets"][0]["headers"] == ["Id", "", "Amount", *([""] * 9)]
     assert metadata["data_row_count"] == 1
     assert metadata["records"] == [{"sheet": "Loans", "row": 2,
@@ -118,7 +133,7 @@ def test_styled_padding_uses_scan_budget_not_meaningful_budget(monkeypatch, incl
 
 
 @pytest.mark.parametrize("include_text", [False, True])
-def test_whitespace_is_blank_but_raw_nonblank_values_are_preserved(monkeypatch, include_text):
+def test_whitespace_is_blank_but_raw_nonblank_values_are_preserved(include_text):
     book = Workbook()
     sheet = book.active
     assert sheet is not None
@@ -129,7 +144,6 @@ def test_whitespace_is_blank_but_raw_nonblank_values_are_preserved(monkeypatch, 
     buffer = io.BytesIO()
     book.save(buffer)
     book.close()
-    monkeypatch.setattr(excel, "MAX_CELLS", 12)
     text, metadata = excel.extract_excel(buffer.getvalue(), include_text=include_text)
     assert metadata["meaningful_cell_count"] == 12
     # reset_dimensions streams row widths 7, 6, 7; absent G2 is not visited.
@@ -153,7 +167,7 @@ def test_whitespace_is_blank_but_raw_nonblank_values_are_preserved(monkeypatch, 
 
 @pytest.mark.parametrize("value", [0, False, '=""'])
 @pytest.mark.parametrize("include_text", [False, True])
-def test_zero_false_and_formulas_consume_meaningful_budget(monkeypatch, value, include_text):
+def test_zero_false_and_formulas_count_as_meaningful(value, include_text):
     book = Workbook()
     sheet = book.active
     assert sheet is not None
@@ -162,27 +176,25 @@ def test_zero_false_and_formulas_consume_meaningful_budget(monkeypatch, value, i
     buffer = io.BytesIO()
     book.save(buffer)
     book.close()
-    monkeypatch.setattr(excel, "MAX_CELLS", 1)
-    with pytest.raises(ValueError, match="meaningful-cell limit") as caught:
-        excel.extract_excel(buffer.getvalue(), include_text=include_text)
-    assert excel.safe_excel_error_reason(caught.value).startswith("CELL_LIMIT:")
+    _, metadata = excel.extract_excel(buffer.getvalue(), include_text=include_text)
+    assert metadata["meaningful_cell_count"] == 2
+    assert metadata["data_row_count"] == 1
+    assert metadata["records"][0]["values"]["Value"] == (None if value == '=""' else value)
 
 
 @pytest.mark.parametrize("include_text", [False, True])
-def test_scan_budget_includes_trailing_styled_blank_rows(monkeypatch, include_text):
-    monkeypatch.setattr(excel, "MAX_CELLS", 4)
-    monkeypatch.setattr(excel, "MAX_SCAN_CELLS", 35)
-    with pytest.raises(ValueError, match="visited-cell scan limit") as caught:
-        excel.extract_excel(padded_workbook_bytes(), include_text=include_text)
-    assert excel.safe_excel_error_reason(caught.value).startswith("SCAN_CELL_LIMIT:")
+def test_visited_count_includes_trailing_styled_blank_rows(include_text):
+    _, metadata = excel.extract_excel(padded_workbook_bytes(), include_text=include_text)
+    assert metadata["visited_cell_count"] == 36
+    assert metadata["meaningful_cell_count"] == 4
 
 
 @pytest.mark.parametrize("include_text", [False, True])
-def test_meaningful_budget_is_workbook_wide(monkeypatch, include_text):
+def test_meaningful_count_is_workbook_wide(include_text):
     # Six cells on the data sheet plus four on the reference sheet.
-    monkeypatch.setattr(excel, "MAX_CELLS", 9)
-    with pytest.raises(ValueError, match="meaningful-cell limit"):
-        excel.extract_excel(workbook_bytes(), include_text=include_text)
+    _, metadata = excel.extract_excel(workbook_bytes(), include_text=include_text)
+    assert metadata["meaningful_cell_count"] == 10
+    assert metadata["meaningful_cell_limit"] is None
 
 
 def test_excel_extraction_accepts_text_above_previous_limit(tmp_path):
@@ -264,7 +276,11 @@ def test_mtb_dataset_requires_verified_policy(tmp_path):
     assert any(f.rule_id == "system-mtb-guideline" for f in RulesAgent().evaluate(Session(documents=[doc])))
 
 
-def test_local_dataset_import_is_explicit_atomic_and_preserves_sources(tmp_path):
+def test_local_dataset_import_is_explicit_atomic_and_preserves_sources(tmp_path, monkeypatch):
+    monkeypatch.setenv("FOLIO_MAX_XLSX_MB", "0")
+    # Import must stream, never read whole source workbooks into byte buffers.
+    original_read_bytes = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda self: pytest.fail("dataset must stream from disk"))
     root = tmp_path / "data"
     app = create_app(root)
     with TestClient(app) as client:
@@ -272,6 +288,10 @@ def test_local_dataset_import_is_explicit_atomic_and_preserves_sources(tmp_path)
         assert client.post(f"/api/sessions/{sid}/dataset").status_code == 404
         assert client.get(f"/api/sessions/{sid}").json()["documents"] == []
         raw = workbook_bytes(False)
+        for name in ("MTB_Query_1.xlsx", "MTB_Query_2.xlsx"):
+            (root / name).write_bytes(raw)
+        assert client.post(f"/api/sessions/{sid}/dataset").status_code == 404
+        assert client.get(f"/api/sessions/{sid}").json()["documents"] == []
         for name in ("MTB_Query_1.xlsx", "MTB_Query_2.xlsx", "MTB_Query_4.xlsx"):
             (root / name).write_bytes(raw)
         response = client.post(f"/api/sessions/{sid}/dataset")
@@ -281,7 +301,7 @@ def test_local_dataset_import_is_explicit_atomic_and_preserves_sources(tmp_path)
         assert session["report"] is None
         assert len(session["documents"]) == 3
         assert client.post(f"/api/sessions/{sid}/dataset").status_code == 409
-        assert (root / "MTB_Query_1.xlsx").read_bytes() == raw
+        assert original_read_bytes(root / "MTB_Query_1.xlsx") == raw
 
 
 def test_excel_upload_and_invalid_workbook(tmp_path):
@@ -298,10 +318,6 @@ def test_excel_upload_and_invalid_workbook(tmp_path):
 @pytest.mark.parametrize("error,code", [
     (ValueError("Duplicate header 'private-source-value' in sheet internal; field mapping is ambiguous."), "DUPLICATE_HEADERS"),
     (ValueError("Invalid XLSX workbook. Re-save it as a standard .xlsx file."), "INVALID_XLSX"),
-    (ValueError("XLSX exceeds the 1,000,000 visited-cell limit."), "CELL_LIMIT"),
-    (ValueError("XLSX exceeds the 5,000,000 visited-cell limit."), "CELL_LIMIT"),
-    (ValueError("XLSX exceeds the 5,000,000 meaningful-cell limit."), "CELL_LIMIT"),
-    (ValueError("XLSX exceeds the 50,000,000 visited-cell scan limit."), "SCAN_CELL_LIMIT"),
     (ValueError("private-source-value C:/private/path"), "UNSUPPORTED_WORKBOOK_STRUCTURE"),
     (OSError("private-source-value C:/private/path"), "FILE_UNAVAILABLE"),
 ])

@@ -5,7 +5,7 @@ import hashlib
 import io
 import json
 import logging
-import zipfile
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,7 +22,8 @@ from .underwriting_engine import evaluate_underwriting
 from .underwriting_models import SOURCE_DOCUMENT, SOURCE_SHA256, UnderwritingBatch
 
 SUPPORTED = {".pdf", ".docx", ".txt", ".md", ".csv", ".json", ".xlsx"}
-MAX_CONTENT = 2_000_000
+# Remove the CSV parser's small default field cap; only platform capacity applies.
+csv.field_size_limit(sys.maxsize)
 LOGGER = logging.getLogger(__name__)
 
 
@@ -54,7 +55,7 @@ class ExtractionAgent:
             with path.open("rb") as source:
                 for chunk in iter(lambda: source.read(1024 * 1024), b""):
                     digest.update(chunk)
-            raw = None
+            raw = b""
             size_bytes, sha256 = path.stat().st_size, digest.hexdigest()
         else:
             raw = path.read_bytes()
@@ -71,15 +72,9 @@ class ExtractionAgent:
             reader = PdfReader(io.BytesIO(raw))
             if reader.is_encrypted:
                 raise ValueError(f"{document.name}: encrypted PDFs are not supported.")
-            if len(reader.pages) > 500:
-                raise ValueError(f"{document.name}: PDFs are limited to 500 pages.")
             parts = []
-            total = 0
             for page in reader.pages:
                 text = page.extract_text() or ""
-                total += len(text)
-                if total > MAX_CONTENT:
-                    raise ValueError(f"{document.name}: extracted text exceeds the 2 million character limit.")
                 parts.append(text)
             content = "\n\n".join(parts)
             metadata["pages"] = len(reader.pages)
@@ -89,9 +84,6 @@ class ExtractionAgent:
                     if value:
                         metadata[key] = str(value)
         elif document.extension == ".docx":
-            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-                if sum(item.file_size for item in archive.infolist()) > 50 * 1024 * 1024:
-                    raise ValueError(f"{document.name}: expanded DOCX is too large.")
             word = WordDocument(io.BytesIO(raw))
             paragraphs = [p.text for p in word.paragraphs]
             tables = [" | ".join(cell.text for cell in row.cells) for table in word.tables for row in table.rows]
@@ -118,10 +110,6 @@ class ExtractionAgent:
                 rows = csv.reader(io.StringIO(content))
                 metadata["columns"] = next(rows, [])
                 metadata["rows"] = sum(1 for _ in rows)
-        # XLSX has its own larger bounded limit in extract_excel; keep the
-        # existing 2-million-character ceiling for all other formats.
-        if document.extension != ".xlsx" and len(content) > MAX_CONTENT:
-            raise ValueError(f"{document.name}: extracted text exceeds the 2 million character limit.")
         metadata["word_count"] = len(content.split())
         metadata["character_count"] = len(content)
         if include_text and not content.strip():

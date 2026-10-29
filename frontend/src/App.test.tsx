@@ -126,7 +126,7 @@ describe('Agent', () => {
     expect(screen.getByRole('button', { name: 'Process documents' })).toBeDisabled();
     expect(screen.getByText('No documents added yet')).toBeInTheDocument();
     expect(screen.getByLabelText('Choose documents')).toHaveAttribute('accept', '.pdf,.docx,.xlsx,.txt,.md,.csv,.json');
-    expect(screen.getByText('XLSX up to 50 MB · Other files up to 20 MB · 20 files per session')).toBeInTheDocument();
+    expect(screen.getByText('No application file-size or record limits · Large files may take longer')).toBeInTheDocument();
     expect(screen.getByText(/.xls and .xlsm are unsupported/)).toBeInTheDocument();
     expect(screen.getByText(/Upload the three MTB source workbooks/)).toBeInTheDocument();
     expect(screen.getByText(/.xls and .xlsm are unsupported/)).toBeInTheDocument();

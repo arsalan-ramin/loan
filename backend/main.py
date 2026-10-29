@@ -8,14 +8,16 @@ import io
 from time import perf_counter
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from .agents import SUPPORTED, DecisionAgent, ExtractionAgent, IntakeAgent, MemoryAgent, RulesAgent
 from .assistant_workflow import (
@@ -36,6 +38,16 @@ from .underwriting_models import UnderwritingBatch
 
 load_dotenv(Path(__file__).with_name(".env"))
 logger = logging.getLogger(__name__)
+
+
+async def uploaded_files(request: Request) -> AsyncIterator[list[StarletteUploadFile]]:
+    # File parts spool to disk; no application-level file-count ceiling.
+    # Keep multipart field-size/count validation at the framework defaults.
+    async with request.form(max_files=float("inf")) as form:
+        files = form.getlist("files")
+        if any(not isinstance(file, StarletteUploadFile) for file in files):
+            raise HTTPException(422, "Each files entry must be an uploaded file.")
+        yield [file for file in files if isinstance(file, StarletteUploadFile)]
 
 
 def require_session(store: Store, session_id: str) -> Session:
@@ -246,16 +258,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             store.save(session)
         return session
 
-    @application.post("/api/sessions/{session_id}/documents", response_model=Session)
-    def upload_documents(request: Request, session_id: str, files: list[UploadFile] = File(...)):
+    @application.post("/api/sessions/{session_id}/documents", response_model=Session,
+                      openapi_extra={"requestBody": {"required": True, "content": {
+                          "multipart/form-data": {"schema": {"type": "object", "required": ["files"],
+                              "properties": {"files": {"type": "array", "items": {
+                                  "type": "string", "format": "binary"}}}}}}}})
+    def upload_documents(request: Request, session_id: str,
+                         files: list[StarletteUploadFile] = Depends(uploaded_files)):
         store: Store = request.app.state.store
         created: list[Path] = []
         try:
             with store.lock:
                 session = require_session(store, session_id)
                 editable(session)
-                if not files or len(files) + len(session.documents) > 20:
-                    raise HTTPException(400, "Upload between 1 and 20 documents per conversation.")
+                if not files:
+                    raise HTTPException(400, "Upload at least one document.")
                 incoming_xlsx = any(Path(file.filename or "").suffix.casefold() == ".xlsx" for file in files)
                 existing_xlsx = any(document.extension == ".xlsx" for document in session.documents)
                 if incoming_xlsx or existing_xlsx:
@@ -274,16 +291,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     extension = Path(name).suffix.lower()
                     if extension not in SUPPORTED:
                         raise HTTPException(400, f"{name}: unsupported file type. Use XLSX, PDF, DOCX, TXT, MD, CSV, or JSON.")
-                    max_file_mb = int(os.getenv("FOLIO_MAX_XLSX_MB", "50")) if extension == ".xlsx" else int(os.getenv("FOLIO_MAX_FILE_MB", "20"))
-                    max_bytes = max_file_mb * 1024 * 1024
                     document = Document(name=name[:240], size=0, extension=extension)
                     path = directory / document.id
                     created.append(path)
                     with path.open("wb") as destination:
                         while chunk := file.file.read(1024 * 1024):
                             document.size += len(chunk)
-                            if document.size > max_bytes:
-                                raise HTTPException(413, f"{name}: file exceeds the {max_file_mb} MB limit.")
                             destination.write(chunk)
                     if not document.size:
                         raise HTTPException(400, f"{name}: empty files cannot be reviewed.")
@@ -319,18 +332,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             editable(session)
             if session.documents:
                 raise HTTPException(409, "Use a new empty session to load all three source workbooks.")
-            max_bytes = int(os.getenv("FOLIO_MAX_XLSX_MB", "50")) * 1024 * 1024
             files = []
             try:
                 for name in names:
                     path = store.root / name
                     if not path.is_file() or path.is_symlink():
                         raise HTTPException(404, f"Missing workbook in the backend data folder: {name}")
-                    with path.open("rb") as source:
-                        raw = source.read(max_bytes + 1)
-                    if len(raw) > max_bytes:
-                        raise HTTPException(413, f"{name}: exceeds the configured file-size limit.")
-                    files.append(UploadFile(filename=name, file=io.BytesIO(raw)))
+                    # Hand open streams to the same atomic, chunked upload path.
+                    files.append(UploadFile(filename=name, file=path.open("rb")))
                 return upload_documents(request, session_id, files)
             finally:
                 for file in files:

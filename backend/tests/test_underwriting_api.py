@@ -85,9 +85,8 @@ def upload_three(client, mode="PRODUCTION", empty=False):
     assert response.status_code == 200
     validation = client.post(f"/api/sessions/{sid}/preflight")
     assert validation.status_code == 200
-    accounts = client.get(f"/api/sessions/{sid}/accounts").json()
-    if accounts["total"]:
-        selected = client.put(f"/api/sessions/{sid}/account", json={"account_id": accounts["results"][0]["account_id"]})
+    if not empty:
+        selected = client.put(f"/api/sessions/{sid}/loan", json={"loan_id": "L1"})
         assert selected.status_code == 200
     return sid
 
@@ -248,6 +247,7 @@ def test_mode_change_invalidates_and_processing_locks(client):
     assert changed["status"] == "ready"
     assert all(step["status"] == "pending" for step in changed["steps"])
     assert client.get(f"/api/sessions/{sid}/underwriting").status_code == 409
+    assert client.put(f"/api/sessions/{sid}/loan", json={"loan_id": "L1"}).status_code == 200
     store = client.app.state.store
     session = store.get(sid)
     session.status = "processing"
@@ -271,12 +271,9 @@ def test_test_mode_never_silently_enables_synthetic_approval(client):
 
 def test_empty_templates_and_unidentified_rows_never_fabricate_loans(client):
     sid = upload_three(client, empty=True)
-    report = finish(client, sid)["report"]
-    assert report["underwriting"]["loan_results"] == []
-    assert "NO_EXPLICIT_LOAN_RECORDS" in report["underwriting"]["data_quality_issues"]
-    assert report["policy_evaluation"]["profiles"] == []
-    assert report["policy_evaluation"]["rule_results"] == []
-    assert "No explicit loan records" in client.get(f"/api/sessions/{sid}/report").text
+    assert client.post(f"/api/sessions/{sid}/process").status_code == 409
+    assert client.put(f"/api/sessions/{sid}/loan", json={"loan_id": "L1"}).status_code == 404
+    assert client.get(f"/api/sessions/{sid}").json()["report"] is None
     unidentified = Session(documents=[Document(name="MTB_Query_4.xlsx", extension=".xlsx", size=1,
         metadata={"records": [{"sheet": "CreditReport", "row": 2, "values": {"credit_freeze": True}}]})])
     result = DecisionAgent().decide(unidentified, RulesAgent().evaluate(unidentified))

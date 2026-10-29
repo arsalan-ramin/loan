@@ -181,6 +181,8 @@ export interface LoanInspection {
 }
 
 export interface PreflightResult {
+  requires_loan_number?: boolean;
+  scoped_loan_id?: string | null;
   created_at: string;
   input_fingerprint: string;
   recognized_mtb: boolean;

@@ -191,7 +191,9 @@ describe('Agent', () => {
       expect(await screen.findByText(name)).toBeInTheDocument();
     }
     expect(active.documents).toHaveLength(3);
-    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/preflight'))).toHaveLength(3);
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/preflight'))).toHaveLength(0);
+    expect(screen.getByRole('textbox', { name: 'Loan number' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Process documents' })).toBeDisabled();
     expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/process') || url.endsWith('/assistant/loan-review'))).toBe(false);
     await user.click(screen.getByRole('button', { name: 'Add documents' }));
     await user.upload(screen.getByLabelText('Choose documents'), new File(['extra'], 'extra.xlsx', {

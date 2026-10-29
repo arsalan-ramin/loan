@@ -41,13 +41,14 @@ class IntakeAgent:
         return ("Hello! I’m your document review assistant. First, upload the files you want me to review "
             "(XLSX, PDF, DOCX, TXT, Markdown, CSV, or JSON). For MTB reviews, upload Query 1 (Loans, Accounts & Financials), "
             "Query 2 (SBSS & Entity Relationships), and Query 4 (Credit Reports). These exports link through explicit Account ID columns; "
-            "the app does not join by row position or borrower name. Then validate the extracted attributes and select Process documents. "
+            "the app does not join by row position or borrower name. Then enter the loan number; only that loan's related rows are loaded. Select Process documents when ready. "
                 "I’ll extract content and metadata, evaluate each file, and prepare a downloadable HTML decision report. "
                 "Your conversation stays saved in this workspace.")
 
 
 class ExtractionAgent:
-    def extract(self, document: Document, path: Path, *, include_text: bool = True) -> None:
+    def extract(self, document: Document, path: Path, *, include_text: bool = True,
+                headers_only: bool = False) -> None:
         # Hash XLSX incrementally and pass its path to the read-only parser.
         # Other formats retain their existing byte-based parsers.
         if document.extension == ".xlsx":
@@ -66,7 +67,7 @@ class ExtractionAgent:
             "extracted_at": datetime.now(timezone.utc).isoformat(),
         }
         if document.extension == ".xlsx":
-            content, excel_metadata = extract_excel(path, include_text=include_text)
+            content, excel_metadata = extract_excel(path, include_text=include_text, headers_only=headers_only)
             metadata.update(excel_metadata)
         elif document.extension == ".pdf":
             reader = PdfReader(io.BytesIO(raw))

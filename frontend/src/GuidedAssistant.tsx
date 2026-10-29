@@ -58,6 +58,8 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   const [loanCandidates, setLoanCandidates] = useState<LoanCandidate[]>([]);
   const [loanTotal, setLoanTotal] = useState(0);
   const [loanSearch, setLoanSearch] = useState('');
+  const [loanNumber, setLoanNumber] = useState('');
+  const loanNumberInput = useRef<HTMLInputElement>(null);
   const [loanLoading, setLoanLoading] = useState(false);
   const confirmationPanel = useRef<HTMLDivElement>(null);
   const loans = session.report?.underwriting?.loan_results ?? [];
@@ -81,9 +83,11 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   const unmappedAttributes = preflight?.unmapped_attributes ?? [];
   const unavailableInputs = preflight?.unavailable_inputs ?? [];
   const mappingWarnings = preflight?.mapping_warnings ?? [];
-  const requiresLoanSelection = !!session.policy_rules?.length || preflight?.recognized_mtb === true
+  const hasWorkbooks = session.documents.some((document) => document.extension === '.xlsx');
+  const requiresLoanSelection = hasWorkbooks || !!session.policy_rules?.length || preflight?.recognized_mtb === true
     || session.documents.some((document) => /^MTB[ _-]+Query[ _-]+(1|2|3|4)(?=$|[ _().-]).*\.xlsx$/i.test(document.name));
-  const requiresWorkbookValidation = session.documents.some((document) => document.extension === '.xlsx') && !preflight;
+  const requiresWorkbookValidation = hasWorkbooks
+    && (!session.selected_loan_id || preflight?.scoped_loan_id !== session.selected_loan_id);
   const queryFileSetValid = preflight?.query_file_set_valid ?? Boolean(
     preflight?.recognized_mtb && preflight.document_count === 3
     && [1, 2, 4].every((role) => preflight.query_roles?.includes(role)
@@ -116,7 +120,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   }, [session.id, session.status, session.report?.id, disabled]);
   useEffect(() => {
     let active = true;
-    if (preflight?.recognized_mtb) {
+    if (preflight?.recognized_mtb && !preflight.requires_loan_number && !preflight.scoped_loan_id) {
       setLoanLoading(true);
       const timer = setTimeout(() => {
         void api.loans(session.id, loanSearch).then((page) => {
@@ -132,7 +136,8 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     }
     setLoanLoading(false);
     return () => { active = false; };
-  }, [session.id, preflight?.input_fingerprint, preflight?.recognized_mtb, loanSearch]);
+  }, [session.id, preflight?.input_fingerprint, preflight?.recognized_mtb, preflight?.requires_loan_number, preflight?.scoped_loan_id, loanSearch]);
+  useEffect(() => { setLoanNumber(''); }, [session.id]);
   useEffect(() => {
     if (!focusLoanSession) return;
     if (focusLoanSession !== session.id) {
@@ -220,8 +225,8 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     {session.report?.underwriting?.mode === 'PRODUCTION' && <p className="policy-disclaimer">PRODUCTION — manual review only. No automated lending decision.</p>}
     <details className="secondary-actions"><summary>Workflow and processing details</summary>
     <ol className="workflow-steps" aria-label="Review steps">
-      <li><strong>1. Upload files</strong><span>Files validate automatically after upload. No provider call.</span></li>
-      <li><strong>2. Search and select loan number</strong><span>Choose an explicit loan ID discovered in Query 1 and linked through the supplied relationships.</span></li>
+      <li><strong>1. Upload files</strong><span>Files are saved without loading workbook data. No provider call.</span></li>
+      <li><strong>2. Enter loan number</strong><span>Only rows explicitly related to this loan are loaded and validated locally.</span></li>
       <li><strong>{loans.length ? '3. Select a loan' : '3. Prepare review'}</strong><span>{loans.length ? 'Selecting a loan starts its Claude review; saved reviews are reused.' : 'Review the charge disclosure, then confirm initial report processing.'}</span></li>
     </ol>
     <p>{session.status === 'processing' ? 'Progress updates automatically. No duplicate review will be started.' : 'File validation and evidence lookups are local. Selecting a loan for Claude review sends normalized context to Anthropic and may incur charges. Notes cannot change verified evidence or clear policy conflicts.'}</p>
@@ -230,7 +235,8 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
     {session.status === 'completed' && session.report && session.documents.some((document) => document.extension === '.xlsx') && <div className="guided-actions">
       <button type="button" className="button primary" disabled={disabled || aiPending} onClick={() => {
         setLoanSearch('');
-        if (preflight?.recognized_mtb) setFocusLoanSession(session.id);
+        if (hasWorkbooks) loanNumberInput.current?.focus();
+        else if (preflight?.recognized_mtb) setFocusLoanSession(session.id);
         else void run('Validating files locally to choose another loan', async () => {
           const validated = await api.preflight(session.id);
           onSession(validated);
@@ -247,6 +253,19 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
         <button type="button" className="button secondary" disabled={disabled} onClick={onDownload}>Save HTML report</button>
       </>}
     </div></details>
+    {hasWorkbooks && <form className="guided-loan" aria-label="Load one loan" onSubmit={(event) => {
+      event.preventDefault();
+      const number = loanNumber.trim();
+      if (!number || disabled) return;
+      void run('Loading selected loan data locally', async () => onSession(await api.selectLoan(session.id, number)));
+    }}>
+      <p>What loan number would you like to review? Only data explicitly related to that loan will be loaded from the uploaded files.</p>
+      <label>Loan number<input ref={loanNumberInput} aria-label="Loan number" value={loanNumber}
+        onChange={(event) => setLoanNumber(event.target.value)} placeholder="Enter the exact loan number" disabled={disabled} maxLength={128} /></label>
+      <button type="submit" className="button primary" disabled={disabled || !loanNumber.trim()}>Load loan data</button>
+      {session.selected_loan_id && <p>Loaded loan {session.selected_loan_id}. Enter another number to switch loans without uploading again.</p>}
+      {session.selected_loan_id && !session.selected_account_id && <p className="muted">Guarantor records retain their roles; missing borrower evidence remains UNKNOWN.</p>}
+    </form>}
     {!preflight && prepareReviewAction}
     {preflight && <div className="guided-preflight" role="status">
       <h4>Local validation summary</h4>
@@ -266,9 +285,9 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
       <h5>Priority blockers · first {priorityIssues.length} of {preflight.issue_count ?? priorityIssues.length}</h5>
       <ul>{priorityIssues.map((issue, i) => <li key={i}>{issue}</li>)}</ul>
       <p>{preflight.suggested_next_step ?? 'Review the extracted attributes and source relationships before processing.'}</p><p>{preflight.comparison ?? 'No previous validation comparison is available.'}</p>
-      <small>All source-row attributes are extracted. Cross-file relationships use matching explicit Account ID values only; local validation is not a lending decision.</small>
+      <small>Only the selected loan's related source rows are loaded. Cross-file relationships use explicit IDs; local validation is not a lending decision.</small>
       </details>
-      {preflight.recognized_mtb && <>
+      {preflight.recognized_mtb && !preflight.requires_loan_number && !preflight.scoped_loan_id && <>
         <label>Search loan numbers<input aria-label="Search loan numbers" value={loanSearch} onChange={(event) => setLoanSearch(event.target.value)} placeholder="Enter a loan number, e.g. MTB-L001" /></label>
         <div className="guided-actions">
           <button type="button" className="button secondary" disabled={disabled || loanLoading} onClick={() => void loadLoans(0)}>Search loans</button>
@@ -287,7 +306,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
           {loanCandidates.length < loanTotal && <button type="button" className="button secondary" disabled={disabled || loanLoading} onClick={() => void loadLoans(loanCandidates.length)}>Load more loans</button>}
         </div>
         {session.selected_loan_id && !session.selected_account_id && <p className="muted">This loan can be reviewed without a verified borrower. Guarantor records retain their roles; missing borrower evidence remains UNKNOWN.</p>}
-        {requiresLoanSelection && !session.selected_loan_id && <small>{!queryFileSetValid ? 'Upload one workbook each for Query 1, Query 2, and Query 4 before preparing the review.' : loanLoading ? 'Loading explicit loan numbers…' : loanTotal || (preflight.loan_count ?? 0) ? 'Select a loan number before preparing the review.' : 'No explicit loan numbers could be mapped. You can still prepare a diagnostic-only report; no loans or relationships will be invented.'}</small>}
+        {requiresLoanSelection && !session.selected_loan_id && <small>{!queryFileSetValid ? 'Upload one workbook each for Query 1, Query 2, and Query 4 before preparing the review.' : 'Enter a loan number and load its related data before preparing the review.'}</small>}
       </>}
       {prepareReviewAction}
     </div>}

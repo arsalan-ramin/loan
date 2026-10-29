@@ -80,16 +80,14 @@ def test_guarantor_only_directory_selection_revalidation_and_confirmed_process(c
     validated = client.post(base + "/preflight")
     assert validated.status_code == 200
     result = validated.json()["preflight"]
-    assert result["loan_count"] == 3 and result["account_count"] == 0
+    assert result["requires_loan_number"] is True
+    assert result["loan_count"] == 0 and result["account_count"] == 0
     assert "loan_candidates" not in result and "account_candidates" not in result
-    assert "Select an explicit loan" in result["suggested_next_step"]
+    assert "What loan number" in result["suggested_next_step"]
     assert client.get(base + "/accounts").json()["results"] == []
     first = client.get(base + "/loans", params={"limit": 2}).json()
-    assert first["total"] == 3
-    assert [row["loan_id"] for row in first["results"]] == ["L1", "L2"]
-    assert all(row["account_id"] is None and row["account_name"] is None for row in first["results"])
-    assert client.get(base + "/loans?offset=2&limit=2").json()["results"][0]["loan_id"] == "L3"
-    assert client.get(base + "/loans?q=l2").json()["total"] == 1
+    assert first["total"] == 0
+    assert first["results"] == []
     assert client.get(base + "/loans?q=G1").json()["total"] == 0
     assert client.put(base + "/loan", json={"loan_id": "ROW-L1-G1"}).status_code == 404
     assert client.put(base + "/account", json={"account_id": "G1"}).status_code == 404
@@ -148,7 +146,7 @@ def test_legacy_refresh_rebuilds_both_directories_and_keeps_borrowerless_selecti
     saved = store.get(sid)
     assert saved.preflight.account_index_version == ACCOUNT_INDEX_VERSION
     assert saved.selected_loan_id == "L2" and saved.selected_account_id is None
-    assert store.loan_candidates(sid)[1] == 3
+    assert store.loan_candidates(sid)[1] == 1
     assert store.account_candidates(sid)[1] == 0
     client.app.state.provider_stub.assert_not_called()
 
@@ -222,12 +220,12 @@ def test_store_atomic_replacement_optional_callers_prefix_search_and_cleanup(cli
 def test_processing_rejects_nonexistent_loan_and_wrong_borrower(client):
     sid = upload_guarantors(client)
     base = f"/api/sessions/{sid}"
-    client.post(base + "/preflight")
+    client.put(base + "/loan", json={"loan_id": "L1"})
     store = client.app.state.store
     session = store.get(sid)
     session.selected_loan_id = "NONEXISTENT"
     store.save(session)
-    assert "no longer" in client.post(base + "/process").json()["detail"]
+    assert "Enter a loan number" in client.post(base + "/process").json()["detail"]
     session.selected_loan_id = "L1"
     session.selected_account_id = "G1"
     store.save(session)

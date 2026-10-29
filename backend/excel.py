@@ -2,6 +2,7 @@
 
 import io
 import zipfile
+from collections.abc import Callable
 from datetime import date, datetime, time
 from pathlib import Path
 
@@ -19,7 +20,9 @@ def safe_excel_error_reason(error: Exception) -> str:
     return "UNSUPPORTED_WORKBOOK_STRUCTURE: workbook could not be parsed; attach the original failing file for diagnosis"
 
 
-def extract_excel(raw: bytes | Path, *, include_text: bool = True) -> tuple[str, dict]:
+def extract_excel(raw: bytes | Path, *, include_text: bool = True,
+                  headers_only: bool = False,
+                  record_filter: Callable[[dict, list[str]], bool] | None = None) -> tuple[str, dict]:
     # Uploaded XLSX files are already on disk. Stream directly from that file
     # instead of retaining another compressed-workbook byte copy in memory.
     source = raw if isinstance(raw, Path) else io.BytesIO(raw)
@@ -62,6 +65,8 @@ def extract_excel(raw: bytes | Path, *, include_text: bool = True) -> tuple[str,
                 if header_row is None:
                     header_row = nonempty[0].row
                     headers = [str(cell.value) if cell.value is not None else "" for cell in row]
+                    if headers_only:
+                        break
                 else:
                     data_rows += 1
                     if not is_reference:
@@ -80,8 +85,15 @@ def extract_excel(raw: bytes | Path, *, include_text: bool = True) -> tuple[str,
                                 value = value.isoformat()
                             record[key] = value
                             sources[key] = f"{sheet.title}!{cell.coordinate}"
-                        records.append({"sheet": sheet.title, "row": nonempty[0].row,
-                                        "values": record, "sources": sources})
+                        record = {"sheet": sheet.title, "row": nonempty[0].row,
+                                  "values": record, "sources": sources}
+                        if record_filter is not None and not record_filter(record, headers):
+                            continue
+                        records.append(record)
+                    elif record_filter is not None:
+                        continue
+                if record_filter is not None and (header_row == nonempty[0].row or is_reference):
+                    continue
                 for cell in nonempty:
                     if cell.data_type == "f":
                         formula_count += 1
@@ -108,7 +120,12 @@ def extract_excel(raw: bytes | Path, *, include_text: bool = True) -> tuple[str,
                     "expanded_size_bytes": expanded_size,
                     "formula_count": formula_count,
                     "formula_policy": "Formulas are preserved as text and never evaluated."}
-        if total_rows == 0:
+        if headers_only:
+            metadata["headers_only"] = True
+        if record_filter is not None:
+            metadata["source_record_count_before_scope"] = total_rows
+            metadata["data_row_count"] = len(records)
+        if total_rows == 0 and not headers_only:
             metadata["warning"] = "Schema-only workbook: no data records were found outside reference sheets. No borrower decision can be made."
         return "\n".join(parts), metadata
     finally:

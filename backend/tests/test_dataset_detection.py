@@ -11,7 +11,7 @@ from backend.datasets import (SIGNATURES, SOQL_ROOT_SIGNATURES, account_referenc
                               borrower_role_headers, loan_reference_headers,
                               mtb_query_ids, soql_account_reference_headers)
 from backend.llm import AnthropicLLM, LLMError
-from backend.main import create_app, process_session
+from backend.main import create_app
 from backend.models import Document, Report, Session
 from backend.policy import evaluate_session
 from backend.storage import Store
@@ -157,7 +157,7 @@ def test_duplicate_query_files_disclosed_not_joined():
     assert any("MTB Query 2" in item for item in policy.missing_information)
 
 
-def test_header_recognition_switches_workflow_after_extraction(tmp_path, monkeypatch):
+def test_header_recognition_validates_structure_without_loading_rows(tmp_path, monkeypatch):
     monkeypatch.setattr(AnthropicLLM, "complete", lambda *_: (_ for _ in ()).throw(LLMError("Network disabled")))
     book = Workbook()
     sheet = book.active
@@ -172,10 +172,11 @@ def test_header_recognition_switches_workflow_after_extraction(tmp_path, monkeyp
     with TestClient(app) as client:
         sid = client.post("/api/sessions", json={}).json()["id"]
         client.post(f"/api/sessions/{sid}/documents", files=[("files", ("renamed.xlsx", stream.getvalue()))])
-        process_session(app.state.store, sid)
-        result = client.get(f"/api/sessions/{sid}").json()
-        assert result["status"] == "completed"
-        assert result["rules"] == []
-        assert result["policy_rules"]
-        assert result["report"]["policy_evaluation"] is not None
-        assert result["report"]["decision"] == "needs_review"
+        result = client.post(f"/api/sessions/{sid}/preflight").json()
+        assert result["status"] == "ready"
+        assert result["preflight"]["recognized_mtb"] is True
+        assert result["preflight"]["query_roles"] == [4]
+        assert result["preflight"]["requires_loan_number"] is True
+        assert all(doc["metadata"] == {} for doc in result["documents"])
+        assert result["report"] is None
+        assert client.post(f"/api/sessions/{sid}/process").status_code == 409

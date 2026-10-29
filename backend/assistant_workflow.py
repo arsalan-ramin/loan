@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from .agents import ExtractionAgent
 from .excel import safe_excel_error_reason
+from .loan_loading import load_loan_documents
 from .datasets import (account_reference_headers, borrower_role_headers,
                        loan_reference_headers, mtb_query_ids,
                        soql_field_headers, soql_mapping_coverage,
@@ -244,6 +245,7 @@ def preflight(session: Session, root: Path) -> PreflightResult:
             ExtractionAgent().extract(
                 doc, root / "uploads" / session.id / doc.id,
                 include_text=doc.extension != ".xlsx",
+                headers_only=doc.extension == ".xlsx",
             )
         except (ValueError, OSError) as exc:
             # Avoid exposing server paths or parser implementation details.
@@ -257,6 +259,12 @@ def preflight(session: Session, root: Path) -> PreflightResult:
         hashes.append((doc.id, doc.metadata.get("sha256")))
         if doc.metadata.get("warning"):
             issues.append(f"FILE_REVIEW:{doc.name}:{doc.metadata['warning']}")
+    requires_loan_number = any(doc.extension == ".xlsx" for doc in detached.documents) and not session.selected_loan_id
+    if session.selected_loan_id and not any(item.startswith("FILE_PARSE_FAILED") for item in issues):
+        try:
+            load_loan_documents(detached.documents, root / "uploads" / session.id, session.selected_loan_id)
+        except (ValueError, OSError) as exc:
+            issues.append("FILE_PARSE_FAILED: " + safe_excel_error_reason(exc))
     recognized = bool(roles)
     # The three source exports are separate inputs; cross-file links use only
     # normalized explicit Account foreign-key columns, never positions/names.
@@ -280,7 +288,7 @@ def preflight(session: Session, root: Path) -> PreflightResult:
     unmapped_attributes: set[str] = set()
     mapped_fields: set[str] = set()
     mapping_warnings: set[str] = set()
-    if (query_file_set_valid and roles == required_roles
+    if (not requires_loan_number and query_file_set_valid and roles == required_roles
             and not any(item.startswith("FILE_PARSE_FAILED") for item in issues)):
         config = load_underwriting_config()
         loans, account_candidates = _discover_accounts(detached.documents, config, loan_candidates)
@@ -314,7 +322,7 @@ def preflight(session: Session, root: Path) -> PreflightResult:
                 unmapped_attributes.update(
                     header for header in headers if isinstance(header, str) and header not in mapped_headers
                 )
-    elif not recognized:
+    elif not recognized and not requires_loan_number:
         issues.append("GENERIC_DOCUMENTS: underwriting schema/relationships were not validated; configure document checks")
     def priority(issue: str) -> int:
         if issue.startswith(("FILE_PARSE_FAILED", "MISSING_QUERY_", "NO_EXPLICIT", "ORPHAN_", "MISSING_", "MULTIPLE_", "CONFLICTING_", "INVALID_")):
@@ -335,7 +343,8 @@ def preflight(session: Session, root: Path) -> PreflightResult:
         grouped[label] = grouped.get(label, 0) + 1
     summaries = [f"{label} ({count} affected observations)" if count > 1 else label
                  for label, count in grouped.items()]
-    fingerprint = hashlib.sha256(json.dumps({"files": hashes, "mode": session.mode}, sort_keys=True).encode()).hexdigest()
+    fingerprint = hashlib.sha256(json.dumps({"files": hashes, "mode": session.mode,
+        "loan_id": session.selected_loan_id}, sort_keys=True).encode()).hexdigest()
     previous = session.preflight or session.previous_preflight
     comparison = "First local validation; no prior comparison."
     if previous:
@@ -349,6 +358,7 @@ def preflight(session: Session, root: Path) -> PreflightResult:
                          for header in sheet.get("headers", [])
                          if isinstance(header, str) and header.strip()})
     return PreflightResult(input_fingerprint=fingerprint, recognized_mtb=recognized,
+        requires_loan_number=requires_loan_number, scoped_loan_id=session.selected_loan_id,
         query_roles=sorted(roles), missing_query_roles=missing_roles,
         duplicate_query_roles=duplicate_roles, query_file_set_valid=query_file_set_valid,
         document_count=len(session.documents),
@@ -363,6 +373,8 @@ def preflight(session: Session, root: Path) -> PreflightResult:
         issue_count=len(issues), priority_issues=summaries[:10], comparison=comparison,
         suggested_next_step=("A workbook could not be read. Check its FILE_PARSE_FAILED reason above, correct or replace that upload, then validate again. This is a parsing failure, not a missing field mapping."
                      if any(item.startswith("FILE_PARSE_FAILED") for item in issues) else
+                     "What loan number would you like to review? Workbook data has not been loaded. Enter the exact loan number to load only its explicitly related rows."
+                     if requires_loan_number else
                      "Select an explicit loan number, then confirm processing. No unique verified borrower is available for some loans; missing or ambiguous borrower evidence remains UNKNOWN. Guarantors are never treated as borrowers. This is not a credit decision."
                      if loan_candidates and any(item.account_id is None for item in loan_candidates) else
                      "Mappings are incomplete. You can prepare a diagnostic-only review without selecting an account. Available evidence will be retained; unmapped inputs remain UNKNOWN and no borrower relationships or loan records will be invented."
@@ -466,7 +478,7 @@ def loan_attribute_inventory(session: Session, root: Path, query: str,
                         or path.is_symlink() or path.resolve().parent != session_dir
                         or not path.is_file()):
                     continue
-                ExtractionAgent().extract(document, path, include_text=False)
+                load_loan_documents([document], session_dir, selected_id)
             except (OSError, ValueError):
                 continue
         documents.append(document)

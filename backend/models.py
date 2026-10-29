@@ -229,6 +229,8 @@ class PreflightResult(BaseModel):
     missing_query_roles: list[int]
     duplicate_query_roles: list[int] = Field(default_factory=list)
     query_file_set_valid: bool = False
+    requires_loan_number: bool = False
+    scoped_loan_id: str | None = None
     document_count: int
     attribute_count: int = 0
     attributes: list[str] = Field(default_factory=list)

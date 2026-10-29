@@ -131,7 +131,8 @@ describe('Guided assistant workflow', () => {
       query_roles: [1, 2, 4], query_file_set_valid: true, document_count: 3,
       attribute_count: 0, attributes: [], loan_count: 1, account_count: 0, issue_count: 1,
       priority_issues: [], suggested_next_step: 'Select loan', comparison: 'First', external_processing: false };
-    const selected = { ...active, selected_loan_id: 'G-LOAN', selected_account_id: null };
+    const selected = { ...active, selected_loan_id: 'G-LOAN', selected_account_id: null,
+      preflight: { ...active.preflight!, scoped_loan_id: 'G-LOAN' } };
     vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.includes('/loans?')
       ? { results: [{ loan_id: 'G-LOAN', account_id: null, account_name: null }], total: 1, offset: 0, limit: 50, loan_count: 1 }
       : selected), { status: 200 })));
@@ -153,7 +154,8 @@ describe('Guided assistant workflow', () => {
       document_count: 3, attribute_count: 2, attributes: ['Id', 'Loan_ID'],
       loan_count: 2, account_count: 1, issue_count: 0,
       priority_issues: [], suggested_next_step: 'Select account', comparison: 'First', external_processing: false };
-    const selected = { ...active, selected_account_id: 'A1', selected_loan_id: 'MTB-L003' };
+    const selected = { ...active, selected_account_id: 'A1', selected_loan_id: 'MTB-L003',
+      preflight: { ...active.preflight!, scoped_loan_id: 'MTB-L003' } };
     const fetchMock = vi.fn(async (url: string) => {
       const body = url.includes('/loans?')
         ? { results: [{ loan_id: 'MTB-L003', account_id: 'A1', account_name: 'Client A' }], total: 1, offset: 0, limit: 50, loan_count: 2 }
@@ -171,11 +173,11 @@ describe('Guided assistant workflow', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/sessions/s1/loan', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ loan_id: 'MTB-L003' }) }));
     view.rerender(<GuidedAssistant {...p} session={selected} />);
     expect(prepare).toBeEnabled();
-    const loanSelector = screen.getByRole('combobox', { name: 'Choose loan number' });
+    const loanSelector = screen.getByRole('textbox', { name: 'Loan number' });
     expect(loanSelector.compareDocumentPosition(prepare) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getAllByRole('button', { name: 'Prepare review' })).toHaveLength(1);
     expect(screen.getByText('Validation details, attributes and issues').closest('details')).not.toHaveAttribute('open');
-    expect(screen.getByRole('textbox', { name: 'Search loan numbers' })).toBeVisible();
+    expect(screen.queryByRole('textbox', { name: 'Search loan numbers' })).not.toBeInTheDocument();
     expect(loanSelector).toBeVisible();
     expect(prepare).toBeVisible();
   });
@@ -201,6 +203,7 @@ describe('Guided assistant workflow', () => {
       missing_query_roles: [], duplicate_query_roles: [], query_file_set_valid: true,
       document_count: 3, attribute_count: 0, attributes: [], loan_count: 2, account_count: 2,
       issue_count: 0, priority_issues: [], suggested_next_step: 'Select account', comparison: 'Same files', external_processing: false,
+      scoped_loan_id: 'L1',
     };
     active.preflight = missingPreflight ? null : preflight;
     active.report = { id: 'r1', created_at: 'today', decision: 'needs_review', summary: 'Account A review', document_count: 3,
@@ -212,7 +215,8 @@ describe('Guided assistant workflow', () => {
           explanation: 'Saved account A result', llm_error: null,
         }] } };
     const recovered = { ...active, preflight, updated_at: 'revision2' };
-    const switched: Session = { ...recovered, selected_account_id: 'A2', selected_loan_id: 'L2', status: 'ready', report: null, steps: [], updated_at: 'revision3' };
+    const switched: Session = { ...recovered, preflight: { ...preflight, scoped_loan_id: 'L2' },
+      selected_account_id: 'A2', selected_loan_id: 'L2', status: 'ready', report: null, steps: [], updated_at: 'revision3' };
     const fetchMock = vi.fn(async (url: string) => {
       if (url.endsWith('/preflight')) return new Response(JSON.stringify(recovered));
       if (url.includes('/loans?')) return new Response(JSON.stringify({ results: [
@@ -227,12 +231,13 @@ describe('Guided assistant workflow', () => {
     const view = render(<GuidedAssistant {...p} />);
     p.onSession.mockImplementation((updated: Session) => view.rerender(<GuidedAssistant {...p} session={updated} />));
     await userEvent.click(screen.getByRole('button', { name: 'Choose another loan' }));
-    const selector = await screen.findByRole('combobox', { name: 'Choose loan number' });
+    const selector = screen.getByRole('textbox', { name: 'Loan number' });
     await waitFor(() => expect(selector).toHaveFocus());
     expect(screen.getByRole('combobox', { name: 'Loan to explore' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Prepare review' })).not.toBeInTheDocument();
-    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/preflight'))).toHaveLength(missingPreflight ? 1 : 0);
-    await userEvent.selectOptions(selector, 'L2');
+    expect(fetchMock).not.toHaveBeenCalled();
+    await userEvent.type(selector, 'L2');
+    await userEvent.click(screen.getByRole('button', { name: 'Load loan data' }));
     await waitFor(() => expect(p.onSession).toHaveBeenLastCalledWith(switched));
     expect(screen.queryByRole('combobox', { name: 'Loan to explore' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Prepare review' })).toBeEnabled();
@@ -305,7 +310,7 @@ describe('Guided assistant workflow', () => {
     expect(screen.getByText(/Extraction agent: running/)).toBeInTheDocument();
   });
 
-  it('allows diagnostic-only processing when no borrower mappings are available', async () => {
+  it('blocks processing until a loan is loaded even when no mappings are available', async () => {
     const active = session();
     active.documents = [1, 2, 4].map((role) => ({ id: `d${role}`, name: `MTB_Query_${role}.xlsx`, size: 10, extension: '.xlsx', metadata: {} }));
     active.preflight = { created_at: 'now', input_fingerprint: 'unmapped', recognized_mtb: true,
@@ -316,10 +321,10 @@ describe('Guided assistant workflow', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ results: [], total: 0 }), { status: 200 })));
     render(<GuidedAssistant {...props(active)} />);
     const prepare = screen.getByRole('button', { name: 'Prepare review' });
-    await waitFor(() => expect(prepare).toBeEnabled());
-    expect(screen.getByText(/No explicit loan numbers could be mapped/)).toBeInTheDocument();
+    expect(prepare).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: 'Loan number' })).toBeVisible();
     await userEvent.click(prepare);
-    expect(screen.getByRole('group', { name: 'Confirm external processing' })).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Confirm external processing' })).not.toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining('/process'), expect.anything());
   });
 

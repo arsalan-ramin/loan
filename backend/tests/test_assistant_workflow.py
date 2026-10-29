@@ -78,7 +78,7 @@ def test_preflight_discovers_accounts_from_namespaced_soql_query1_relationships(
     ])
     assert upload.status_code == 200
 
-    validation = client.post(f"/api/sessions/{sid}/preflight").json()["preflight"]
+    validation = client.put(f"/api/sessions/{sid}/loan", json={"loan_id": "LOAN-1"}).json()["preflight"]
 
     assert validation["query_file_set_valid"] is True
     assert validation["loan_count"] == 1
@@ -118,7 +118,7 @@ def test_preflight_separates_unmapped_soql_headers_from_unavailable_inputs(clien
         ("files", ("bureau.xlsx" if renamed else "MTB_Query_4_SOQL_Only.xlsx", q4)),
     ])
 
-    result = client.post(f"/api/sessions/{sid}/preflight").json()["preflight"]
+    result = client.put(f"/api/sessions/{sid}/loan", json={"loan_id": "L1"}).json()["preflight"]
 
     assert result["query_roles"] == [1, 2, 4]
     assert result["query_file_set_valid"] is True
@@ -149,7 +149,7 @@ def test_validation_preserves_existing_report_exactly(client, missing_preflight)
     assert client.get(f"/api/sessions/{sid}/accounts").json()["total"] == 1
 
 
-def test_completed_review_can_switch_accounts_without_reuploading(client, monkeypatch):
+def test_completed_review_can_switch_loans_without_reuploading(client, monkeypatch):
     sid = client.post("/api/sessions", json={}).json()["id"]
     source = rows()
     groups = [
@@ -168,7 +168,8 @@ def test_completed_review_can_switch_accounts_without_reuploading(client, monkey
     paths = [store.root / "uploads" / sid / doc["id"] for doc in documents]
     original_bytes = [path.read_bytes() for path in paths]
     validation = client.post(f"/api/sessions/{sid}/preflight").json()["preflight"]
-    assert validation["account_count"] == 2
+    assert validation["requires_loan_number"] is True
+    assert validation["account_count"] == 0
     submit = Mock()
     monkeypatch.setattr(client.app.state.executor, "submit", submit)
     explain = Mock(side_effect=LLMError("Mock provider unavailable"))
@@ -177,15 +178,14 @@ def test_completed_review_can_switch_accounts_without_reuploading(client, monkey
     monkeypatch.setattr(store, "remember", Mock())
 
     for account_id, loan_id in (("A1", "L1"), ("A2", "L2")):
-        candidates = client.get(f"/api/sessions/{sid}/accounts")
-        assert candidates.status_code == 200
-        assert {item["account_id"] for item in candidates.json()["results"]} == {"A1", "A2"}
-        selected = client.put(f"/api/sessions/{sid}/account", json={"account_id": account_id})
+        selected = client.put(f"/api/sessions/{sid}/loan", json={"loan_id": loan_id})
         assert selected.status_code == 200
         current = selected.json()
         assert current["report"] is None and current["status"] == "ready"
         assert all(step["status"] == "pending" for step in current["steps"])
-        assert current["preflight"] == validation
+        validation = current["preflight"]
+        assert validation["scoped_loan_id"] == loan_id
+        assert validation["loan_count"] == 1
         assert submit.call_count == explain.call_count
         started = client.post(f"/api/sessions/{sid}/process")
         assert started.status_code == 202
@@ -234,7 +234,7 @@ def test_loan_number_search_and_selection_scopes_processing_to_explicit_loan(cli
 
 
 @pytest.mark.parametrize("mode", ["TEST", "PRODUCTION"])
-def test_unmapped_workbooks_continue_to_diagnostic_report(client, monkeypatch, mode):
+def test_unmapped_workbooks_require_an_explicit_loan_before_processing(client, monkeypatch, mode):
     sid = client.post("/api/sessions", json={"mode": mode}).json()["id"]
     payload = workbook([("Data", {"Unsupported_Field__c": "unmapped source evidence"})])
     uploaded = client.post(f"/api/sessions/{sid}/documents", files=[
@@ -244,7 +244,7 @@ def test_unmapped_workbooks_continue_to_diagnostic_report(client, monkeypatch, m
     validation = client.post(f"/api/sessions/{sid}/preflight").json()
     assert validation["preflight"]["query_file_set_valid"] is True
     assert validation["preflight"]["account_count"] == 0
-    assert "diagnostic-only" in validation["preflight"]["suggested_next_step"]
+    assert validation["preflight"]["requires_loan_number"] is True
     assert validation["selected_account_id"] is None
     monkeypatch.setattr(client.app.state.executor, "submit", Mock())
     # Processing is explicitly confirmed (unlike local preflight). Simulate
@@ -253,15 +253,9 @@ def test_unmapped_workbooks_continue_to_diagnostic_report(client, monkeypatch, m
     started = client.post(f"/api/sessions/{sid}/assistant/process", json={
         "confirmed": True, "expected_updated_at": validation["updated_at"],
     })
-    assert started.status_code == 202
-    main.process_session(client.app.state.store, sid)
-    result = client.get(f"/api/sessions/{sid}").json()
-    assert result["status"] == "completed"
-    assert result["report"]["decision"] == "needs_review"
-    batch = result["report"]["underwriting"]
-    assert batch["loan_results"] == []
-    assert "NO_EXPLICIT_LOAN_RECORDS" in batch["data_quality_issues"]
-    assert "Unsupported_Field__c" in batch["unmapped_source_fields"]
+    assert started.status_code == 409
+    assert client.put(f"/api/sessions/{sid}/loan", json={"loan_id": "L1"}).status_code == 404
+    assert client.get(f"/api/sessions/{sid}").json()["report"] is None
 
 
 def test_validation_upload_first_missing_roles_and_parse_failure(client):
@@ -352,13 +346,14 @@ def test_processing_requires_single_workbook_then_selects_explicit_loan(client, 
     sid = upload_three(client)
     session = client.app.state.store.get(sid)
     session.selected_account_id = None
+    session.selected_loan_id = None
     client.app.state.store.save(session)
     submit = Mock()
     monkeypatch.setattr(client.app.state.executor, "submit", submit)
 
     blocked = client.post(f"/api/sessions/{sid}/process")
     assert blocked.status_code == 409
-    assert "select an explicit loan number" in blocked.json()["detail"]
+    assert "Enter a loan number" in blocked.json()["detail"]
     assert submit.call_count == 0
 
     page = client.get(f"/api/sessions/{sid}/loans").json()

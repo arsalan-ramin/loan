@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import io
+import re
 from time import perf_counter
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
@@ -27,6 +28,8 @@ from .assistant_workflow import (
 )
 from .llm import LLMError
 from .loan_review import LoanReviewRequest, review_selected_loan
+from .loan_loading import load_loan_documents
+from .entity_graph import scalar_id
 from .models import (AGENTS, AccountCandidate, AccountCandidatePage, AccountSelectionRequest,
                      ChatRequest, CreateSession, Document, Message, ModeRequest,
                      LoanCandidate, LoanCandidatePage, LoanSelectionRequest,
@@ -94,9 +97,14 @@ def process_session(store: Store, session_id: str) -> None:
             if index == 0:
                 step.detail = IntakeAgent().check(session)
             elif index == 1:
-                extractor = ExtractionAgent()
-                for doc in session.documents:
-                    extractor.extract(doc, store.root / "uploads" / session.id / doc.id)
+                if any(doc.extension == ".xlsx" for doc in session.documents):
+                    if not session.selected_loan_id:
+                        raise ValueError("Enter a loan number before loading workbook data.")
+                    load_loan_documents(session.documents, store.root / "uploads" / session.id, session.selected_loan_id)
+                else:
+                    extractor = ExtractionAgent()
+                    for doc in session.documents:
+                        extractor.extract(doc, store.root / "uploads" / session.id / doc.id)
                 if session.policy_rules:
                     # Renamed workbooks can become recognizable only after header extraction.
                     session.rules = [rule for rule in session.rules if rule not in default_rules()]
@@ -228,9 +236,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         store: Store = request.app.state.store
         with store.lock:
             session = require_session(store, session_id)
+        awaiting_loan = any(doc.extension == ".xlsx" for doc in session.documents) and not session.selected_loan_id
+        if awaiting_loan:
+            loan_reply = re.fullmatch(r"(?:loan(?:\s+(?:number|id))?\s*[:#]?\s+)?([A-Za-z0-9][A-Za-z0-9_-]{0,127})",
+                                     body.content.strip(), re.IGNORECASE)
+            if loan_reply and (any(char.isdigit() for char in loan_reply[1])
+                               or body.content.strip() != loan_reply[1]):
+                selected = select_loan(request, session_id, LoanSelectionRequest(loan_id=loan_reply[1]))
+                with store.lock:
+                    latest = require_session(store, session_id)
+                    if latest.updated_at != selected.updated_at:
+                        raise HTTPException(409, "Session changed during loan lookup. Please retry.")
+                    latest.messages.insert(len(latest.messages) - 1, Message(role="user", content=body.content))
+                    store.save(latest)
+                return latest
         local_inventory = is_loan_attribute_inventory_request(body.content)
         origin = "local_assistant" if local_inventory else "conversation"
-        if local_inventory:
+        if awaiting_loan:
+            origin = "local_assistant"
+            answer = "What loan number would you like to review? Enter the exact loan number in the Loan number field or reply with 'loan number L1'. Workbook data will remain unloaded until you choose a loan."
+        elif local_inventory:
             answer = loan_attribute_inventory(session, store.root, body.content, body.loan_id)
         else:
             chat_session = session
@@ -309,7 +334,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 if session.title == "Untitled review":
                     session.title = new_documents[0].name[:120]
                 invalidate(session)
-                message = Message(role="assistant", content=f"Received {len(new_documents)} file(s). You now have {len(session.documents)} document(s). Use Validate files locally to inspect structure and priority blockers without an Anthropic call. Then choose the next guided action; processing requires your explicit start.")
+                message = Message(role="assistant", content=f"Received {len(new_documents)} file(s). You now have {len(session.documents)} document(s). "
+                    + ("What loan number would you like to review? The uploaded workbooks have not been loaded. Enter the exact loan number to load only its related data."
+                       if any(doc.extension == ".xlsx" for doc in session.documents) else
+                       "Use Validate files locally to inspect the documents. Processing requires your explicit start."))
                 store.remember(session.id, message.id, message.content, "conversation", "assistant")
                 session.messages.append(message)
                 store.save(session)
@@ -512,17 +540,37 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def select_loan(request: Request, session_id: str, body: LoanSelectionRequest):
         store: Store = request.app.state.store
         with store.lock:
+            snapshot = require_session(store, session_id)
+            editable(snapshot)
+        if not any(doc.extension == ".xlsx" for doc in snapshot.documents):
+            raise HTTPException(409, "Upload XLSX source workbooks before entering a loan number.")
+        if scalar_id(body.loan_id) is None:
+            raise HTTPException(422, "Enter a valid explicit loan number.")
+        snapshot.selected_loan_id = body.loan_id.strip()
+        result = preflight(snapshot, store.root)
+        if any(issue.startswith("FILE_PARSE_FAILED") for issue in result.priority_issues):
+            raise HTTPException(422, result.suggested_next_step + " " + "; ".join(result.priority_issues))
+        if not result.query_file_set_valid:
+            raise HTTPException(409, "Upload exactly one workbook each for Query 1, Query 2 and Query 4 before loading a loan.")
+        candidate = next((item for item in result.loan_candidates if item.loan_id == snapshot.selected_loan_id), None)
+        with store.lock:
             session = require_session(store, session_id)
             editable(session)
-            if session.preflight is None or not session.preflight.recognized_mtb:
-                raise HTTPException(409, "Run local validation before selecting a loan number.")
-            session, _ = refresh_directory(store, session)
-            if not store.loan_candidate_exists(session_id, body.loan_id):
+            if session.updated_at != snapshot.updated_at:
+                raise HTTPException(409, "Session changed during loan lookup. Enter the loan number again.")
+            if candidate is None:
                 raise HTTPException(404, "This loan number was not found among validated explicit loan records.")
-            account_id = store.loan_candidate_account(session_id, body.loan_id)
-            session.selected_loan_id = body.loan_id
+            account_id = candidate.account_id
+            store.forget_documents(session.id)
+            for document in session.documents:
+                document.content = ""
+                document.metadata = {}
+            session.preflight = result
+            store.replace_account_candidates(session.id, result.account_candidates, result.loan_candidates)
+            session.selected_loan_id = snapshot.selected_loan_id
             session.selected_account_id = account_id
             session.report = None
+            session.error = None
             session.status = "ready"
             session.steps = [Step(agent=agent) for agent in AGENTS]
             session.messages.append(Message(
@@ -604,6 +652,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(409, "Session changed after confirmation was prepared. Inspect the current inputs and confirm again.")
             if any(document.extension == ".xlsx" for document in session.documents) and session.preflight is None:
                 raise HTTPException(409, "Run local validation on XLSX files before starting the review.")
+            if any(document.extension == ".xlsx" for document in session.documents) and (
+                not session.selected_loan_id or session.preflight.scoped_loan_id != session.selected_loan_id
+            ):
+                raise HTTPException(409, "Enter a loan number to load and validate only its related data before processing.")
             recognized_mtb = bool(session.preflight and session.preflight.recognized_mtb)
             if session.policy_rules and not recognized_mtb:
                 raise HTTPException(409, "Validate the uploaded workbooks before starting the account-scoped review.")

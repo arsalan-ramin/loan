@@ -157,7 +157,7 @@ def test_discovery_canonical_direct_borrowers_and_non_soql_fallback():
     assert [(item.account_id, item.name, item.loan_ids) for item in candidates] == [("A1", "Last", ["L1"])]
 
 
-def test_large_three_workbook_preflight_search_select_preserves_sources(tmp_path, monkeypatch):
+def test_large_three_workbook_loan_first_loading_preserves_sources(tmp_path, monkeypatch):
     provider = Mock(side_effect=AssertionError("Preflight/search/select must stay local"))
     monkeypatch.setattr(AnthropicLLM, "complete", provider)
     timings = {"extract": 0.0, "directory": 0.0, "graph": 0.0}
@@ -174,7 +174,7 @@ def test_large_three_workbook_preflight_search_select_preserves_sources(tmp_path
     extract = ExtractionAgent.extract
     monkeypatch.setattr(ExtractionAgent, "extract", timed("extract", extract))
     monkeypatch.setattr(workflow, "_discover_accounts", timed("directory", workflow._discover_accounts))
-    # Keep the real full graph validation, not a mock or directory-only path.
+    # Graph validation must receive only the requested loan's related records.
     graph_builder = Mock(wraps=timed("graph", workflow.build_entity_graph))
     monkeypatch.setattr(workflow, "build_entity_graph", graph_builder)
     documents = synthetic_documents()
@@ -199,13 +199,9 @@ def test_large_three_workbook_preflight_search_select_preserves_sources(tmp_path
         result = session["preflight"]
         assert result["query_roles"] == [1, 2, 4]
         assert result["query_file_set_valid"] is True
-        assert result["loan_count"] == result["account_count"] == ROW_COUNT
+        assert result["loan_count"] == result["account_count"] == 0
+        assert result["requires_loan_number"] is True
         assert result["external_processing"] is False
-        assert "Unsupported_Source_Field__c" in result["unmapped_attributes"]
-        assert "Credit report date" in result["unavailable_inputs"]
-        assert "UNMAPPED_RELATION:Indicator:analysis_id" in result["mapping_warnings"]
-        assert any(issue.startswith("CONFLICTING_ALIASES:CreditReport:fico")
-               for issue in result["priority_issues"])
         assert "account_candidates" not in result
         assert "loan_candidates" not in result
         assert len(result["priority_issues"]) <= 10
@@ -214,27 +210,31 @@ def test_large_three_workbook_preflight_search_select_preserves_sources(tmp_path
         assert session["report"] is None and session["status"] == "ready"
         assert all("records" not in doc["metadata"] and not doc.get("content")
                    for doc in session["documents"])
-        assert graph_builder.call_count == 1
+        assert graph_builder.call_count == 0
 
         started = perf_counter()
         page = client.get(f"/api/sessions/{sid}/loans")
         assert page.status_code == 200
-        assert page.json()["total"] == ROW_COUNT
-        assert len(page.json()["results"]) == 50
+        assert page.json()["total"] == 0
+        assert page.json()["results"] == []
         assert len(page.content) < 10_000
-        # Both paged access and exact search reach beyond the historical 15k boundary.
-        tail = client.get(f"/api/sessions/{sid}/loans", params={"offset": ROW_COUNT - 2}).json()
-        assert [row["loan_id"] for row in tail["results"]] == ["L15999", "L16000"]
-        found = client.get(f"/api/sessions/{sid}/loans", params={"q": "L16000"})
-        assert found.status_code == 200
-        assert found.json()["total"] == 1
-        assert found.json()["results"] == [{"loan_id": "L16000", "account_id": "A16000",
-                                             "account_name": "Synthetic client 16000"}]
+        # Exact lookup reaches beyond 15k without a portfolio-wide directory.
         selected = client.put(f"/api/sessions/{sid}/loan", json={"loan_id": "L16000"})
         assert selected.status_code == 200
         assert selected.json()["selected_loan_id"] == "L16000"
         assert selected.json()["selected_account_id"] == "A16000"
-        assert selected.json()["preflight"] == result
+        scoped = selected.json()["preflight"]
+        assert scoped["scoped_loan_id"] == "L16000"
+        assert scoped["loan_count"] == scoped["account_count"] == 1
+        assert "Unsupported_Source_Field__c" in scoped["unmapped_attributes"]
+        assert "Credit report date" in scoped["unavailable_inputs"]
+        assert "UNMAPPED_RELATION:Indicator:analysis_id" in scoped["mapping_warnings"]
+        assert any(issue.startswith("CONFLICTING_ALIASES:CreditReport:fico") for issue in scoped["priority_issues"])
+        assert graph_builder.call_count == 1
+        assert all(len(doc.metadata["records"]) == 1 for doc in graph_builder.call_args.args[0])
+        found = client.get(f"/api/sessions/{sid}/loans", params={"q": "L16000"}).json()
+        assert found["results"] == [{"loan_id": "L16000", "account_id": "A16000",
+                                    "account_name": "Synthetic client 16000"}]
         assert selected.json()["report"] is None
         assert len(selected.content) < 80_000
         timings["search_select_api"] = perf_counter() - started
@@ -244,7 +244,7 @@ def test_large_three_workbook_preflight_search_select_preserves_sources(tmp_path
         store = client.app.state.store
         saved = store.get(sid)
         assert saved is not None and saved.selected_loan_id == "L16000"
-        assert saved.preflight is not None and saved.preflight.loan_count == ROW_COUNT
+        assert saved.preflight is not None and saved.preflight.loan_count == 1
         for query, doc, payload in zip((1, 2, 4), original_documents, payloads):
             path = store.root / "uploads" / sid / doc["id"]
             assert path.read_bytes() == payload  # Every source byte, not just indexed columns.

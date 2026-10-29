@@ -103,6 +103,23 @@ SQLite is the source of truth for sessions, chat, mode, documents, rules, pipeli
 
 Reports add nullable `llm_analysis`, `llm_model`, and `llm_error` fields (default `null`). The frontend tolerates absent fields in legacy reports and displays Claude explanation, model, and warnings separately from deterministic findings, as escaped plain text. If Anthropic is unavailable, the deterministic report is still saved and downloadable, with `llm_error` explaining the missing commentary. Chat instead returns actionable **503 / 429 / 504 / 502** errors for configuration, availability, rate-limit, timeout, or provider failures, without silent fallback. Provider requests use a **60-second network timeout**, **1 retry**, and **8,192 maximum output tokens** for chat and report commentary; larger outputs may increase provider charges and latency. Retries can increase total elapsed time.
 
+## Troubleshooting Claude commentary
+
+Rejected commentary now includes a diagnostic ID. The backend logs the failing
+validation stage (JSON/schema, loan scope, rules, evidence, or reconciliation)
+and safe field paths/error categories. Requests include the explicit output JSON
+schema; a single complete JSON code fence is accepted, but unsupported citations,
+invalid routes, and incomplete outputs are still rejected without automatic retries.
+Existing saved errors are historical and are not rewritten.
+
+Application logs are written to `backend/data/logs/application.log` by default
+(or `logs/application.log` under `FOLIO_DATA_DIR`) and to the API terminal.
+Logs rotate at 5 MB with three backups. API timing records include the route
+template, HTTP status, and request ID (`X-Request-ID`); provider records include
+duration, stop category, response length, and available token counts. Commentary
+diagnostics never log prompts, provider text, source values, credentials, query
+strings, or customer/loan IDs. No new paid calls are made to diagnose saved errors.
+
 ## Rule semantics
 
 Every enabled rule applies **independently to every document**. Matching is case-insensitive literal substring matching, not regular expressions or whole-word matching.

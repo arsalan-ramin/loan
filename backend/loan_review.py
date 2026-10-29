@@ -3,11 +3,12 @@
 import json
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 from fastapi import HTTPException
 
 from .assistant_workflow import require_loan
-from .llm import AnthropicLLM, LLMError
+from .commentary_validation import CommentaryValidation
+from .llm import AnthropicLLM
 from .llm_context import demo_explanation_context, report_context
 from .models import LoanAIReview, LoanReviewOutput, Session
 from .prompts import (
@@ -66,25 +67,32 @@ def review_selected_loan(session: Session, loan_id: str, preferred_evidence_ref:
             "note": SELECTED_LOAN_RECONCILIATION_NOTE,
         }
     llm = AnthropicLLM()
+    validation = CommentaryValidation("selected", LoanReviewOutput)
     text = llm.complete(
         DEMO_SYSTEM + DEMO_SELECTED_LOAN_INSTRUCTIONS if demo_context is not None else
         V4_SYSTEM + REVIEW_REASONING_GUIDANCE + SELECTED_LOAN_REVIEW_INSTRUCTIONS,
         json.dumps(context, ensure_ascii=False),
     )
-    try:
-        output = LoanReviewOutput.model_validate_json(text)
-    except ValidationError:
-        raise LLMError("Claude returned invalid selected-loan commentary. It was discarded; your report is unchanged.") from None
+    output = validation.parse(text, LoanReviewOutput)
     allowed_rules = {r["rule_id"] for r in trace["loan_results"][0].get("rule_results", []) if r["status"] == "FAIL"}
-    if (output.loan_ids != [loan_id] or not set(output.triggered_rules) <= allowed_rules
-            or not set(output.evidence_refs) <= set(trace["evidence_refs"])):
-        raise LLMError("Claude cited unsupported loans, failed rules or evidence. The review was discarded; your report is unchanged.")
+    if output.loan_ids != [loan_id]:
+        validation.fail("scope", "Claude cited unsupported loans. The review was discarded; your report is unchanged.",
+                        [(("loan_ids",), "unsupported_reference")])
+    if not set(output.triggered_rules) <= allowed_rules:
+        validation.fail("rules", "Claude cited unsupported failed rules. The review was discarded; your report is unchanged.",
+                        [(("triggered_rules",), "unsupported_reference")])
+    if not set(output.evidence_refs) <= set(trace["evidence_refs"]):
+        validation.fail("evidence", "Claude cited unsupported evidence. The review was discarded; your report is unchanged.",
+                        [(("evidence_refs",), "unsupported_reference")])
     reconciled_ids = [item.rule_id for item in output.check_reconciliation]
     if len(reconciled_ids) != len(set(reconciled_ids)) or set(reconciled_ids) != set(unresolved):
-        raise LLMError("Claude did not reconcile the supplied unresolved checks exactly once. Output was discarded; your report is unchanged.")
-    for item in output.check_reconciliation:
+        validation.fail("reconciliation", "Claude did not reconcile the supplied unresolved checks exactly once. Output was discarded; your report is unchanged.",
+                        [(("check_reconciliation",), "incomplete_or_duplicate")])
+    for index, item in enumerate(output.check_reconciliation):
         if (not set(item.evidence_refs) <= set(unresolved[item.rule_id]["evidence_refs"])
                 or (item.evidence_state == "MAPPED_EVIDENCE_BLOCKED" and not item.evidence_refs)):
-            raise LLMError("Claude supplied unsupported per-check evidence. Output was discarded; your report is unchanged.")
+                        validation.fail("evidence", "Claude supplied unsupported per-check evidence. Output was discarded; your report is unchanged.",
+                                                        [(("check_reconciliation", index, "evidence_refs"),
+                                                            "mapped_without_evidence" if not item.evidence_refs else "unsupported_reference")])
     return LoanAIReview(report_id=session.report.id, loan_id=loan_id, model=llm.model,
                         analysis=output, context_note=context_note)

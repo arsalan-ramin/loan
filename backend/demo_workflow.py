@@ -20,6 +20,7 @@ from .underwriting_models import USD_100K, USD_100M, exact_decimal
 VERSION = "screenshot-test-demo-v1"
 SELECTION_BASIS = "FIRST_ACCOUNT_MATCH_FOR_TEST_DEMO"
 FICO_AGGREGATION_BASIS = "LINKED_BORROWER_GUARANTOR_ACCOUNT_AVERAGE"
+AGE_AGGREGATION_BASIS = "LINKED_BORROWER_GUARANTOR_MIN_COMPLETED_CALENDAR_AGE"
 
 
 def _matched_reasons(criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -115,17 +116,8 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "Explicit zero count needs no discharge date. Positive count needs verified discharge and application as-of dates; less than five calendar years matches a knockout.")
     facts["bankruptcy_count"] = str(count) if count is not None else None
 
-    dob_raw, dob_refs = read("dob", profile_nodes if identity else [])
-    dob = iso_date(dob_raw)
-    age = None
-    if dob and as_of and dob <= as_of:
-        age = as_of.year - dob.year - (as_of < _anniversary(dob, as_of.year - dob.year))
-    add("age_years", age, age >= 18 if age is not None else None,
-        sorted(set(dob_refs + date_refs)),
-        "Under 18 matches a knockout; explicit DOB and application as-of date are required. No report date is required.")
-
-    # Validated graph roles only, one observation per account, never a partial
-    # average. Keep guarantors separate from the borrower-specific inputs above.
+    # Share validated graph roles for age and FICO, once per account. Guarantors
+    # never supply the borrower-specific profile/report checks above.
     party_roles: dict[str, set[str]] = {}
     party_refs: dict[str, set[str]] = {}
     for loan_id, account_id, role, refs in graph.associations:
@@ -135,6 +127,60 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     for account_id in sorted(borrowers):
         party_roles.setdefault(account_id, set()).add("borrower")
         party_refs.setdefault(account_id, set()).update(loan.field_refs.get("borrower_account_id", []))
+    age_audit: list[dict[str, Any]] = []
+    age_nodes: list[EntityNode] = []
+    age_refs: set[str] = set()
+    dob_refs: set[str] = set()
+    ages: list[int] = []
+    for account_id, roles in party_roles.items():
+        person = graph.table("Account").get(account_id)
+        refs = set(party_refs[account_id]) | set(date_refs)
+        person_age = None
+        age_status = "NO_ACCOUNT_MATCH"
+        if person is not None:
+            age_nodes.append(person)
+            # Graph ID evidence is outside canonical field_refs. Keep it even
+            # when no DOB cell exists, to audit the unresolved Account itself.
+            field_evidence = {ref for values in person.field_refs.values() for ref in values}
+            refs.update(item.id for item in person.evidence if item.id not in field_evidence)
+            dob_refs.update(person.field_refs.get("dob", []))
+            refs.update(person.field_refs.get("dob", []))
+            for field in person.poisoned:
+                refs.update(person.field_refs.get(field, []))
+            raw, _ = read("dob", [person])
+            dob = iso_date(raw)
+            if person.poisoned:
+                age_status = "CONFLICTING_ACCOUNT"
+            elif dob is None:
+                age_status = "MISSING_OR_INVALID_DOB"
+            elif as_of is None:
+                age_status = "MISSING_OR_INVALID_AS_OF_DATE"
+            elif dob > as_of:
+                age_status = "FUTURE_DOB"
+            else:
+                completed = as_of.year - dob.year - (as_of < _anniversary(dob, as_of.year - dob.year))
+                if 0 <= completed <= 150:
+                    person_age, age_status = completed, "VALID_COMPLETED_CALENDAR_AGE"
+                    ages.append(completed)
+                else:
+                    age_status = "AGE_OUT_OF_RANGE"
+        age_refs.update(refs)
+        age_audit.append({"account_id": account_id, "party_roles": sorted(roles),
+                          "age_years": person_age, "age_status": age_status,
+                          "status": "UNKNOWN" if person_age is None else "FAIL" if person_age < 18 else "PASS",
+                          "evidence_refs": sorted(refs)})
+    age_complete = bool(ages) and len(ages) == len(party_roles)
+    underage = any(value < 18 for value in ages)
+    age = min(ages) if ages and (age_complete or underage) else None
+    add("age_years", age, False if underage else True if age_complete else None, sorted(age_refs),
+        "Each linked borrower/guarantor must be at least 18 using only that Account DOB and explicit loan as-of date. "
+        "Completed calendar ages (0–150) are never averaged; the scalar is the minimum when all are valid, "
+        "or the minimum known underage age. Any known under-18 is FAIL even with unresolved parties; "
+        "otherwise any unresolved party is UNKNOWN. No fallback or report date is used.")
+    if len(ages) < len(party_roles):
+        # A known knockout does not erase the other parties' unresolved ages.
+        missing.append("age_years")
+
     fico_audit: list[dict[str, Any]] = []
     fico_nodes: list[EntityNode] = []
     fico_refs: set[str] = set()
@@ -281,7 +327,7 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                          "evidence_refs": refs, "detail": "Branch input; required only where the screenshot tree uses it.",
                          "knockout": False})
     used_refs = {ref for item in criteria for ref in item["evidence_refs"]}
-    demo_nodes = [*profile_nodes, *report_nodes, *fico_nodes,
+    demo_nodes = [*profile_nodes, *report_nodes, *age_nodes, *fico_nodes,
                   *graph.related("EntityInvolvement", "loan_id", loan.id),
                   *([response] if response is not None else [])]
     demo_evidence = {item.id: item for node in demo_nodes for item in node.evidence if item.id in used_refs}
@@ -297,10 +343,14 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "reference_date_basis": "EXPLICIT_APPLICATION_AS_OF_DATE" if as_of else "UNAVAILABLE",
         "candidate_route": route, "branch": branch, "rationale": rationale,
         "criteria": criteria, "normalized_facts": facts,
+        "age_aggregation": {"basis": AGE_AGGREGATION_BASIS, "account_count": len(party_roles)},
+        "age_account_audit": age_audit,
         "fico_aggregation": {"basis": FICO_AGGREGATION_BASIS, "account_count": len(party_roles)},
         "fico_account_audit": fico_audit,
         "matched_reasons": _matched_reasons(criteria),
-        "source_evidence": [item.model_dump() for item in demo_evidence.values()],
+        # Retain DOB provenance, not another copy of sensitive source values.
+        "source_evidence": [{**item.model_dump(), **({"value": None} if item.id in dob_refs else {})}
+                    for item in demo_evidence.values()],
         "missing_inputs": sorted(set(missing)), "conflicts": conflicts,
         "strict_trace_unchanged": True,
     }
@@ -348,7 +398,7 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
         # A stale saved status cannot contradict the normalized value sent to
         # the model (e.g. SBSS 177 must never be described as below 160).
         value = normalized.get(key)
-        if status != "UNKNOWN" and key in {
+        if (status != "UNKNOWN" or (key == "age_years" and value is not None and value < 18)) and key in {
             "public_record_code", "ebitda_usd", "bankruptcy_clear", "age_years", "fico", "sbss"}:
             clear = None
             if value is not None:
@@ -376,6 +426,12 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
             and 0 <= aggregate["account_count"] <= 1_000_000):
         aggregate_context["fico_aggregation"] = {
             "basis": FICO_AGGREGATION_BASIS, "account_count": aggregate["account_count"]}
+    age_aggregate = data.get("age_aggregation")
+    if (isinstance(age_aggregate, dict) and age_aggregate.get("basis") == AGE_AGGREGATION_BASIS
+            and type(age_aggregate.get("account_count")) is int
+            and 0 <= age_aggregate["account_count"] <= 1_000_000):
+        aggregate_context["age_aggregation"] = {
+            "basis": AGE_AGGREGATION_BASIS, "account_count": age_aggregate["account_count"]}
     return {
         "version": VERSION, "label": data["label"], "simulation_only": True,
         "authorization": "NOT_ISSUED", "human_review_required": True,

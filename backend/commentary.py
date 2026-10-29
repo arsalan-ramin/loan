@@ -2,9 +2,8 @@
 
 import json
 
-from pydantic import ValidationError
-
-from .llm import AnthropicLLM, LLMError
+from .commentary_validation import CommentaryValidation
+from .llm import AnthropicLLM
 from .llm_context import chat_context, demo_explanation_context, report_context
 from .models import PolicyExplanation, Report, Session, UnderwritingExplanation
 from .prompts import (
@@ -40,40 +39,51 @@ def explain(llm: AnthropicLLM, report: Report) -> str:
         # Never replace engine per-loan explanations or expose raw workbook fields.
         demo_context = demo_explanation_context(report)
         context = demo_context if demo_context is not None else report_context(report)
+        validation = CommentaryValidation("aggregate", UnderwritingExplanation)
         text = llm.complete(
             DEMO_SYSTEM + DEMO_AGGREGATE_INSTRUCTIONS if demo_context is not None else
             V4_SYSTEM + REVIEW_REASONING_GUIDANCE + AGGREGATE_UNDERWRITING_INSTRUCTIONS,
             json.dumps(context, ensure_ascii=False),
         )
-        try:
-            output = UnderwritingExplanation.model_validate_json(text)
-        except ValidationError:
-            raise LLMError("Claude returned invalid structured underwriting commentary. Deterministic results remain available.") from None
+        output = validation.parse(text, UnderwritingExplanation)
         trace = context["underwriting"]
         loan_ids = {loan["loan_id"] for loan in trace["loan_results"]}
         rule_ids = {rule["rule_id"] for loan in trace["loan_results"]
                     for rule in loan.get("rule_results", []) if rule["status"] == "FAIL"}
-        if (output.recommended_route != "MANUAL_REVIEW" or output.confidence is not None
-                or not set(output.loan_ids) <= loan_ids
-                or not set(output.triggered_rules) <= rule_ids
-                or not set(output.evidence_refs) <= set(trace["evidence_refs"])):
-            raise LLMError("Claude commentary contradicted the fixed route or cited unsupported IDs, references, or confidence. It was discarded.")
+        if output.recommended_route != "MANUAL_REVIEW":
+            validation.fail("scope", "Claude commentary contradicted the fixed route. It was discarded.",
+                            [(("recommended_route",), "route_mismatch")])
+        if output.confidence is not None:
+            validation.fail("scope", "Claude commentary included unsupported confidence. It was discarded.",
+                            [(("confidence",), "confidence_not_null")])
+        if not set(output.loan_ids) <= loan_ids:
+            validation.fail("scope", "Claude commentary cited unsupported loan IDs. It was discarded.",
+                            [(("loan_ids",), "unsupported_reference")])
+        if not set(output.triggered_rules) <= rule_ids:
+            validation.fail("rules", "Claude commentary cited unsupported rule IDs. It was discarded.",
+                            [(("triggered_rules",), "unsupported_reference")])
+        if not set(output.evidence_refs) <= set(trace["evidence_refs"]):
+            validation.fail("evidence", "Claude commentary cited unsupported evidence. It was discarded.",
+                            [(("evidence_refs",), "unsupported_reference")])
         return output.explanation
     if report.policy_evaluation:
+        validation = CommentaryValidation("policy", PolicyExplanation)
         text = llm.complete(
             SYSTEM + LEGACY_POLICY_EXPLANATION_INSTRUCTIONS,
             json.dumps(report_context(report), ensure_ascii=False),
         )
-        try:
-            output = PolicyExplanation.model_validate_json(text)
-        except ValidationError:
-            raise LLMError("Claude returned invalid structured policy commentary. Deterministic policy results remain available.") from None
+        output = validation.parse(text, PolicyExplanation)
         valid_ids = {r.rule_id for r in report.policy_evaluation.rule_results if r.status == "triggered"}
-        if output.recommended_route != report.policy_evaluation.recommended_route or not set(output.triggered_rules) <= valid_ids:
-            raise LLMError("Claude commentary contradicted the fixed route or cited unsupported rule IDs. It was discarded.")
+        if output.recommended_route != report.policy_evaluation.recommended_route:
+            validation.fail("scope", "Claude commentary contradicted the fixed route. It was discarded.",
+                            [(("recommended_route",), "route_mismatch")])
+        if not set(output.triggered_rules) <= valid_ids:
+            validation.fail("rules", "Claude commentary cited unsupported rule IDs. It was discarded.",
+                            [(("triggered_rules",), "unsupported_reference")])
         # A model confidence signal is not sufficiently calibrated for this draft workflow.
         if output.confidence is not None:
-            raise LLMError("Claude commentary included an unsupported confidence score. It was discarded.")
+            validation.fail("scope", "Claude commentary included an unsupported confidence score. It was discarded.",
+                            [(("confidence",), "confidence_not_null")])
         report.llm_policy_output = output
         return output.explanation
     return llm.complete(

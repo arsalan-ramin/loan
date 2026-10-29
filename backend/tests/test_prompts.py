@@ -9,26 +9,27 @@ import pytest
 from backend import commentary, llm, llm_context, loan_review, prompts
 
 
-# SHA-256 runtime snapshots, including the explicitly versioned TEST demo update.
+# SHA-256 runtime snapshots: five structured prompts intentionally now include
+# their generated Pydantic JSON schemas; all reasoning/context text is unchanged.
 @pytest.mark.parametrize("name,digest", [
     ("DEMO_SYSTEM", "458bbfc34ed2163e170162e65e4038f2f6680b532eaee73d8b792acddba22d2b"),
-    ("DEMO_AGGREGATE_INSTRUCTIONS", "4fd1bac306fbfb8301df268b35a70b1ddd2f8c4f4b238a435ba4094b51342a22"),
-    ("DEMO_SELECTED_LOAN_INSTRUCTIONS", "e363a50540076ee7c8a669c017aeaf8ed495ff3857c6e8c892287d23237b2e50"),
+    ("DEMO_AGGREGATE_INSTRUCTIONS", "414b2b5e97fd9cb7827cca9937d61cab02e611e67d2ab5c90fa0e5f7e6ab3e55"),
+    ("DEMO_SELECTED_LOAN_INSTRUCTIONS", "5a34307958e6296af42d6d766152cae984cb5a2f3f4225571952cec1b2f6974f"),
     ("DEMO_SELECTED_LOAN_CONTEXT_NOTE", "d34a861b02ad0ea91c2ac40ef878ec29eda611bcd844a9d93410cc0ed4be81e3"),
     ("SYSTEM", "7a32923c79885a9a044f846870274c71beec603d6c9fcac53f87a487c9f7fc19"),
     ("V4_SYSTEM", "a357a49510aaff807e48008ecec9b33155119ff0ca6c5040ebf5d3ae16bec71e"),
     ("REVIEW_REASONING_GUIDANCE", "c39b743957d5ea91c469480085287e96ec86c71adac4c41257644be968164e8d"),
     ("CHAT_FOLLOW_UP_INSTRUCTIONS", "9702c259a4360dc628b46db39e6327a024adcc0233f871ad5c2edb91c3d8540b"),
     ("CHAT_WORKFLOW_INSTRUCTIONS", "db37725ecda6d84a10e62ef6a5e9b685934a0bb673fb3f5b166840cd6096528a"),
-    ("AGGREGATE_UNDERWRITING_INSTRUCTIONS", "5787dd958d3c74a6d8e60dc6234b13c1a30ba7f1acc9eaa931dbd17878f21457"),
-    ("LEGACY_POLICY_EXPLANATION_INSTRUCTIONS", "355f91a2b2ccd307d67e19e2fa323dc92a77258688fc63f5366c2728769d0af1"),
+    ("AGGREGATE_UNDERWRITING_INSTRUCTIONS", "106d02c71f93a0eaa0201f3626c1882fc08a49428cdc8d04408b698e335b0afb"),
+    ("LEGACY_POLICY_EXPLANATION_INSTRUCTIONS", "93e27d76bba19b6cdbfd64732f9267d08f3762933c879d6fd95d384d388fcdb5"),
     ("GENERIC_EXPLANATION_INSTRUCTIONS", "353a02a23f4c4059fa88cd1741ec10b346803096712993a274675218075f41b1"),
     ("SELECTED_LOAN_CONTEXT_NOTE", "972bafd4df566dd3fdb338333823be4c058672b15c80ab6850e1e9b56a4e98f5"),
     ("SELECTED_LOAN_EVIDENCE_PREFERENCE_INSTRUCTIONS", "e949ff7e21b2e503cb741051ee5c97a1a25ee47cfb41d4479bdd759b8c0a2de7"),
     ("SELECTED_LOAN_RECONCILIATION_NOTE", "1fb14a45fbd5eea7c15e2f43100fec407c08028dfa747811c3211831072ea444"),
-    ("SELECTED_LOAN_REVIEW_INSTRUCTIONS", "9eebf171312b517d68bd41a8e21e42795822d41ba105a73a9ab9c26de2068d36"),
+    ("SELECTED_LOAN_REVIEW_INSTRUCTIONS", "cece328dddb607aa71c0c547cade2daebb05aa18c5ced06359aecffc3a2a1553"),
 ])
-def test_prompt_runtime_text_is_unchanged(name, digest):
+def test_prompt_runtime_text_matches_intentional_snapshot(name, digest):
     assert hashlib.sha256(getattr(prompts, name).encode("utf-8")).hexdigest() == digest
 
 

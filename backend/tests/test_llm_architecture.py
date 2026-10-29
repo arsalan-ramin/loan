@@ -20,7 +20,7 @@ def test_transport_has_no_business_or_prompt_dependencies():
     # including models (Report/Session), storage, demo logic and prompt ownership.
     imports = [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
     assert all(isinstance(node, ast.Import) for node in imports)
-    assert {alias.name for node in imports for alias in node.names} == {"os", "anthropic"}
+    assert {alias.name for node in imports for alias in node.names} == {"os", "anthropic", "logging", "time", "uuid"}
     assert not any(isinstance(node, ast.FunctionDef) for node in tree.body)
     assert {node.name for node in tree.body if isinstance(node, ast.ClassDef)} == {"AnthropicLLM", "LLMError"}
     assert not ({"Report", "Session", "Store", "report_context", "chat_context",

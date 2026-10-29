@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from backend.demo_workflow import (FICO_AGGREGATION_BASIS, SELECTION_BASIS,
+from backend.demo_workflow import (AGE_AGGREGATION_BASIS, FICO_AGGREGATION_BASIS, SELECTION_BASIS,
                                    bounded_demo_context, evaluate_demo)
 from backend.entity_graph import build_entity_graph
 from backend import commentary, prompts
@@ -80,7 +80,8 @@ def test_multiple_guarantor_only_loans_keep_roles_and_other_borrower_checks_unkn
     assert view["label"] == label
     assert view["fico_aggregation"]["account_count"] == 2
     assert all(item["party_roles"] == ["guarantor"] for item in view["fico_account_audit"])
-    for key in ("age_years", "public_record_code", "bankruptcy_clear", "ebitda_usd"):
+    assert criterion(view, "age_years")["status"] == "PASS"
+    for key in ("public_record_code", "bankruptcy_clear", "ebitda_usd"):
         assert criterion(view, key)["status"] == "UNKNOWN"
     assert "explicit_unique_borrower_account_relationship" in view["missing_inputs"]
 
@@ -168,6 +169,255 @@ def test_no_valid_linked_parties_has_no_invented_average():
     assert view["fico_account_audit"] == []
     assert view["fico_aggregation"]["account_count"] == 0
     assert criterion(view, "fico")["status"] == "UNKNOWN"
+    assert view["age_account_audit"] == []
+    assert view["age_aggregation"]["account_count"] == 0
+    assert criterion(view, "age_years")["status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("underage_account", ["A1", "G1"])
+def test_linked_underage_borrower_or_guarantor_is_known_knockout(underage_account):
+    source = linked_party(rows())
+    next(values for table, values in source
+         if table == "Account" and values["Id"] == underage_account)["dob"] = "2008-10-21"
+    view = demo(source)
+    assert view["normalized_facts"]["age_years"] == 17
+    assert criterion(view, "age_years")["status"] == "FAIL"
+    assert view["label"] == "Decline" and view["branch"] == "KNOWN_KNOCKOUT"
+    assert "Age 17 is below 18" in view["rationale"]
+    assert {item["criterion"] for item in view["matched_reasons"]} == {"age_years"}
+
+
+def test_guarantor_only_completed_ages_are_minimum_not_fractional_average():
+    source = rows()
+    source[1][1].pop("borrower_account_id")
+    linked_party(source, "G1")
+    linked_party(source, "G2")
+    source[4][1]["dob"] = "2008-10-20"  # exactly 18
+    source[7][1]["dob"] = "2007-10-20"  # 19; no 18.5 average
+    loan = evaluate(source).loan_results[0]
+    view = loan.normalized_data["demo_decision"]
+    assert loan.borrower_account_id is None and view["selected_report_id"] is None
+    assert view["normalized_facts"]["age_years"] == 18
+    assert criterion(view, "age_years")["status"] == "PASS"
+    assert [item["age_years"] for item in view["age_account_audit"]] == [18, 19]
+    assert all(item["party_roles"] == ["guarantor"] for item in view["age_account_audit"])
+    assert view["label"] == "Refer"
+    assert all(criterion(view, key)["status"] == "UNKNOWN"
+               for key in ("public_record_code", "bankruptcy_clear", "ebitda_usd"))
+
+
+@pytest.mark.parametrize("dob,expected", [
+    (None, "MISSING_OR_INVALID_DOB"), ("", "MISSING_OR_INVALID_DOB"),
+    ("DOB_PRIVATE_SENTINEL", "MISSING_OR_INVALID_DOB"),
+    (True, "MISSING_OR_INVALID_DOB"), ("2008-02-30", "MISSING_OR_INVALID_DOB"),
+    ("1980-01-01T00:00:00Z", "MISSING_OR_INVALID_DOB"),
+    ("2027-01-01", "FUTURE_DOB"), ("1875-10-20", "AGE_OUT_OF_RANGE"),
+])
+def test_unresolved_account_age_never_borrows_another_dob(dob, expected):
+    source = linked_party(rows())
+    source[4][1]["dob"] = dob
+    source[1][1]["dob"] = "1980-01-01"  # Loan DOB is never a fallback.
+    source[2][1]["dob"] = "1980-01-01"
+    view = demo(source)
+    assert view["normalized_facts"]["age_years"] is None
+    assert criterion(view, "age_years")["status"] == "UNKNOWN"
+    assert view["age_account_audit"][1]["age_status"] == expected
+    assert view["age_account_audit"][0]["age_years"] == 46
+    assert "age_years" in view["missing_inputs"] and view["label"] == "Refer"
+    assert "DOB_PRIVATE_SENTINEL" not in json.dumps(view)
+
+
+@pytest.mark.parametrize("as_of", [None, "invalid", "2026-02-30", "2026-10-20T12:00:00Z"])
+def test_age_requires_explicit_valid_loan_date_not_today_or_report_timestamp(as_of):
+    source = linked_party(rows())
+    source[1][1]["as_of_date"] = as_of
+    source[0][1]["as_of_date"] = "2026-10-20"
+    source[2][1].update(report_date="2026-10-20", CreatedDate="2026-10-20T12:00:00Z")
+    view = demo(source)
+    assert view["normalized_facts"]["age_years"] is None
+    assert criterion(view, "age_years")["status"] == "UNKNOWN"
+    assert all(item["age_status"] == "MISSING_OR_INVALID_AS_OF_DATE"
+               for item in view["age_account_audit"])
+
+
+@pytest.mark.parametrize("unknown_first", [False, True])
+def test_underage_fail_survives_missing_party_in_bounded_context_with_complete_audit(unknown_first):
+    source = linked_party(rows())
+    source[0][1]["dob"] = None if unknown_first else "2008-10-21"
+    source[4][1]["dob"] = "2008-10-21" if unknown_first else None
+    report = demo_report(source)
+    view = report.underwriting.loan_results[0].normalized_data["demo_decision"]
+    assert view["normalized_facts"]["age_years"] == 17
+    assert criterion(view, "age_years")["status"] == "FAIL"
+    assert {item["status"] for item in view["age_account_audit"]} == {"FAIL", "UNKNOWN"}
+    assert "age_years" in view["missing_inputs"]
+    refs = set(criterion(view, "age_years")["evidence_refs"])
+    assert refs == {ref for item in view["age_account_audit"] for ref in item["evidence_refs"]}
+    evidence = {item["id"]: item for item in view["source_evidence"]}
+    assert refs <= evidence.keys()
+    assert {evidence[ref]["record_id"] for ref in refs} >= {"A1", "G1", "L1", "JG1"}
+    assert all(item["value"] is None for item in evidence.values() if item["field"] == "dob")
+    criterion(view, "age_years")["status"] = "UNKNOWN"  # stale status cannot hide known underage
+    view["age_aggregation"]["raw"] = "DOB_PRIVATE_SENTINEL"
+    view["age_account_audit"][0]["dob"] = "DOB_PRIVATE_SENTINEL"
+    before = report.model_dump_json()
+    for context in (demo_explanation_context(report), report_context(report)):
+        bounded = context["underwriting"]["loan_results"][0]["demo_decision"]
+        assert criterion(bounded, "age_years")["status"] == "FAIL"
+        assert "age_years" in bounded["missing_inputs"]
+        assert bounded["age_aggregation"] == {"basis": AGE_AGGREGATION_BASIS, "account_count": 2}
+        assert any(item["criterion"] == "age_years" for item in bounded["matched_reasons"])
+        assert "age_account_audit" not in bounded and "source_evidence" not in bounded
+        assert "DOB_PRIVATE_SENTINEL" not in json.dumps(context)
+        assert "2008-10-21" not in json.dumps(context)
+    assert before == report.model_dump_json()
+
+
+def test_duplicate_accounts_roles_and_unrelated_children_do_not_change_age_scope():
+    source = linked_party(rows())
+    source.extend([
+        ("Account", {"Id": "G1", "dob": "1980-01-01"}),
+        ("EntityInvolvement", {"Id": "JG1-copy", "loan_id": "L1", "account_id": "G1", "role": "guarantor"}),
+        ("EntityInvolvement", {"Id": "JA1", "loan_id": "L1", "account_id": "A1", "role": "guarantor"}),
+        ("Account", {"Id": "CHILD", "dob": "2020-01-01"}),
+        ("Loan", {"Id": "L2", "borrower_account_id": "CHILD"}),
+    ])
+    linked_party(source, "OWNER", role="Owner")
+    linked_party(source, "UNTYPED", role=None)
+    view = demo(source)
+    assert view["normalized_facts"]["age_years"] == 46
+    assert criterion(view, "age_years")["status"] == "PASS"
+    assert view["age_aggregation"]["account_count"] == 2
+    assert [(item["account_id"], item["party_roles"]) for item in view["age_account_audit"]] == [
+        ("A1", ["borrower", "guarantor"]), ("G1", ["guarantor"])]
+    assert not {"CHILD", "OWNER", "UNTYPED"} & {item["record_id"] for item in view["source_evidence"]}
+
+
+@pytest.mark.parametrize("field,value", [("dob", "2000-01-01"), ("name", "Other")])
+def test_conflicting_account_or_dob_is_unknown_and_keeps_conflict_evidence(field, value):
+    source = linked_party(rows())
+    if field == "name":
+        source[4][1]["name"] = "Original"
+    source.append(("Account", {"Id": "G1", field: value}))
+    view = demo(source)
+    assert criterion(view, "age_years")["status"] == "UNKNOWN"
+    assert view["age_account_audit"][1]["age_status"] == "CONFLICTING_ACCOUNT"
+    refs = set(view["age_account_audit"][1]["evidence_refs"])
+    assert len([item for item in view["source_evidence"]
+                if item["id"] in refs and item["record_id"] == "G1" and item["field"] == field]) == 2
+
+
+def test_conflicting_loan_asof_does_not_choose_a_convenient_date():
+    source = linked_party(rows())
+    source.append(("Loan", {"Id": "L1", "as_of_date": "2026-10-21"}))
+    view = demo(source)
+    assert criterion(view, "age_years")["status"] == "UNKNOWN"
+    assert view["reference_date"] is None
+
+
+def test_missing_borrower_dob_never_uses_loan_extension_or_guarantor_dob():
+    source = linked_party(rows())
+    source[0][1].pop("dob")
+    source[1][1]["dob"] = "1980-01-01"
+    source.append(("LoanExtension", {"Id": "X1", "loan_id": "L1", "dob": "1980-01-01"}))
+    view = demo(source)
+    assert view["normalized_facts"]["age_years"] is None
+    assert view["age_account_audit"][0]["age_status"] == "MISSING_OR_INVALID_DOB"
+    assert view["age_account_audit"][1]["status"] == "PASS"
+    assert criterion(view, "age_years")["status"] == "UNKNOWN"
+
+
+def test_minimum_known_underage_survives_multiple_unknown_accounts():
+    source = linked_party(rows())
+    source[0][1]["dob"] = None
+    source[4][1]["dob"] = "2009-10-20"  # 17
+    linked_party(source, "G2")
+    source[7][1]["dob"] = "2010-10-20"  # 16
+    linked_party(source, "G3")
+    source[10][1]["dob"] = "invalid"
+    view = demo(source)
+    assert view["normalized_facts"]["age_years"] == 16
+    assert criterion(view, "age_years")["status"] == "FAIL"
+    assert len(view["age_account_audit"]) == 4
+    assert sum(item["status"] == "UNKNOWN" for item in view["age_account_audit"]) == 2
+    assert "age_years" in view["missing_inputs"]
+
+
+def test_completed_age_upper_bound_150_is_valid_and_context_reconciles_stale_fail():
+    source = rows()
+    source[0][1]["dob"] = "1876-10-20"
+    view = demo(source)
+    assert view["normalized_facts"]["age_years"] == 150
+    assert criterion(view, "age_years")["status"] == "PASS"
+    criterion(view, "age_years")["status"] = "FAIL"
+    bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    assert criterion(bounded, "age_years")["status"] == "PASS"
+
+
+@pytest.mark.parametrize("field,value", [("role", "Owner"), ("account_id", "OTHER")])
+def test_conflicting_junction_cannot_link_unrelated_child(field, value):
+    source = rows() + [
+        ("Account", {"Id": "CHILD", "dob": "2020-01-01"}),
+        ("Account", {"Id": "OTHER", "dob": "2020-01-01"}),
+        ("EntityInvolvement", {"Id": "JC", "loan_id": "L1", "account_id": "CHILD", "role": "guarantor"}),
+        ("EntityInvolvement", {"Id": "JC", field: value}),
+    ]
+    view = demo(source)
+    assert [item["account_id"] for item in view["age_account_audit"]] == ["A1"]
+    assert criterion(view, "age_years")["status"] == "PASS"
+
+
+@pytest.mark.parametrize("as_of,age,status", [
+    ("2026-02-27", 17, "FAIL"), ("2026-02-28", 18, "PASS"),
+    ("2024-02-28", 15, "FAIL"), ("2024-02-29", 16, "FAIL"),
+])
+def test_leap_birthday_completed_calendar_age(as_of, age, status):
+    source = rows()
+    source[0][1]["dob"] = "2008-02-29"
+    source[1][1]["as_of_date"] = as_of
+    view = demo(source)
+    assert view["normalized_facts"]["age_years"] == age
+    assert criterion(view, "age_years")["status"] == status
+
+
+def test_linked_soql_account_dob_is_used_with_normalized_provenance_and_no_raw_dob():
+    prefix = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
+    dob_field = prefix + "LLC_BI__Account__r.Birth_Date__c"
+    values = {"Id": "JG1", prefix + "LLC_BI__Loan__c": "L1",
+              prefix + "LLC_BI__Account__c": "G1", prefix + "LLC_BI__Borrower_Type__c": "Guarantor",
+              dob_field: "2008-10-21", "SCOC__CharacteristicKey__c": "uninterpreted",
+              "SCOC__CharacteristicValue__c": "not a DOB"}
+    q1 = document([("Data", values)], "MTB_Query_1_SOQL_Only.xlsx", "soql")
+    q1.metadata["sheets"] = [{"name": "Data", "headers": list(values)}]
+    originals = copy.deepcopy(q1.metadata)
+    loan = evaluate_underwriting([document(rows()), q1], mode="TEST").loan_results[0]
+    view = loan.normalized_data["demo_decision"]
+    assert criterion(view, "age_years")["status"] == "FAIL"
+    assert view["normalized_facts"]["age_years"] == 17
+    assert any(item["field"] == dob_field and item["value"] is None
+               for item in view["source_evidence"])
+    assert "2008-10-21" not in json.dumps(view)
+    assert q1.metadata == originals
+
+
+def test_age_bounded_metadata_legacy_invalid_values_and_unknown_are_not_promoted():
+    view = demo()
+    view.pop("age_aggregation")
+    bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    assert "age_aggregation" not in bounded and bounded["normalized_facts"]["age_years"] == 46
+    for aggregate in ({"basis": "UNTRUSTED", "account_count": 1},
+                      *({"basis": AGE_AGGREGATION_BASIS, "account_count": count}
+                        for count in (True, -1, 1_000_001, "2"))):
+        view["age_aggregation"] = aggregate
+        assert "age_aggregation" not in bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    for invalid in (151, -1, 18.5, True, "18"):
+        view["normalized_facts"]["age_years"] = invalid
+        bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
+        assert "age_years" not in bounded["normalized_facts"]
+        assert criterion(bounded, "age_years")["status"] == "UNKNOWN"
+    view["normalized_facts"]["age_years"] = 46
+    criterion(view, "age_years")["status"] = "UNKNOWN"
+    assert criterion(bounded_demo_context(view, mode="TEST", allowed_refs=set()), "age_years")["status"] == "UNKNOWN"
 
 
 @pytest.mark.parametrize("scores,expected,status,branch", [

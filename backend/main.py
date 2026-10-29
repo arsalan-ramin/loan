@@ -5,6 +5,8 @@ import csv
 import json
 import os
 import io
+from time import perf_counter
+from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,6 +31,7 @@ from .models import (AGENTS, AccountCandidate, AccountCandidatePage, AccountSele
                      RulesRequest, Session, Step, ReviewNote, default_rules)
 from .reports import render_report
 from .storage import Store
+from .application_logging import configure_application_logging
 from .underwriting_models import UnderwritingBatch
 
 load_dotenv(Path(__file__).with_name(".env"))
@@ -132,6 +135,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
+        configure_application_logging(root)
+        logger.info('Application started; diagnostic logs enabled (5 MB x 4 files).')
         store = Store(root)
         application.state.store = store
         application.state.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="folio")
@@ -161,6 +166,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         application.state.executor.shutdown(wait=True, cancel_futures=False)
 
     application = FastAPI(title="Agent document intelligence", version="1.0.0", lifespan=lifespan)
+
+    @application.middleware("http")
+    async def request_diagnostics(request: Request, call_next):
+        request_id = str(uuid4())
+        started = perf_counter()
+        status = 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            route = request.scope.get("route")
+            logger.info(json.dumps({
+                "event": "http_request_completed", "request_id": request_id,
+                "method": request.method if request.method in {"GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"} else "OTHER",
+                "route": getattr(route, "path", "<unmatched>"), "status": status,
+                "duration_ms": round((perf_counter() - started) * 1000, 3),
+            }))
     origins = [s.strip() for s in os.getenv("FOLIO_CORS_ORIGINS", "http://localhost:5174,http://127.0.0.1:5174").split(",") if s.strip()]
     application.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 

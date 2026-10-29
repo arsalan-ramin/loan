@@ -28,6 +28,15 @@ No provider request is needed to evaluate this local deterministic trace.
   clearance/count, ownership, NAICS and vehicle flag; missing facts stay null.
 - `fico_aggregation`: `basis=LINKED_BORROWER_GUARANTOR_ACCOUNT_AVERAGE` and
   `account_count` (all included unique accounts, including unresolved ones).
+- `age_aggregation`: `basis=LINKED_BORROWER_GUARANTOR_MIN_COMPLETED_CALENDAR_AGE`
+  and `account_count` (all included unique accounts, including unresolved ones).
+- `age_account_audit`: local-only per-account `account_id`, validated `party_roles`,
+  completed integer `age_years` or null, `status` (PASS/FAIL/UNKNOWN), `age_status`,
+  and `evidence_refs`. Age statuses distinguish `VALID_COMPLETED_CALENDAR_AGE`,
+  `NO_ACCOUNT_MATCH`, `CONFLICTING_ACCOUNT`, `MISSING_OR_INVALID_DOB`,
+  `MISSING_OR_INVALID_AS_OF_DATE`, `FUTURE_DOB`, and `AGE_OUT_OF_RANGE`.
+  No raw DOB is copied into this audit; demo DOB evidence retains provenance
+  with its value redacted to null. Original graph/source data are not modified.
 - `fico_account_audit`: local-only per-account `account_id`, validated `party_roles`,
   `selected_report_id`, `report_status` (`FIRST_ACCOUNT_MATCH`/`NO_ACCOUNT_MATCH`),
   `score_status`, normalized `score` or null, and `evidence_refs`. Score statuses
@@ -69,11 +78,34 @@ generic score. Relationship and report/score references for both known and
 unresolved parties remain available in the local audit and criterion evidence.
 
 Borrower-absent (including multiple-guarantor-only) loans may have known FICO.
-Borrower-specific report checks and age remain UNKNOWN; guarantor DOB/report
-data do not supply them. The missing unique borrower relationship still prevents
+Borrower-specific report checks remain UNKNOWN; guarantor report data do not
+supply them. Linked guarantors' own DOBs can establish their ages independently.
+The missing unique borrower relationship still prevents
 approval. Known knockouts, including low average FICO, can still produce a
 simulation Decline without borrower identity. No borrower-specific input is
 invented from a guarantor.
+
+### Linked-account age
+
+Age uses the same deduplicated explicitly linked borrower/guarantor Account set
+as FICO. Each person's completed calendar age uses **only that Account's `dob`**
+and the loan's explicit valid `as_of_date`. Never use another person's DOB, a
+loan/extension/report DOB, today's date, report date or creation timestamp.
+Birthdays are calendar anniversaries; February 29 becomes February 28 in a
+non-leap year. Future DOBs, invalid dates, poisoned/conflicting Accounts or DOBs,
+and completed ages outside 0–150 are unresolved. Duplicate Accounts are merged
+by the graph; conflicting copies never receive source precedence.
+
+Ages are **never averaged**. If every included account is valid, `age_years` is
+the minimum completed integer age, and the check is PASS only if all are at least
+18. Any known age below 18 makes the check FAIL and the simulation Decline even
+when other parties remain unresolved; the scalar is then the minimum known
+underage age. Otherwise any unresolved party (or no linked parties) makes the
+aggregate UNKNOWN with a null scalar. A known underage FAIL does not erase gaps:
+`missing_inputs` retains `age_years` and the complete local per-account audit
+retains every unresolved party and available relationship/Account/date evidence.
+Guarantor-only loans can have known ages without inventing a borrower or filling
+other borrower-specific fields.
 
 ## Tree
 
@@ -106,11 +138,15 @@ trace separately as **STRICT**; never blend its blockers into the demo label.
 Commentary receives a bounded allowlist of normalized demo facts, selection basis,
 label, check statuses and evidence IDs, not raw reports/workbook rows/source-cell
 values. Bureau facts beyond normalized scores are represented as check statuses.
-FICO aggregation metadata is restricted to the constant basis and an integer
+FICO and age aggregation metadata are restricted to their constant basis and an integer
 account count from 0 through 1,000,000; per-account audit, account/report IDs and
 raw source-cell values are not extra provider metadata. Existing context budgets
 remain unchanged. Valid fractional averages are preserved; out-of-range FICO is
-not sent. Older saved demo snapshots without aggregation metadata remain
+not sent. Ages are bounded integers 0–150. A known underage age remains FAIL in
+bounded context even if a stale status says UNKNOWN; unresolved-party gaps are
+preserved alongside that FAIL. An adult scalar never promotes UNKNOWN to PASS.
+Raw DOBs and per-account age audits are excluded from provider context.
+Older saved demo snapshots without aggregation metadata remain
 explainable as saved facts, without guessing a count, reconstructing an average,
 or adding linked parties retroactively; reprocess to obtain the new audit.
 Commentary explains demo first but retains `recommended_route=MANUAL_REVIEW`,

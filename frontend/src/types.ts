@@ -302,7 +302,7 @@ export interface Session {
 
 export interface LoanCandidate {
   loan_id: string;
-  account_id: string;
+  account_id: string | null;
   account_name: string | null;
 }
 

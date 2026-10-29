@@ -21,12 +21,12 @@ from .datasets import (account_reference_headers, borrower_role_headers,
                        soql_field_headers, soql_mapping_coverage,
                        soql_account_reference_headers,
                        soql_root_table, soql_unavailable_inputs)
-from .models import AccountCandidate, LoanInspection, PreflightResult, Session
+from .models import AccountCandidate, LoanCandidate, LoanInspection, PreflightResult, Session
 from .entity_graph import build_entity_graph, scalar_id
 from .underwriting_engine import load_underwriting_config
 from .underwriting_models import AMOUNT_NAMES, LoanRecommendation
 
-ACCOUNT_INDEX_VERSION = 1
+ACCOUNT_INDEX_VERSION = 2
 
 
 class InspectRequest(BaseModel):
@@ -72,6 +72,14 @@ def inspect_loan(session: Session, body: InspectRequest) -> LoanInspection:
 
 def _mapped_values(manifest: dict, table: str, sheet: str, values: dict,
                    *, root_table: str | None = None, headers=None) -> dict:
+    plan = _mapping_plan(manifest, table, sheet, values.keys(),
+                         root_table=root_table, headers=headers)
+    return _apply_mapping_plan(plan, values)
+
+
+def _mapping_plan(manifest: dict, table: str, sheet: str, value_headers,
+                  *, root_table: str | None = None, headers=None) -> dict:
+    """Compile aliases without inspecting cell values; preserve alias order."""
     tables = manifest["tables"]
     canonical_table = manifest.get("canonical_table_aliases", {}).get(sheet, sheet)
     canonical = canonical_table in tables
@@ -81,43 +89,55 @@ def _mapped_values(manifest: dict, table: str, sheet: str, values: dict,
     fields = mapping["fields"]
     candidates = {"id": mapping["id"]}
     if table == "Loan":
-        candidates["id"] = list(dict.fromkeys([*candidates["id"], *loan_reference_headers(values.keys())]))
+        candidates["id"] = list(dict.fromkeys([*candidates["id"], *loan_reference_headers(value_headers)]))
     if table == "Account" and root_table:
         query_role = {"EntityInvolvement": 1, "Indicator": 2, "CreditReport": 4}.get(root_table)
-        candidates["id"] = soql_account_reference_headers(query_role, headers or values.keys())
+        candidates["id"] = soql_account_reference_headers(query_role, headers or value_headers)
     elif table == "Account":
-        candidates["id"] = list(dict.fromkeys([*candidates["id"], *account_reference_headers(values.keys())]))
+        candidates["id"] = list(dict.fromkeys([*candidates["id"], *account_reference_headers(value_headers)]))
     candidates.update({key: [key] for key in fields} if isinstance(fields, list) else fields)
     if not canonical and root_table:
         candidates["id"] = list(dict.fromkeys([
-            *candidates["id"], *soql_field_headers(table, "id", headers or values.keys(), root_table=root_table)
+            *candidates["id"], *soql_field_headers(table, "id", headers or value_headers, root_table=root_table)
         ]))
         for key in list(candidates):
             if key != "id":
                 if key in {"account_id", "borrower_account_id"}:
-                    candidates[key] = (soql_field_headers(table, key, headers or values.keys(), root_table=root_table)
+                    candidates[key] = (soql_field_headers(table, key, headers or value_headers, root_table=root_table)
                                        if (table, key) in {("EntityInvolvement", "account_id"),
                                                             ("CreditReport", "account_id")} else [])
                 else:
                     candidates[key] = list(dict.fromkeys([
                         *candidates[key],
-                        *soql_field_headers(table, key, headers or values.keys(), root_table=root_table),
+                        *soql_field_headers(table, key, headers or value_headers, root_table=root_table),
                     ]))
-    output = {}
+    plan = {}
     for key, aliases in candidates.items():
         if (canonical or not root_table) and table != "Account" and key in {"account_id", "borrower_account_id"}:
-            aliases = list(dict.fromkeys([*aliases, *account_reference_headers(values.keys())]))
+            aliases = list(dict.fromkeys([*aliases, *account_reference_headers(value_headers)]))
+        present = tuple(alias for alias in aliases if alias in value_headers)
+        if present:
+            plan[key] = present
+    return plan
+
+
+def _apply_mapping_plan(plan: dict, values: dict) -> dict:
+    """Resolve every row independently, including blanks and conflicting aliases."""
+    output = {}
+    for key, aliases in plan.items():
         found = [values[alias] for alias in aliases if alias in values and values[alias] not in (None, "")]
         if found and len({str(value) for value in found}) == 1:
             output[key] = found[0]
     return output
 
 
-def _discover_accounts(documents, config: dict) -> tuple[int, list[AccountCandidate]]:
-    """Index only explicit borrower IDs/names; avoid constructing per-cell evidence or loan evaluations."""
+def _discover_accounts(documents, config: dict,
+                       loan_candidates: list[LoanCandidate] | None = None) -> tuple[int, list[AccountCandidate]]:
+    """Index all explicit loans separately from verified borrower accounts, without per-cell evidence."""
     manifest = config["mapping_manifest"]
     accounts: dict[str, str | None] = {}
     borrower_loans: set[tuple[str, str]] = set()
+    explicit_loans: set[str] = set()
     for document in documents:
         query_roles = mtb_query_ids(document.name, document.metadata)
         query_role = next(iter(query_roles)) if len(query_roles) == 1 else None
@@ -126,49 +146,89 @@ def _discover_accounts(documents, config: dict) -> tuple[int, list[AccountCandid
         records = document.metadata.get("records", [])
         if not isinstance(records, list):
             continue
+        # Local to this document/config, not a process-wide cache of user data.
+        # Excel omits blank cells, so the ordered row keys are part of the schema:
+        # sheet headers alone would change fallback and first-alias semantics.
+        plans: dict[tuple, tuple] = {}
+        roots: dict[str, str | None] = {}
         for record in records:
             if not isinstance(record, dict) or not isinstance(record.get("values"), dict):
                 continue
             sheet, values = record.get("sheet"), record["values"]
             if not isinstance(sheet, str):
                 continue
-            headers = sheet_headers.get(sheet, list(values))
-            root_table = soql_root_table(query_role, headers)
-            account = _mapped_values(manifest, "Account", sheet, values, root_table=root_table, headers=headers)
+            schema = (sheet, tuple(values))
+            if schema not in plans:
+                headers = sheet_headers.get(sheet, list(values))
+                if sheet in sheet_headers:
+                    if sheet not in roots:
+                        roots[sheet] = soql_root_table(query_role, headers)
+                    root_table = roots[sheet]
+                else:
+                    root_table = soql_root_table(query_role, headers)
+                table_plans = tuple(_mapping_plan(
+                    manifest, table, sheet, values.keys(), root_table=root_table, headers=headers,
+                ) for table in ("Account", "Loan", "EntityInvolvement"))
+                # A canonical Account/junction/report's root Id is not a loan.
+                canonical_table = manifest.get("canonical_table_aliases", {}).get(sheet, sheet)
+                if canonical_table != "Loan" and "id" in table_plans[1]:
+                    table_plans[1]["id"] = tuple(alias for alias in table_plans[1]["id"]
+                                                  if alias != "Id")
+                role_headers = tuple(dict.fromkeys([
+                    *manifest.get("flattened_role_fields", []), *borrower_role_headers(values.keys())
+                ]))
+                # Highly sparse exports can have a different populated-column
+                # subset on every row. Bound schema metadata without dropping
+                # any records or caching resolved borrower values.
+                if len(plans) >= 128:
+                    plans.clear()
+                plans[schema] = (*table_plans, role_headers)
+            account_plan, loan_plan, involvement_plan, role_headers = plans[schema]
+            account = _apply_mapping_plan(account_plan, values)
             account_id = scalar_id(account.get("id"))
             if account_id:
                 name = account.get("name")
                 accounts[account_id] = name.strip()[:200] if isinstance(name, str) and name.strip() else accounts.get(account_id)
 
-            loan = _mapped_values(manifest, "Loan", sheet, values, root_table=root_table, headers=headers)
+            loan = _apply_mapping_plan(loan_plan, values)
             loan_id = scalar_id(loan.get("id"))
             borrower_id = scalar_id(loan.get("borrower_account_id"))
             direct_borrower_id = scalar_id(values.get("borrower_account_id"))
-            if loan_id and direct_borrower_id:
-                borrower_loans.add((direct_borrower_id, loan_id))
-            role_headers = list(dict.fromkeys([
-                *manifest.get("flattened_role_fields", []), *borrower_role_headers(values.keys())
-            ]))
             role_value = next((values.get(key) for key in role_headers
                                if values.get(key) not in (None, "")), None)
             mapped_role = manifest.get("roles", {}).get(str(role_value).strip().casefold()) if role_value is not None else None
+            if loan_id:
+                explicit_loans.add(loan_id)
+            if loan_id and direct_borrower_id and (role_value is None or mapped_role == "borrower"):
+                borrower_loans.add((direct_borrower_id, loan_id))
             if loan_id and borrower_id and mapped_role == "borrower":
                 borrower_loans.add((borrower_id, loan_id))
-            involvement = _mapped_values(manifest, "EntityInvolvement", sheet, values, root_table=root_table, headers=headers)
+            involvement = _apply_mapping_plan(involvement_plan, values)
             involvement_loan = scalar_id(involvement.get("loan_id"))
             involvement_account = scalar_id(involvement.get("account_id"))
             role = str(involvement.get("role", "")).strip().casefold()
+            if involvement_loan:
+                explicit_loans.add(involvement_loan)
             if involvement_loan and involvement_account and role == "borrower":
                 borrower_loans.add((involvement_account, involvement_loan))
     loans_by_account: dict[str, set[str]] = {}
+    borrowers_by_loan: dict[str, set[str]] = {}
     for account_id, loan_id in borrower_loans:
+        borrowers_by_loan.setdefault(loan_id, set()).add(account_id)
         if account_id in accounts:
             loans_by_account.setdefault(account_id, set()).add(loan_id)
     candidates = [AccountCandidate(account_id=account_id, name=accounts[account_id],
                                    loan_count=len(loan_ids), loan_ids=sorted(loan_ids))
                   for account_id, loan_ids in loans_by_account.items()]
     candidates.sort(key=lambda item: ((item.name or item.account_id).casefold(), item.account_id))
-    return len({loan_id for _, loan_id in borrower_loans}), candidates
+    if loan_candidates is not None:
+        for loan_id in sorted(explicit_loans):
+            borrowers = borrowers_by_loan.get(loan_id, set())
+            borrower = next(iter(borrowers)) if len(borrowers) == 1 else None
+            verified = borrower if borrower in accounts else None
+            loan_candidates.append(LoanCandidate(loan_id=loan_id, account_id=verified,
+                                                 account_name=accounts.get(verified)))
+    return len(explicit_loans), candidates
 
 
 def preflight(session: Session, root: Path) -> PreflightResult:
@@ -216,13 +276,14 @@ def preflight(session: Session, root: Path) -> PreflightResult:
         issues.append("DUPLICATE_QUERY_ROLES:" + ",".join(map(str, duplicate_roles)))
     loans = 0
     account_candidates: list[AccountCandidate] = []
+    loan_candidates: list[LoanCandidate] = []
     unmapped_attributes: set[str] = set()
     mapped_fields: set[str] = set()
     mapping_warnings: set[str] = set()
     if (query_file_set_valid and roles == required_roles
             and not any(item.startswith("FILE_PARSE_FAILED") for item in issues)):
         config = load_underwriting_config()
-        loans, account_candidates = _discover_accounts(detached.documents, config)
+        loans, account_candidates = _discover_accounts(detached.documents, config, loan_candidates)
         graph = build_entity_graph(detached.documents, config)
         issues.extend(graph.issues)
         if not graph.table("Loan"):
@@ -298,9 +359,12 @@ def preflight(session: Session, root: Path) -> PreflightResult:
         unavailable_inputs=soql_unavailable_inputs(mapped_fields) if query_file_set_valid else [],
         account_index_version=ACCOUNT_INDEX_VERSION,
         loan_count=loans, account_count=len(account_candidates), account_candidates=account_candidates,
+        loan_candidates=loan_candidates,
         issue_count=len(issues), priority_issues=summaries[:10], comparison=comparison,
         suggested_next_step=("A workbook could not be read. Check its FILE_PARSE_FAILED reason above, correct or replace that upload, then validate again. This is a parsing failure, not a missing field mapping."
                      if any(item.startswith("FILE_PARSE_FAILED") for item in issues) else
+                     "Select an explicit loan number, then confirm processing. No unique verified borrower is available for some loans; missing or ambiguous borrower evidence remains UNKNOWN. Guarantors are never treated as borrowers. This is not a credit decision."
+                     if loan_candidates and any(item.account_id is None for item in loan_candidates) else
                      "Mappings are incomplete. You can prepare a diagnostic-only review without selecting an account. Available evidence will be retained; unmapped inputs remain UNKNOWN and no borrower relationships or loan records will be invented."
                      if query_file_set_valid and not account_candidates else
                      "Review extracted attributes, select the intended borrower account/client, then confirm processing. Query files link only through matching explicit Account ID columns, never row position or name. This is not a credit decision."

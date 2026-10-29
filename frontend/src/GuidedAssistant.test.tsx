@@ -123,6 +123,28 @@ describe('Guided assistant workflow', () => {
     expect(fetch).toHaveBeenCalledWith('/api/sessions/s1/assistant/process', expect.objectContaining({ method: 'POST', body: JSON.stringify({ confirmed: true, expected_updated_at: 'revision1' }) }));
   });
 
+  it('loads and selects a guarantor-only loan without assigning a borrower', async () => {
+    const active = session();
+    active.documents = [1, 2, 4].map((role) => ({ id: `d${role}`, name: `MTB_Query_${role}.xlsx`, size: 10, extension: '.xlsx', metadata: {} }));
+    active.preflight = { created_at: 'now', input_fingerprint: 'guarantors', recognized_mtb: true,
+      missing_query_roles: [], duplicate_query_roles: [],
+      query_roles: [1, 2, 4], query_file_set_valid: true, document_count: 3,
+      attribute_count: 0, attributes: [], loan_count: 1, account_count: 0, issue_count: 1,
+      priority_issues: [], suggested_next_step: 'Select loan', comparison: 'First', external_processing: false };
+    const selected = { ...active, selected_loan_id: 'G-LOAN', selected_account_id: null };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.includes('/loans?')
+      ? { results: [{ loan_id: 'G-LOAN', account_id: null, account_name: null }], total: 1, offset: 0, limit: 50, loan_count: 1 }
+      : selected), { status: 200 })));
+    const p = props(active);
+    const view = render(<GuidedAssistant {...p} />);
+    await screen.findByRole('option', { name: 'G-LOAN · Borrower relationship missing or ambiguous' });
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Choose loan number' }), 'G-LOAN');
+    expect(p.onSession).toHaveBeenCalledWith(selected);
+    view.rerender(<GuidedAssistant {...p} session={selected} />);
+    expect(screen.getByRole('button', { name: 'Prepare review' })).toBeEnabled();
+    expect(screen.getByText(/Guarantor records retain their roles/)).toBeVisible();
+  });
+
   it('requires local validation and an explicit loan-number selection for MTB processing', async () => {
     const active = session();
     active.documents = [1, 2, 4].map((role) => ({ id: `d${role}`, name: `MTB_Query_${role}.xlsx`, size: 10, extension: '.xlsx', metadata: {} }));

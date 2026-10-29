@@ -604,6 +604,6 @@ def test_account_search_refreshes_legacy_preflight_index(client):
     assert response.status_code == 200
     result = response.json()
     assert result["account_count"] == 1
-    assert result["refreshed_preflight"]["account_index_version"] == 1
+    assert result["refreshed_preflight"]["account_index_version"] == 2
     assert result["results"][0]["account_id"] == "A1"
     assert result["results"][0]["loan_ids"] == ["L1"]

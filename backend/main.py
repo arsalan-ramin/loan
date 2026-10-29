@@ -379,12 +379,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if latest.updated_at != snapshot.updated_at:
                 raise HTTPException(409, "Session changed during validation. Validate the current files again.")
             latest.preflight = result
-            store.replace_account_candidates(latest.id, result.account_candidates)
+            store.replace_account_candidates(latest.id, result.account_candidates, result.loan_candidates)
             if latest.selected_account_id and not store.has_account_candidate(latest.id, latest.selected_account_id):
                 latest.selected_account_id = None
             if latest.selected_loan_id:
-                linked_account = store.loan_candidate_account(latest.id, latest.selected_loan_id)
-                if linked_account is None or linked_account != latest.selected_account_id:
+                if not store.has_loan_candidate(latest.id, latest.selected_account_id, latest.selected_loan_id):
                     latest.selected_loan_id = None
             latest.messages.append(Message(role="assistant", origin="local_assistant", content=(
                 f"Local validation complete: {result.document_count} files, {result.loan_count} explicit loans, "
@@ -393,6 +392,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             store.save(latest)
         return latest
 
+    def refresh_directory(store: Store, session: Session):
+        """Rebuild legacy account and loan indexes together using current mappings."""
+        session_id = session.id
+        refreshed_preflight = None
+        if session.preflight and session.preflight.account_index_version < ACCOUNT_INDEX_VERSION:
+            snapshot_revision = session.updated_at
+            refreshed_preflight = preflight(session, store.root)
+            refreshed_preflight.comparison = "Account and loan directories refreshed using the current explicit relationship mappings."
+            with store.lock:
+                latest = require_session(store, session_id)
+                editable(latest)
+                if latest.updated_at != snapshot_revision:
+                    raise HTTPException(409, "Session changed during account index refresh. Validate the current files again.")
+                latest.preflight = refreshed_preflight
+                store.replace_account_candidates(session_id, refreshed_preflight.account_candidates,
+                                                 refreshed_preflight.loan_candidates)
+                if latest.selected_account_id and not store.has_account_candidate(session_id, latest.selected_account_id):
+                    latest.selected_account_id = None
+                if latest.selected_loan_id:
+                    if not store.has_loan_candidate(session_id, latest.selected_account_id, latest.selected_loan_id):
+                        latest.selected_loan_id = None
+                latest.messages.append(Message(
+                    role="assistant", origin="local_assistant",
+                    content=(f"Account directory refreshed: {refreshed_preflight.account_count} borrower accounts "
+                             f"for {refreshed_preflight.loan_count} explicit loans. Search by account/client name, "
+                             "account ID, or explicit loan ID, then select a loan or verified borrower account. No credit evaluation "
+                             "or lending decision was made."),
+                ))
+                store.save(latest)
+                session = latest
+        return session, refreshed_preflight
+
     @application.get("/api/sessions/{session_id}/accounts", response_model=AccountCandidatePage)
     def search_accounts(request: Request, session_id: str, q: str = Query("", max_length=128),
                         offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
@@ -400,38 +431,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         session = require_session(store, session_id)
         if session.preflight is None or not session.preflight.recognized_mtb:
             raise HTTPException(409, "Run local validation before searching detected borrower accounts.")
-        refreshed_preflight = None
-        if session.preflight.account_index_version < ACCOUNT_INDEX_VERSION:
-            snapshot_revision = session.updated_at
-            refreshed_preflight = preflight(session, store.root)
-            refreshed_preflight.comparison = "Account directory refreshed using the current explicit relationship mappings."
-            refreshed_preflight.suggested_next_step = (
-                "Select the detected borrower account/client to scope processing. "
-                "This local index refresh is not credit clearance."
-            )
-            with store.lock:
-                latest = require_session(store, session_id)
-                editable(latest)
-                if latest.updated_at != snapshot_revision:
-                    raise HTTPException(409, "Session changed during account index refresh. Validate the current files again.")
-                latest.preflight = refreshed_preflight
-                store.replace_account_candidates(session_id, refreshed_preflight.account_candidates)
-                if latest.selected_account_id and not store.has_account_candidate(session_id, latest.selected_account_id):
-                    latest.selected_account_id = None
-                if latest.selected_loan_id:
-                    linked_account = store.loan_candidate_account(session_id, latest.selected_loan_id)
-                    if linked_account is None or linked_account != latest.selected_account_id:
-                        latest.selected_loan_id = None
-                    latest.selected_loan_id = None
-                latest.messages.append(Message(
-                    role="assistant", origin="local_assistant",
-                    content=(f"Account directory refreshed: {refreshed_preflight.account_count} borrower accounts "
-                             f"for {refreshed_preflight.loan_count} explicit loans. Search by account/client name, "
-                             "account ID, or linked loan ID, then select the borrower account. No credit evaluation "
-                             "or lending decision was made."),
-                ))
-                store.save(latest)
-                session = latest
+        session, refreshed_preflight = refresh_directory(store, session)
         rows, total = store.account_candidates(session_id, q, offset, limit)
         return AccountCandidatePage(
             results=[AccountCandidate(account_id=row[0], name=row[1], loan_count=row[2],
@@ -449,6 +449,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             editable(session)
             if session.preflight is None or not session.preflight.recognized_mtb:
                 raise HTTPException(409, "Run local validation before selecting a borrower account.")
+            session, _ = refresh_directory(store, session)
             if not store.has_account_candidate(session_id, body.account_id):
                 raise HTTPException(404, "This account was not found among the validated borrower accounts.")
             session.selected_account_id = body.account_id
@@ -466,6 +467,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         session = require_session(store, session_id)
         if session.preflight is None or not session.preflight.recognized_mtb:
             raise HTTPException(409, "Run local validation before searching detected loan numbers.")
+        session, _ = refresh_directory(store, session)
         rows, total = store.loan_candidates(session_id, q, offset, limit)
         return LoanCandidatePage(
             results=[LoanCandidate(loan_id=row[0], account_id=row[1], account_name=row[2]) for row in rows],
@@ -481,9 +483,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             editable(session)
             if session.preflight is None or not session.preflight.recognized_mtb:
                 raise HTTPException(409, "Run local validation before selecting a loan number.")
+            session, _ = refresh_directory(store, session)
+            if not store.loan_candidate_exists(session_id, body.loan_id):
+                raise HTTPException(404, "This loan number was not found among validated explicit loan records.")
             account_id = store.loan_candidate_account(session_id, body.loan_id)
-            if account_id is None:
-                raise HTTPException(404, "This loan number was not found uniquely among validated explicit loan records.")
             session.selected_loan_id = body.loan_id
             session.selected_account_id = account_id
             session.report = None
@@ -491,7 +494,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             session.steps = [Step(agent=agent) for agent in AGENTS]
             session.messages.append(Message(
                 role="assistant", origin="local_assistant",
-                content=(f"Selected explicit loan number {body.loan_id} and its linked borrower account {account_id}. "
+                     content=(f"Selected explicit loan number {body.loan_id}. "
+                                 + (f"Its verified borrower account is {account_id}. " if account_id is not None else
+                                     "No unique verified borrower account is available; borrower evidence remains UNKNOWN. Guarantors are not borrowers. ")
+                                 +
                          "Processing will scope to this loan using its validated explicit relationships. "
                          "No credit evaluation or lending decision has been made."),
             ))
@@ -574,15 +580,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                    or session.preflight.missing_query_roles
                                    or session.preflight.duplicate_query_roles):
                 raise HTTPException(409, "Upload exactly one workbook each for Query 1, Query 2 and Query 4 before processing.")
-            if recognized_mtb and session.preflight and session.preflight.account_count and (
+            if recognized_mtb and session.preflight and session.preflight.account_index_version < ACCOUNT_INDEX_VERSION:
+                raise HTTPException(409, "Validate the workbooks again to refresh the explicit loan directory before processing.")
+            if recognized_mtb and session.preflight and session.preflight.loan_count and (
                 not session.selected_loan_id and not session.selected_account_id
             ):
                 raise HTTPException(409, "Search and select an explicit loan number before starting the review.")
             if recognized_mtb and session.selected_loan_id:
-                linked_account = store.loan_candidate_account(session.id, session.selected_loan_id)
-                if (linked_account is None or linked_account != session.selected_account_id
-                        or not store.has_loan_candidate(session.id, linked_account, session.selected_loan_id)):
-                    raise HTTPException(409, "Selected loan is not uniquely linked to the selected borrower account. Validate the workbooks again.")
+                if not store.loan_candidate_exists(session.id, session.selected_loan_id):
+                    raise HTTPException(409, "Selected loan is no longer in the explicit loan directory. Validate the workbooks again.")
+                if not store.has_loan_candidate(session.id, session.selected_account_id, session.selected_loan_id):
+                    raise HTTPException(409, "Selected loan's verified borrower does not match the selection. Validate the workbooks again.")
+            elif recognized_mtb and session.selected_account_id and not store.has_account_candidate(session.id, session.selected_account_id):
+                raise HTTPException(409, "Selected borrower account is no longer validated. Validate the workbooks again.")
             try:
                 IntakeAgent().check(session)
             except ValueError as exc:

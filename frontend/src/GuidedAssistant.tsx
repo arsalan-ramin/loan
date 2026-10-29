@@ -281,11 +281,12 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
             {session.selected_loan_id && !loanCandidates.some((item) => item.loan_id === session.selected_loan_id)
               && <option value={session.selected_loan_id}>{session.selected_loan_id} · selected</option>}
             {loanCandidates.map((item) => <option key={`${item.loan_id}:${item.account_id}`} value={item.loan_id}>
-              {item.loan_id} · {item.account_name ? `${item.account_name} · ` : ''}{item.account_id}
+              {item.loan_id} · {item.account_id ? `${item.account_name ? `${item.account_name} · ` : ''}${item.account_id}` : 'Borrower relationship missing or ambiguous'}
             </option>)}
           </select></label>
           {loanCandidates.length < loanTotal && <button type="button" className="button secondary" disabled={disabled || loanLoading} onClick={() => void loadLoans(loanCandidates.length)}>Load more loans</button>}
         </div>
+        {session.selected_loan_id && !session.selected_account_id && <p className="muted">This loan can be reviewed without a verified borrower. Guarantor records retain their roles; missing borrower evidence remains UNKNOWN.</p>}
         {requiresLoanSelection && !session.selected_loan_id && <small>{!queryFileSetValid ? 'Upload one workbook each for Query 1, Query 2, and Query 4 before preparing the review.' : loanLoading ? 'Loading explicit loan numbers…' : loanTotal || (preflight.loan_count ?? 0) ? 'Select a loan number before preparing the review.' : 'No explicit loan numbers could be mapped. You can still prepare a diagnostic-only report; no loans or relationships will be invented.'}</small>}
       </>}
       {prepareReviewAction}

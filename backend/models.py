@@ -67,21 +67,7 @@ class AccountCandidatePage(BaseModel):
 
 class LoanCandidate(BaseModel):
     loan_id: str
-    account_id: str
-    account_name: str | None = None
-
-
-class LoanCandidatePage(BaseModel):
-    results: list[LoanCandidate]
-    total: int
-    offset: int
-    limit: int
-    loan_count: int = 0
-
-
-class LoanCandidate(BaseModel):
-    loan_id: str
-    account_id: str
+    account_id: str | None = None
     account_name: str | None = None
 
 
@@ -254,6 +240,7 @@ class PreflightResult(BaseModel):
     account_count: int = 0
     account_index_version: int = 0
     account_candidates: list[AccountCandidate] = Field(default_factory=list, exclude=True)
+    loan_candidates: list[LoanCandidate] = Field(default_factory=list, exclude=True)
     issue_count: int
     priority_issues: list[str]
     suggested_next_step: str
@@ -277,7 +264,6 @@ class Session(BaseModel):
     title: str = "Untitled review"
     mode: Mode = "TEST"
     selected_account_id: str | None = None
-    selected_loan_id: str | None = None
     selected_loan_id: str | None = None
     created_at: str = Field(default_factory=now)
     updated_at: str = Field(default_factory=now)
@@ -314,11 +300,6 @@ class ModeRequest(BaseModel):
 class AccountSelectionRequest(BaseModel):
     model_config = {"extra": "forbid"}
     account_id: str = Field(min_length=1, max_length=128)
-
-
-class LoanSelectionRequest(BaseModel):
-    model_config = {"extra": "forbid"}
-    loan_id: str = Field(min_length=1, max_length=128)
 
 
 class LoanSelectionRequest(BaseModel):

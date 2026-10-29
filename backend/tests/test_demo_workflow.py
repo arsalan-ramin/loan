@@ -713,6 +713,187 @@ def test_tree_boundaries(score, ownership, fico, amount, naics, vehicle, label, 
         assert "thresholds conflict" in view["rationale"]
 
 
+@pytest.mark.parametrize("score", ["160", "189", "200", "250"])
+@pytest.mark.parametrize("value,basis", [
+    ("absent", "ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED"),
+    (None, "ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED"),
+    ("", "ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED"),
+    ("0", "EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS"),
+    ("1", "EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS"),
+    ("2", "EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS"),
+])
+def test_demo_ownership_absence_zero_and_boundaries(score, value, basis, monkeypatch):
+    provider = Mock(side_effect=AssertionError("Ownership evaluation must stay local"))
+    monkeypatch.setattr(AnthropicLLM, "complete", provider)
+    source = rows()
+    source[0][1].pop("ownership_years")
+    if value != "absent":
+        source[0][1]["ownership_years"] = value
+    source[3][1]["sbss"] = score
+    original = copy.deepcopy(source)
+    report = demo_report(source)
+    view = report.underwriting.loan_results[0].normalized_data["demo_decision"]
+    assumed = basis == "ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED"
+    expected = "0" if assumed else value
+    assert view["normalized_facts"]["ownership_years"] == expected
+    assert view["ownership_years_basis"] == basis
+    assert criterion(view, "ownership_years")["status"] == "OBSERVED"
+    assert "ownership_years" not in view["missing_inputs"]
+    assert view["label"] == "Approve"
+    assert view["candidate_route"] == ("CONVENTIONAL" if int(score) >= 200 and value == "2" else "SBA")
+    assert ("OWNERSHIP_GE_2" in view["branch"]) == (value == "2")
+    refs = criterion(view, "ownership_years")["evidence_refs"]
+    assert bool(refs) is not assumed
+    if assumed:
+        assert not any(item["field"] == "ownership_years" for item in view["source_evidence"])
+        assert "User-defined" in criterion(view, "ownership_years")["detail"]
+    for context in (demo_explanation_context(report), report_context(report)):
+        bounded = context["underwriting"]["loan_results"][0]["demo_decision"]
+        assert bounded["normalized_facts"]["ownership_years"] == expected
+        assert bounded["ownership_years_basis"] == basis
+        assert "ownership_years" not in bounded["missing_inputs"]
+    assert source == original
+    provider.assert_not_called()
+
+
+@pytest.mark.parametrize("score", ["175", "200"])
+@pytest.mark.parametrize("value", ["-1", True, False, "bad", "NaN", "Infinity", "   "])
+def test_supplied_invalid_ownership_never_defaults(score, value):
+    source = rows()
+    source[0][1]["ownership_years"] = value
+    source[3][1]["sbss"] = score
+    view = demo(source)
+    assert view["label"] == "Refer"
+    assert view["normalized_facts"]["ownership_years"] is None
+    assert view["ownership_years_basis"] == "UNAVAILABLE_OR_INVALID"
+    assert criterion(view, "ownership_years")["status"] == "UNKNOWN"
+    assert criterion(view, "ownership_years")["evidence_refs"]
+    assert "ownership_years" in view["missing_inputs"]
+
+
+@pytest.mark.parametrize("kind", ["same_account_conflict", "profile_conflict", "poisoned_absent", "supplied_null"])
+def test_unusable_ownership_graph_evidence_never_defaults(kind):
+    source = rows()
+    if kind == "same_account_conflict":
+        source.append(("Account", {"Id": "A1", "ownership_years": "0"}))
+    elif kind == "profile_conflict":
+        source.append(("LoanExtension", {"Id": "X1", "loan_id": "L1", "ownership_years": "0"}))
+    else:
+        source[0][1].pop("ownership_years")
+    config = load_underwriting_config()
+    graph = build_entity_graph([document(source)], config)
+    account = graph.table("Account")["A1"]
+    if kind == "poisoned_absent":
+        account.poisoned.add("ownership_years")
+    elif kind == "supplied_null":
+        account.fields["ownership_years"] = None
+        account.field_refs["ownership_years"] = ["supplied-null-formula"]
+    before = copy.deepcopy(graph)
+    view = evaluate_demo(graph, graph.table("Loan")["L1"], config, mode="TEST",
+                         response=graph.table("LCRESPONSE")["S1"])
+    assert view["normalized_facts"]["ownership_years"] is None
+    assert view["ownership_years_basis"] == "UNAVAILABLE_OR_INVALID"
+    assert criterion(view, "ownership_years")["status"] == "UNKNOWN"
+    assert "ownership_years" in view["missing_inputs"]
+    assert graph == before
+
+
+@pytest.mark.parametrize("scope", ["Loan", "LoanExtension"])
+def test_ownership_keeps_existing_profile_scopes(scope):
+    source = rows()
+    source[0][1].pop("ownership_years")
+    if scope == "LoanExtension":
+        source.append((scope, {"Id": "X1", "loan_id": "L1", "ownership_years": "2"}))
+    config = load_underwriting_config()
+    graph = build_entity_graph([document(source)], config)
+    if scope == "Loan":
+        # Loan is an existing evaluator scope, not a canonical workbook alias.
+        graph.table("Loan")["L1"].fields["ownership_years"] = "2"
+        graph.table("Loan")["L1"].field_refs["ownership_years"] = ["loan-ownership"]
+    view = evaluate_demo(graph, graph.table("Loan")["L1"], config, mode="TEST",
+                         response=graph.table("LCRESPONSE")["S1"])
+    assert view["normalized_facts"]["ownership_years"] == "2"
+    assert view["ownership_years_basis"] == "EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS"
+    assert view["candidate_route"] == "CONVENTIONAL"
+
+
+def test_ownership_fallback_never_substitutes_guarantor_or_clears_identity():
+    source = linked_party(rows())
+    source[0][1].pop("ownership_years")
+    source[1][1].pop("borrower_account_id")
+    next(values for table, values in source if table == "Account" and values["Id"] == "G1")["ownership_years"] = "10"
+    view = demo(source)
+    assert view["normalized_facts"]["ownership_years"] == "0"
+    assert view["ownership_years_basis"] == "ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED"
+    assert criterion(view, "ownership_years")["evidence_refs"] == []
+    assert view["label"] == "Refer" and view["candidate_route"] is None
+    assert "explicit_unique_borrower_account_relationship" in view["missing_inputs"]
+    assert criterion(view, "bankruptcy_clear")["status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("value", [None, "0", "1", "2", "bad", True, "-1"])
+@pytest.mark.parametrize("mode", ["TEST", "PRODUCTION"])
+def test_ownership_demo_never_changes_documents_graph_or_strict_result(value, mode, monkeypatch):
+    source = rows()
+    source[0][1]["ownership_years"] = value
+    doc = document(source)
+    before_doc = copy.deepcopy(doc)
+    config = load_underwriting_config()
+    graph = build_entity_graph([doc], config)
+    before_graph = copy.deepcopy(graph)
+    evaluate_demo(graph, graph.table("Loan")["L1"], config, mode=mode)
+    assert graph == before_graph and doc == before_doc
+    actual = evaluate_underwriting([doc], mode=mode).model_dump()
+    monkeypatch.setattr("backend.underwriting_engine.evaluate_demo", lambda *a, **k: None)
+    strict = evaluate_underwriting([doc], mode=mode).model_dump()
+    for payload in (actual, strict):
+        payload["loan_results"][0]["normalized_data"].pop("demo_decision", None)
+    assert actual == strict and doc == before_doc
+
+
+@pytest.mark.parametrize("score,fico,amount,label,branch", [
+    ("160", "759", "100000", "Approve", "SBSS_160_189_AMOUNT_LE_100K"),
+    ("189", "759", "100001", "Refer", "REQUEST_THRESHOLD_CONFLICT"),
+    ("175", "759", "100000001", "Decline", "SBSS_160_189_AMOUNT_GT_100M"),
+    ("200", "650", "100000", "Approve", "SBSS_GE_200_OWNERSHIP_LT_2"),
+])
+def test_assumed_ownership_uses_existing_fico_and_amount_branches(score, fico, amount, label, branch):
+    source = rows()
+    source[0][1].pop("ownership_years")
+    source[1][1]["requested_amount"] = amount
+    source[2][1]["personal_fico"] = fico
+    source[3][1]["sbss"] = score
+    view = demo(source)
+    assert (view["label"], view["branch"]) == (label, branch)
+    assert "ownership_years" not in view["missing_inputs"]
+
+
+@pytest.mark.parametrize("value,basis,expected_basis", [
+    ("0", "ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED", "ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED"),
+    ("2", "ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED", None),
+    ("0", "EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS", "EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS"),
+    (None, "UNAVAILABLE_OR_INVALID", "UNAVAILABLE_OR_INVALID"),
+    ("-1", "EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS", None),
+    (True, "EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS", None),
+    ("0", "RAW_BASIS_SENTINEL", None),
+    ("0", None, None),
+])
+def test_bounded_ownership_basis_is_allowlisted_consistent_and_not_inferred(value, basis, expected_basis):
+    view = demo()
+    view["normalized_facts"]["ownership_years"] = value
+    if basis is None:
+        view.pop("ownership_years_basis")
+    else:
+        view["ownership_years_basis"] = basis
+    before = copy.deepcopy(view)
+    bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    assert bounded.get("ownership_years_basis") == expected_basis
+    expected_value = value if type(value) is str and value in {"0", "2"} else None
+    assert bounded["normalized_facts"].get("ownership_years") == expected_value
+    assert "RAW_BASIS_SENTINEL" not in json.dumps(bounded)
+    assert view == before
+
+
 def test_vehicle_flag_required_only_for_sba_and_no_outside_tree_gates():
     source = rows()
     for field in ("requested_path", "tier_i", "tier_ii", "is_investment_re", "vehicle_only"):
@@ -913,8 +1094,9 @@ def test_query2_mapped_scalar_score_works_without_response_id():
     assert any(item["field"] == score for item in view["source_evidence"])
 
 
-@pytest.mark.parametrize("score,route", [("190", "SBA"), ("200", "CONVENTIONAL")])
-def test_actual_source_shaped_soql_without_ebitda_approves_locally(score, route, monkeypatch):
+@pytest.mark.parametrize("ownership", ["absent", None, "", "0", "1", "2"])
+@pytest.mark.parametrize("score", ["160", "189", "190", "200"])
+def test_actual_source_shaped_soql_without_ebitda_approves_locally(score, ownership, monkeypatch):
     """Synthetic cells with actual source headers; no uploads, main app or provider needed."""
     provider = Mock(side_effect=AssertionError("Source fixture evaluation must stay local"))
     monkeypatch.setattr(AnthropicLLM, "complete", provider)
@@ -937,17 +1119,32 @@ def test_actual_source_shaped_soql_without_ebitda_approves_locally(score, route,
             "nFUSE__Report_Category__c": "personal", "LLC_BI__Borrower_Type__c": "Borrower",
             "nFUSE__Number_Of_Bankruptcies__c": "0"},
     }
+    ownership_field = junction + "LLC_BI__Account__r.Number_of_Years_as_Current_Owner__c"
+    if ownership == "absent":
+        values[1].pop(ownership_field)
+    else:
+        values[1][ownership_field] = ownership
     documents = []
     for query, cells in values.items():
         doc = document([("Data", cells)], f"MTB_Query_{query}_SOQL_Only.xlsx", f"q{query}")
         doc.metadata["sheets"] = [{"name": "Data", "headers": list(cells)}]
         documents.append(doc)
     # Explicit branch flag supplements exports; no synthetic EBITDA or dates.
-    documents.append(document([("Loan", {"Id": "L1", "vehicle_only": False})], document_id="branch"))
+    documents.append(document([("Loan", {"Id": "L1", "vehicle_only": False,
+                                         "requested_amount": "100000"})], document_id="branch"))
     before = copy.deepcopy(documents)
     loan = evaluate_underwriting(documents, mode="TEST").loan_results[0]
     view = loan.normalized_data["demo_decision"]
+    route = "CONVENTIONAL" if score == "200" and ownership == "2" else "SBA"
     assert (view["label"], view["candidate_route"]) == ("Approve", route)
+    assumed = ownership in {"absent", None, ""}
+    assert view["normalized_facts"]["ownership_years"] == ("0" if assumed else ownership)
+    assert view["ownership_years_basis"] == (
+        "ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED" if assumed else "EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS")
+    ownership_refs = criterion(view, "ownership_years")["evidence_refs"]
+    assert bool(ownership_refs) is not assumed
+    assert {item["field"] for item in view["source_evidence"] if item["id"] in ownership_refs} == (
+        set() if assumed else {ownership_field})
     assert view["missing_inputs"] == [] and view["matched_reasons"] == []
     assert view["normalized_facts"]["ebitda_usd"] is None
     assert criterion(view, "ebitda_usd")["status"] == "UNKNOWN"

@@ -22,6 +22,9 @@ VERSION = "screenshot-test-demo-v1"
 SELECTION_BASIS = "FIRST_ACCOUNT_MATCH_FOR_TEST_DEMO"
 FICO_AGGREGATION_BASIS = "LINKED_BORROWER_GUARANTOR_ACCOUNT_AVERAGE"
 AGE_AGGREGATION_BASIS = "LINKED_BORROWER_GUARANTOR_MIN_COMPLETED_CALENDAR_AGE"
+OWNERSHIP_FALLBACK_BASIS = "ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED"
+OWNERSHIP_EXPLICIT_BASIS = "EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS"
+OWNERSHIP_UNKNOWN_BASIS = "UNAVAILABLE_OR_INVALID"
 
 
 def _matched_reasons(criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -260,6 +263,14 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     ownership_raw, ownership_refs = read("ownership_years", profile_nodes)
     ownership = _number(ownership_raw)
     ownership = ownership if ownership is not None and ownership >= 0 else None
+    ownership_basis = OWNERSHIP_EXPLICIT_BASIS if ownership is not None else OWNERSHIP_UNKNOWN_BASIS
+    # User-defined TEST ownership assumption, not measured corporation/formation
+    # age. Supplied null/formula evidence and poisoned fields cannot use it.
+    # profile_nodes deliberately excludes guarantors even without a borrower;
+    # the independent mandatory borrower-identity guard still blocks approval.
+    if (ownership_raw is None and not ownership_refs
+            and not any("ownership_years" in node.poisoned for node in profile_nodes)):
+        ownership, ownership_basis = Decimal(0), OWNERSHIP_FALLBACK_BASIS
     amount_raw, amount_refs = read("requested_amount", profile_nodes)
     amount = _number(amount_raw)
     amount = amount if amount is not None and amount >= 0 else None
@@ -338,9 +349,18 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     for key, value, refs in (("ownership_years", facts["ownership_years"], ownership_refs),
                              ("requested_amount_usd", facts["requested_amount_usd"], amount_refs),
                              ("naics", naics, naics_refs), ("vehicle_only", vehicle, vehicle_refs)):
+        detail = "Branch input; required only where the screenshot tree uses it."
+        if key == "ownership_years":
+            detail = ("User-defined TEST demo ownership fallback: absent current-owner years are assumed less "
+                      "than one year, represented as 0 for branch comparison; not measured corporation age, "
+                      "DOB or formation age. No source evidence is invented."
+                      if ownership_basis == OWNERSHIP_FALLBACK_BASIS else
+                      "Current-owner years from loan, extension or borrower profile; explicit zero means less "
+                      "than one year for this TEST demo. Invalid/conflicting supplied values stay UNKNOWN; "
+                      "not DOB or corporation formation age.")
         criteria.append({"criterion": key, "value": value,
                          "status": "UNKNOWN" if value is None else "OBSERVED",
-                         "evidence_refs": refs, "detail": "Branch input; required only where the screenshot tree uses it.",
+                         "evidence_refs": refs, "detail": detail,
                          "knockout": False})
     used_refs = {ref for item in criteria for ref in item["evidence_refs"]}
     demo_nodes = [*profile_nodes, *report_nodes, *age_nodes, *fico_nodes,
@@ -361,6 +381,7 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "age_reference_date_basis": age_reference_basis,
         "candidate_route": route, "branch": branch, "rationale": rationale,
         "criteria": criteria, "normalized_facts": facts,
+        "ownership_years_basis": ownership_basis,
         "age_aggregation": {"basis": AGE_AGGREGATION_BASIS, "account_count": len(party_roles)},
         "age_account_audit": age_audit,
         "fico_aggregation": {"basis": FICO_AGGREGATION_BASIS, "account_count": len(party_roles)},
@@ -393,10 +414,19 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
     fico = _number(facts.get("fico"))
     if fico is not None and 300 <= fico <= 850 and len(str(fico)) <= 100:
         normalized["fico"] = str(fico)
-    for key in ("sbss", "ownership_years", "ebitda_usd", "requested_amount_usd"):
+    for key in ("sbss", "ebitda_usd", "requested_amount_usd"):
         number = _number(facts.get(key))
         if number is not None and len(str(number)) <= 100:
             normalized[key] = str(number)
+    ownership = _number(facts.get("ownership_years"))
+    if ownership is not None and ownership >= 0 and len(str(ownership)) <= 100:
+        normalized["ownership_years"] = str(ownership)
+    ownership_context = {}
+    ownership_basis = data.get("ownership_years_basis")
+    if ((ownership_basis == OWNERSHIP_FALLBACK_BASIS and ownership == 0)
+            or (ownership_basis == OWNERSHIP_EXPLICIT_BASIS and "ownership_years" in normalized)
+            or (ownership_basis == OWNERSHIP_UNKNOWN_BASIS and "ownership_years" not in normalized)):
+        ownership_context["ownership_years_basis"] = ownership_basis
     if type(facts.get("age_years")) is int and 0 <= facts["age_years"] <= 150:
         normalized["age_years"] = facts["age_years"]
     for key in ("bankruptcy_clear", "vehicle_only"):
@@ -468,6 +498,7 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
         "reference_date_basis": "EXPLICIT_APPLICATION_AS_OF_DATE" if reference else "UNAVAILABLE",
         "candidate_route": data.get("candidate_route") if data.get("candidate_route") in {"SBA", "CONVENTIONAL"} else None,
         "branch": branch, "normalized_facts": normalized, "criteria": checks,
+        **ownership_context,
         **age_context,
         **aggregate_context,
         "matched_reasons": _matched_reasons(checks),

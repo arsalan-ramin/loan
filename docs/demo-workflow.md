@@ -26,7 +26,10 @@ No provider request is needed to evaluate this local deterministic trace.
   EBITDA/public-record diagnostics and additional branch inputs use OBSERVED/UNKNOWN,
   with `knockout=false`, not invented clearance.
 - `normalized_facts`: normalized scores, explicit EBITDA/amount, age, bankruptcy
-  clearance/count, ownership, NAICS and vehicle flag; missing facts stay null.
+  clearance/count, ownership, NAICS and vehicle flag; missing facts stay null
+  except for the user-defined TEST ownership fallback described below.
+- `ownership_years_basis`: `ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED`,
+  `EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS`, or `UNAVAILABLE_OR_INVALID`.
 - `fico_aggregation`: `basis=LINKED_BORROWER_GUARANTOR_ACCOUNT_AVERAGE` and
   `account_count` (all included unique accounts, including unresolved ones).
 - `age_aggregation`: `basis=LINKED_BORROWER_GUARANTOR_MIN_COMPLETED_CALENDAR_AGE`
@@ -121,6 +124,40 @@ retains every unresolved party and available relationship/Account/date evidence.
 Guarantor-only loans can have known ages without inventing a borrower or filling
 other borrower-specific fields.
 
+### Current-owner years — user-defined TEST fallback
+
+`Account.Number_of_Years_as_Current_Owner__c` maps to `ownership_years`.
+This is **ownership tenure**, not a person's DOB/age or measured corporation
+formation age, even when the user calls it “corporation age.” No DOB or formation
+date is used to infer ownership. Existing profile reads remain loan, linked loan
+extensions and the unique borrower Account; guarantors never supply ownership.
+
+For this user-defined demo only, an absent ownership field means **less than one
+year**, represented as `normalized_facts.ownership_years="0"` with basis
+`ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED`. It is not a data issue or an ownership
+entry in `missing_inputs`: it takes the existing ownership-below-two-years
+branches for SBSS 160–189 and at least 200. Empty/null cells omitted by extraction
+are absent. The assumption has no source-cell references and invents no source
+evidence. The criterion detail labels it as a user-defined TEST assumption, not
+an observed measurement. Its OBSERVED status means a usable demo branch input,
+not verification of tenure.
+
+An explicit nonnegative numeric value retains its normalized value and basis
+`EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS`, with its real evidence references.
+Explicit zero also means less than one year in this demo; one year remains below
+two, and exactly two years takes the at-least-two branch. Negative, boolean,
+nonnumeric, nonfinite, poisoned or conflicting supplied values remain UNKNOWN
+with null ownership and basis `UNAVAILABLE_OR_INVALID`. Supplied field references
+with a null/unusable formula result are not absence and cannot use the fallback.
+Applicable branches still require ownership when it is UNKNOWN; FICO/amount,
+vehicle and knockout rules are unchanged.
+
+The absent-field assumption can apply to the loan profile even without a unique
+borrower, but never substitutes guarantor ownership or clears mandatory borrower
+identity. The missing unique borrower relationship and borrower-specific UNKNOWN
+checks still prevent approval. Strict TEST/PRODUCTION ownership remains unchanged;
+no source document or graph is modified.
+
 ## Tree
 
 Any known knockout (verified bankruptcy
@@ -184,7 +221,13 @@ bounded context even if a stale status says UNKNOWN; unresolved-party gaps are
 preserved alongside that FAIL. An adult scalar never promotes UNKNOWN to PASS.
 Raw DOBs and per-account age audits are excluded from provider context.
 The recorded age-reference date and allowlisted basis are included without
-consulting the clock. EBITDA and public records stay diagnostic in bounded context even
+consulting the clock. Ownership context accepts nonnegative numeric scalars,
+including `"0"`, and only the three constant `ownership_years_basis` values above,
+consistent with the scalar (assumed basis requires zero; unavailable basis requires
+no valid scalar). Raw basis text is excluded. Legacy snapshots without ownership
+basis remain explainable without inventing an assumption or recomputing ownership;
+reprocess to apply the updated demo fallback.
+EBITDA and public records stay diagnostic in bounded context even
 when a legacy saved status says FAIL or `knockout=true` (or omits the flag):
 valid values become OBSERVED, otherwise UNKNOWN, always with `knockout=false`.
 Their missing inputs and matches

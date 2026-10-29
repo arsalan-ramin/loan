@@ -5,6 +5,7 @@ import io
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
+from openpyxl.styles import PatternFill
 
 from backend.agents import ExtractionAgent, RulesAgent
 from backend import excel
@@ -50,6 +51,8 @@ def test_excel_records_metadata_and_formula_text(tmp_path):
 
 def test_xlsx_expanded_size_limit_is_above_previous_50_mb():
     assert excel.MAX_EXPANDED_BYTES == 512 * 1024 * 1024
+    assert excel.MAX_CELLS == 5_000_000
+    assert excel.MAX_SCAN_CELLS == 50_000_000
 
 
 @pytest.mark.parametrize("include_text", [False, True])
@@ -76,8 +79,110 @@ def test_large_query_one_exceeds_old_million_cell_limit(tmp_path, include_text, 
 
 def test_excel_cell_budget_remains_enforced(monkeypatch):
     monkeypatch.setattr(excel, "MAX_CELLS", 2)
-    with pytest.raises(ValueError, match="visited-cell limit"):
+    # The first row contains three meaningful headers, not just padding.
+    with pytest.raises(ValueError, match="meaningful-cell limit") as caught:
         excel.extract_excel(workbook_bytes(), include_text=False)
+    assert excel.safe_excel_error_reason(caught.value).startswith("CELL_LIMIT:")
+
+
+def padded_workbook_bytes():
+    book = Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.title = "Loans"
+    sheet.append(["Id", None, "Amount"])
+    sheet.append(["SYNTHETIC-001", None, 0])
+    for row in (1, 2, 3):
+        sheet.cell(row, 12).fill = PatternFill(fill_type="solid", fgColor="FFFF00")
+    buffer = io.BytesIO()
+    book.save(buffer)
+    book.close()
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("include_text", [False, True])
+def test_styled_padding_uses_scan_budget_not_meaningful_budget(monkeypatch, include_text):
+    monkeypatch.setattr(excel, "MAX_CELLS", 4)
+    monkeypatch.setattr(excel, "MAX_SCAN_CELLS", 36)
+    text, metadata = excel.extract_excel(padded_workbook_bytes(), include_text=include_text)
+    assert metadata["meaningful_cell_count"] == 4
+    assert metadata["visited_cell_count"] == 36
+    assert metadata["meaningful_cell_limit"] == 4
+    assert metadata["visited_cell_limit"] == 36
+    assert metadata["sheets"][0]["headers"] == ["Id", "", "Amount", *([""] * 9)]
+    assert metadata["data_row_count"] == 1
+    assert metadata["records"] == [{"sheet": "Loans", "row": 2,
+                                    "values": {"Id": "SYNTHETIC-001", "Amount": 0},
+                                    "sources": {"Id": "Loans!A2", "Amount": "Loans!C2"}}]
+    assert bool(text) is include_text
+
+
+@pytest.mark.parametrize("include_text", [False, True])
+def test_whitespace_is_blank_but_raw_nonblank_values_are_preserved(monkeypatch, include_text):
+    book = Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.title = "Loans"
+    sheet.append(["Id", "Whitespace", "Zero", "False", "Formula", "Raw", "Missing"])
+    sheet.append(["SYNTHETIC-001", " \t\n", 0, False, '=""', "  raw \t", None])
+    sheet.append([" \t\n"] * 7)
+    buffer = io.BytesIO()
+    book.save(buffer)
+    book.close()
+    monkeypatch.setattr(excel, "MAX_CELLS", 12)
+    text, metadata = excel.extract_excel(buffer.getvalue(), include_text=include_text)
+    assert metadata["meaningful_cell_count"] == 12
+    # reset_dimensions streams row widths 7, 6, 7; absent G2 is not visited.
+    assert metadata["visited_cell_count"] == 20
+    assert metadata["data_row_count"] == len(metadata["records"]) == 1
+    record = metadata["records"][0]
+    assert record["values"] == {"Id": "SYNTHETIC-001", "Zero": 0, "False": False,
+                                "Formula": None, "Raw": "  raw \t"}
+    assert record["values"]["False"] is False
+    assert record["sources"] == {"Id": "Loans!A2", "Zero": "Loans!C2", "False": "Loans!D2",
+                                 "Formula": "Loans!E2", "Raw": "Loans!F2"}
+    assert metadata["formula_count"] == 1
+    if include_text:
+        assert 'E2=FORMULA (not evaluated): =""' in text
+        assert "F2=  raw \t" in text
+        assert "B2=" not in text
+        assert "row 3" not in text
+    else:
+        assert text == ""
+
+
+@pytest.mark.parametrize("value", [0, False, '=""'])
+@pytest.mark.parametrize("include_text", [False, True])
+def test_zero_false_and_formulas_consume_meaningful_budget(monkeypatch, value, include_text):
+    book = Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.append(["Value"])
+    sheet.append([value])
+    buffer = io.BytesIO()
+    book.save(buffer)
+    book.close()
+    monkeypatch.setattr(excel, "MAX_CELLS", 1)
+    with pytest.raises(ValueError, match="meaningful-cell limit") as caught:
+        excel.extract_excel(buffer.getvalue(), include_text=include_text)
+    assert excel.safe_excel_error_reason(caught.value).startswith("CELL_LIMIT:")
+
+
+@pytest.mark.parametrize("include_text", [False, True])
+def test_scan_budget_includes_trailing_styled_blank_rows(monkeypatch, include_text):
+    monkeypatch.setattr(excel, "MAX_CELLS", 4)
+    monkeypatch.setattr(excel, "MAX_SCAN_CELLS", 35)
+    with pytest.raises(ValueError, match="visited-cell scan limit") as caught:
+        excel.extract_excel(padded_workbook_bytes(), include_text=include_text)
+    assert excel.safe_excel_error_reason(caught.value).startswith("SCAN_CELL_LIMIT:")
+
+
+@pytest.mark.parametrize("include_text", [False, True])
+def test_meaningful_budget_is_workbook_wide(monkeypatch, include_text):
+    # Six cells on the data sheet plus four on the reference sheet.
+    monkeypatch.setattr(excel, "MAX_CELLS", 9)
+    with pytest.raises(ValueError, match="meaningful-cell limit"):
+        excel.extract_excel(workbook_bytes(), include_text=include_text)
 
 
 def test_excel_extraction_accepts_text_above_previous_limit(tmp_path):
@@ -194,6 +299,9 @@ def test_excel_upload_and_invalid_workbook(tmp_path):
     (ValueError("Duplicate header 'private-source-value' in sheet internal; field mapping is ambiguous."), "DUPLICATE_HEADERS"),
     (ValueError("Invalid XLSX workbook. Re-save it as a standard .xlsx file."), "INVALID_XLSX"),
     (ValueError("XLSX exceeds the 1,000,000 visited-cell limit."), "CELL_LIMIT"),
+    (ValueError("XLSX exceeds the 5,000,000 visited-cell limit."), "CELL_LIMIT"),
+    (ValueError("XLSX exceeds the 5,000,000 meaningful-cell limit."), "CELL_LIMIT"),
+    (ValueError("XLSX exceeds the 50,000,000 visited-cell scan limit."), "SCAN_CELL_LIMIT"),
     (ValueError("private-source-value C:/private/path"), "UNSUPPORTED_WORKBOOK_STRUCTURE"),
     (OSError("private-source-value C:/private/path"), "FILE_UNAVAILABLE"),
 ])

@@ -7,7 +7,8 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-MAX_CELLS = 5_000_000
+MAX_CELLS = 5_000_000  # Meaningful cells, including headers and reference sheets.
+MAX_SCAN_CELLS = 50_000_000  # All streamed row positions, including padding.
 MAX_TEXT = 50_000_000
 MAX_EXPANDED_BYTES = 512 * 1024 * 1024
 
@@ -23,6 +24,8 @@ def safe_excel_error_reason(error: Exception) -> str:
         return "INVALID_XLSX: file is not a readable standard XLSX package; save a new unencrypted Excel Workbook (.xlsx) copy"
     limits = {
         "Expanded XLSX exceeds the 512 MB limit.": "EXPANDED_SIZE_LIMIT: expanded workbook exceeds 512 MB",
+        "XLSX exceeds the 5,000,000 meaningful-cell limit.": "CELL_LIMIT: workbook exceeds 5,000,000 meaningful nonblank cells; split the data across workbooks",
+        "XLSX exceeds the 50,000,000 visited-cell scan limit.": "SCAN_CELL_LIMIT: workbook scan exceeds 50,000,000 visited cell positions; remove blank or styled padding and export only the used data range",
         "XLSX exceeds the 5,000,000 visited-cell limit.": "CELL_LIMIT: workbook exceeds 5,000,000 visited cells; export only the used data range",
         "Expanded XLSX exceeds the 250 MB limit.": "EXPANDED_SIZE_LIMIT: expanded workbook exceeds 250 MB",
         "XLSX files are limited to 30 sheets.": "SHEET_LIMIT: workbook exceeds 30 worksheets",
@@ -56,12 +59,12 @@ def extract_excel(raw: bytes | Path, *, include_text: bool = True) -> tuple[str,
     parts: list[str] = []
     sheets = []
     records = []
-    cells_seen = text_length = formula_count = 0
+    cells_seen = meaningful_cells = text_length = formula_count = 0
     try:
         if len(book.worksheets) > 30:
             raise ValueError("XLSX files are limited to 30 sheets.")
         for sheet in book.worksheets:
-            # Do not trust declared dimensions; count actual streamed cells with a hard budget.
+            # Do not trust declared dimensions; bound both scanning and meaningful data.
             sheet.reset_dimensions()
             headers = []
             header_row = None
@@ -71,9 +74,12 @@ def extract_excel(raw: bytes | Path, *, include_text: bool = True) -> tuple[str,
                 parts.append(f"Sheet: {sheet.title}")
             for row in sheet.iter_rows():
                 cells_seen += len(row)
-                if cells_seen > MAX_CELLS:
-                    raise ValueError("XLSX exceeds the 5,000,000 visited-cell limit.")
+                if cells_seen > MAX_SCAN_CELLS:
+                    raise ValueError("XLSX exceeds the 50,000,000 visited-cell scan limit.")
                 nonempty = [cell for cell in row if cell.value is not None and str(cell.value).strip()]
+                meaningful_cells += len(nonempty)
+                if meaningful_cells > MAX_CELLS:
+                    raise ValueError("XLSX exceeds the 5,000,000 meaningful-cell limit.")
                 if not nonempty:
                     continue
                 columns = max(columns, max(cell.column for cell in nonempty))
@@ -85,9 +91,10 @@ def extract_excel(raw: bytes | Path, *, include_text: bool = True) -> tuple[str,
                     if not is_reference:
                         record = {}
                         sources = {}
-                        for column, cell in enumerate(row):
+                        for cell in nonempty:
+                            column = cell.column - 1
                             key = headers[column] if column < len(headers) else ""
-                            if not key or cell.value is None:
+                            if not key:
                                 continue
                             if key in record:
                                 raise ValueError(f"Duplicate header {key!r} in sheet {sheet.title}; field mapping is ambiguous.")
@@ -121,7 +128,10 @@ def extract_excel(raw: bytes | Path, *, include_text: bool = True) -> tuple[str,
         total_rows = sum(sheet["data_rows"] for sheet in sheets if not sheet["is_reference"])
         metadata = {"sheet_names": book.sheetnames, "sheets": sheets, "data_row_count": total_rows,
                     "records": records,
+                    "meaningful_cell_count": meaningful_cells,
                     "visited_cell_count": cells_seen,
+                    "meaningful_cell_limit": MAX_CELLS,
+                    "visited_cell_limit": MAX_SCAN_CELLS,
                     "expanded_size_bytes": expanded_size,
                     "formula_count": formula_count,
                     "formula_policy": "Formulas are preserved as text and never evaluated."}

@@ -19,6 +19,7 @@ from .underwriting_models import USD_100K, USD_100M, exact_decimal
 
 VERSION = "screenshot-test-demo-v1"
 SELECTION_BASIS = "FIRST_ACCOUNT_MATCH_FOR_TEST_DEMO"
+FICO_AGGREGATION_BASIS = "LINKED_BORROWER_GUARANTOR_ACCOUNT_AVERAGE"
 
 
 def _matched_reasons(criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -114,7 +115,7 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "Explicit zero count needs no discharge date. Positive count needs verified discharge and application as-of dates; less than five calendar years matches a knockout.")
     facts["bankruptcy_count"] = str(count) if count is not None else None
 
-    dob_raw, dob_refs = read("dob", profile_nodes)
+    dob_raw, dob_refs = read("dob", profile_nodes if identity else [])
     dob = iso_date(dob_raw)
     age = None
     if dob and as_of and dob <= as_of:
@@ -123,20 +124,65 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         sorted(set(dob_refs + date_refs)),
         "Under 18 matches a knockout; explicit DOB and application as-of date are required. No report date is required.")
 
-    # A generic/business score cannot become personal FICO by convenient value.
-    fico_field = "personal_fico"
-    fico_raw, fico_refs = read(fico_field, report_nodes)
-    if report is not None and "personal_fico" not in report.fields:
-        category = str(report.fields.get("report_category", "")).strip().casefold()
-        role = str(report.fields.get("report_role", "")).strip().casefold()
-        if category in {"personal", "consumer", "personal_fico"} and role == "borrower":
-            fico_raw, fico_refs = read("fico", report_nodes)
-        fico_refs = sorted(set(fico_refs + report.field_refs.get("report_category", [])
-                               + report.field_refs.get("report_role", [])))
-    fico = _number(fico_raw)
-    fico = fico if fico is not None and 300 <= fico <= 850 and fico == fico.to_integral_value() else None
-    add("fico", fico, fico >= 650 if fico is not None else None, fico_refs,
-        "Explicitly typed borrower personal FICO below 650 matches a knockout; no business score or inferred party average.")
+    # Validated graph roles only, one observation per account, never a partial
+    # average. Keep guarantors separate from the borrower-specific inputs above.
+    party_roles: dict[str, set[str]] = {}
+    party_refs: dict[str, set[str]] = {}
+    for loan_id, account_id, role, refs in graph.associations:
+        if loan_id == loan.id and role in {"borrower", "guarantor"}:
+            party_roles.setdefault(account_id, set()).add(role)
+            party_refs.setdefault(account_id, set()).update(refs)
+    for account_id in sorted(borrowers):
+        party_roles.setdefault(account_id, set()).add("borrower")
+        party_refs.setdefault(account_id, set()).update(loan.field_refs.get("borrower_account_id", []))
+    fico_audit: list[dict[str, Any]] = []
+    fico_nodes: list[EntityNode] = []
+    fico_refs: set[str] = set()
+    scores: list[Decimal] = []
+    for account_id, roles in party_roles.items():
+        candidates = graph.related("CreditReport", "account_id", account_id)
+        selected = candidates[0] if candidates else None
+        refs = set(party_refs[account_id])
+        score = None
+        status = "NO_ACCOUNT_MATCH"
+        if selected is not None:
+            fico_nodes.append(selected)
+            for field in ("account_id", "personal_fico", "fico", "report_category", "report_role"):
+                refs.update(selected.field_refs.get(field, []))
+            # A supplied canonical field, including a poisoned/null one, must
+            # not fall through to a convenient generic score.
+            explicit = ("personal_fico" in selected.fields
+                        or "personal_fico" in selected.field_refs
+                        or "personal_fico" in selected.poisoned)
+            field = "personal_fico" if explicit else "fico"
+            category = str(selected.fields.get("report_category", "")).strip().casefold()
+            role = str(selected.fields.get("report_role", "")).strip().casefold()
+            typed = explicit or (category in {"personal", "consumer", "personal_fico"} and role in roles)
+            relevant = {"account_id", field} | (set() if explicit else {"report_category", "report_role"})
+            if selected.poisoned & relevant:
+                status = "CONFLICTING_REPORT"
+            elif not typed:
+                status = "UNTYPED_PERSONAL_FICO"
+            else:
+                raw, _ = read(field, [selected])
+                number = _number(raw)
+                if number is not None and 300 <= number <= 850 and number == number.to_integral_value():
+                    score, status = number, "VALID_PERSONAL_FICO"
+                    scores.append(number)
+                else:
+                    status = "MISSING_OR_INVALID_PERSONAL_FICO"
+        fico_refs.update(refs)
+        fico_audit.append({"account_id": account_id, "party_roles": sorted(roles),
+                           "selected_report_id": selected.id if selected else None,
+                           "report_status": "FIRST_ACCOUNT_MATCH" if selected else "NO_ACCOUNT_MATCH",
+                           "score_status": status, "score": str(score) if score is not None else None,
+                           "evidence_refs": sorted(refs)})
+    fico = (sum(scores, Decimal(0)) / Decimal(len(scores))
+            if scores and len(scores) == len(party_roles) else None)
+    add("fico", fico, fico >= 650 if fico is not None else None, sorted(fico_refs),
+        "Average personal FICO across all explicitly loan-linked borrower and guarantor accounts, once per account; "
+        "below 650 matches a knockout. Each raw score must be integral 300–850; fractional averages are allowed. "
+        "Any missing, conflicting, invalid or untyped party score makes the entire average UNKNOWN.")
 
     # Prefer the explicitly loan-scoped Query 2 scalar. A strict selected response
     # may supply a canonical score, but this module never changes response selection.
@@ -169,18 +215,18 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     if not identity:
         missing.append("explicit_unique_borrower_account_relationship")
         rationale = "A unique explicit borrower account relationship is required."
-    elif failures:
+    if failures:
         label, branch = "Decline", "KNOWN_KNOCKOUT"
         reasons = {
             "public_record_code": f"Public-record code {facts['public_record_code']} matches a knockout",
             "ebitda_usd": f"Explicit EBITDA {facts['ebitda_usd']} USD is negative",
             "bankruptcy_clear": "Verified bankruptcy discharge is less than five calendar years ago",
             "age_years": f"Age {age} is below 18",
-            "fico": f"Personal FICO {facts['fico']} is below 650",
+            "fico": f"Average personal FICO {facts['fico']} is below 650",
             "sbss": f"SBSS {facts['sbss']} is below 160",
         }
         rationale = "; ".join(reasons[item["criterion"]] for item in failures) + "."
-    else:
+    elif identity:
         # Determine a branch even with unrelated unknown knockout inputs. A known
         # amount decline is still a risk match; UNKNOWN never clears approval.
         if sbss is not None and sbss >= 160:
@@ -235,7 +281,9 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                          "evidence_refs": refs, "detail": "Branch input; required only where the screenshot tree uses it.",
                          "knockout": False})
     used_refs = {ref for item in criteria for ref in item["evidence_refs"]}
-    demo_nodes = [*profile_nodes, *report_nodes, *([response] if response is not None else [])]
+    demo_nodes = [*profile_nodes, *report_nodes, *fico_nodes,
+                  *graph.related("EntityInvolvement", "loan_id", loan.id),
+                  *([response] if response is not None else [])]
     demo_evidence = {item.id: item for node in demo_nodes for item in node.evidence if item.id in used_refs}
     return {
         "version": VERSION, "mode": "TEST", "label": label,
@@ -249,6 +297,8 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "reference_date_basis": "EXPLICIT_APPLICATION_AS_OF_DATE" if as_of else "UNAVAILABLE",
         "candidate_route": route, "branch": branch, "rationale": rationale,
         "criteria": criteria, "normalized_facts": facts,
+        "fico_aggregation": {"basis": FICO_AGGREGATION_BASIS, "account_count": len(party_roles)},
+        "fico_account_audit": fico_audit,
         "matched_reasons": _matched_reasons(criteria),
         "source_evidence": [item.model_dump() for item in demo_evidence.values()],
         "missing_inputs": sorted(set(missing)), "conflicts": conflicts,
@@ -272,7 +322,10 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
     code = _number(facts.get("public_record_code"))
     if code in {Decimal(0), Decimal(1), Decimal(2), Decimal(3)}:
         normalized["public_record_code"] = str(code)
-    for key in ("fico", "sbss", "ownership_years", "ebitda_usd", "requested_amount_usd"):
+    fico = _number(facts.get("fico"))
+    if fico is not None and 300 <= fico <= 850 and len(str(fico)) <= 100:
+        normalized["fico"] = str(fico)
+    for key in ("sbss", "ownership_years", "ebitda_usd", "requested_amount_usd"):
         number = _number(facts.get(key))
         if number is not None and len(str(number)) <= 100:
             normalized[key] = str(number)
@@ -299,10 +352,11 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
             "public_record_code", "ebitda_usd", "bankruptcy_clear", "age_years", "fico", "sbss"}:
             clear = None
             if value is not None:
+                number = _number(value)
                 clear = (value if key == "bankruptcy_clear" else
-                         _number(value) == 0 if key == "public_record_code" else
-                         _number(value) >= {"ebitda_usd": 0, "age_years": 18,
-                                            "fico": 650, "sbss": 160}[key])
+                         number == 0 if key == "public_record_code" else
+                         number >= {"ebitda_usd": 0, "age_years": 18,
+                                    "fico": 650, "sbss": 160}[key] if number is not None else None)
             status = "UNKNOWN" if clear is None else "PASS" if clear else "FAIL"
         refs = item.get("evidence_refs")
         checks.append({"criterion": key, "status": status, "value": normalized.get(key),
@@ -313,6 +367,15 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
     known_missing = keys | {"explicit_unique_borrower_account_relationship", "naics_or_listed_high_risk_prefixes"}
     missing = data.get("missing_inputs")
     reference = iso_date(data.get("reference_date"))
+    # Legacy snapshots have no aggregation metadata: preserve their facts but
+    # do not guess an account count or reinterpret a saved single-party score.
+    aggregate = data.get("fico_aggregation")
+    aggregate_context = {}
+    if (isinstance(aggregate, dict) and aggregate.get("basis") == FICO_AGGREGATION_BASIS
+            and type(aggregate.get("account_count")) is int
+            and 0 <= aggregate["account_count"] <= 1_000_000):
+        aggregate_context["fico_aggregation"] = {
+            "basis": FICO_AGGREGATION_BASIS, "account_count": aggregate["account_count"]}
     return {
         "version": VERSION, "label": data["label"], "simulation_only": True,
         "authorization": "NOT_ISSUED", "human_review_required": True,
@@ -322,6 +385,7 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
         "reference_date_basis": "EXPLICIT_APPLICATION_AS_OF_DATE" if reference else "UNAVAILABLE",
         "candidate_route": data.get("candidate_route") if data.get("candidate_route") in {"SBA", "CONVENTIONAL"} else None,
         "branch": branch, "normalized_facts": normalized, "criteria": checks,
+        **aggregate_context,
         "matched_reasons": _matched_reasons(checks),
         "missing_inputs": [key for key in missing[:20] if isinstance(key, str) and key in known_missing]
         if isinstance(missing, list) else [],

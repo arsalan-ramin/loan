@@ -6,7 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from backend.demo_workflow import SELECTION_BASIS, bounded_demo_context, evaluate_demo
+from backend.demo_workflow import (FICO_AGGREGATION_BASIS, SELECTION_BASIS,
+                                   bounded_demo_context, evaluate_demo)
 from backend.entity_graph import build_entity_graph
 from backend import commentary, prompts
 from backend.expanded_spec import REASONS
@@ -28,6 +29,193 @@ def demo(source=None):
 
 def criterion(result, key):
     return next(item for item in result["criteria"] if item["criterion"] == key)
+
+
+def linked_party(source, account_id="G1", score="650", role="Guarantor", **report_fields):
+    source.extend([
+        ("Account", {"Id": account_id, "dob": "1980-01-01", "ebitda": "100"}),
+        ("EntityInvolvement", {"Id": "J" + account_id, "loan_id": "L1",
+                               "account_id": account_id, "role": role}),
+    ])
+    if score is not None:
+        source.append(("CreditReport", {"Id": "R" + account_id, "account_id": account_id,
+                                       "personal_fico": score, **report_fields}))
+    return source
+
+
+def test_linked_borrower_guarantor_average_and_per_account_first_report_provenance():
+    source = linked_party(rows(), score="651", report_date="2030-01-01", status="pending")
+    source.append(("CreditReport", {"Id": "LATER", "account_id": "G1", "personal_fico": "850"}))
+    view = demo(source)
+    assert view["normalized_facts"]["fico"] == "705.5"
+    assert view["fico_aggregation"] == {"basis": FICO_AGGREGATION_BASIS, "account_count": 2}
+    assert [(item["account_id"], item["party_roles"], item["selected_report_id"], item["score"])
+            for item in view["fico_account_audit"]] == [
+                ("A1", ["borrower"], "R1", "760"), ("G1", ["guarantor"], "RG1", "651")]
+    assert all(item["score_status"] == "VALID_PERSONAL_FICO" for item in view["fico_account_audit"])
+    refs = set(criterion(view, "fico")["evidence_refs"])
+    evidence = {item["id"]: item for item in view["source_evidence"]}
+    assert refs <= evidence.keys()
+    assert {evidence[ref]["record_id"] for ref in refs} >= {"R1", "RG1", "JG1", "L1"}
+    assert "LATER" not in {evidence[ref]["record_id"] for ref in refs}
+    assert not view["report_date_checked"] and not view["report_completion_checked"]
+
+
+@pytest.mark.parametrize("scores,expected,status,label", [
+    (("649", "650"), "649.5", "FAIL", "Decline"),
+    (("650", "651"), "650.5", "PASS", "Refer"),
+])
+def test_multiple_guarantor_only_loans_keep_roles_and_other_borrower_checks_unknown(scores, expected, status, label):
+    source = rows()
+    source[1][1].pop("borrower_account_id")
+    linked_party(source, "G1", scores[0])
+    linked_party(source, "G2", scores[1])
+    batch = evaluate(source)
+    loan = batch.loan_results[0]
+    view = loan.normalized_data["demo_decision"]
+    assert loan.borrower_account_id is None
+    assert view["selected_report_id"] is None
+    assert view["normalized_facts"]["fico"] == expected
+    assert criterion(view, "fico")["status"] == status
+    assert view["label"] == label
+    assert view["fico_aggregation"]["account_count"] == 2
+    assert all(item["party_roles"] == ["guarantor"] for item in view["fico_account_audit"])
+    for key in ("age_years", "public_record_code", "bankruptcy_clear", "ebitda_usd"):
+        assert criterion(view, key)["status"] == "UNKNOWN"
+    assert "explicit_unique_borrower_account_relationship" in view["missing_inputs"]
+
+
+def test_duplicate_associations_count_each_account_once_and_exclude_unknown_unrelated_roles():
+    source = linked_party(rows(), score="640")
+    source.extend([
+        ("EntityInvolvement", {"Id": "JG1-duplicate", "loan_id": "L1", "account_id": "G1", "role": "guarantor"}),
+        ("EntityInvolvement", {"Id": "JA1", "loan_id": "L1", "account_id": "A1", "role": "borrower"}),
+        ("Account", {"Id": "UNRELATED"}),
+        ("CreditReport", {"Id": "UNRELATED-R", "account_id": "UNRELATED", "personal_fico": "300"}),
+    ])
+    linked_party(source, "OWNER", "300", role="Owner")
+    linked_party(source, "UNTYPED", "300", role=None)
+    view = demo(source)
+    assert view["normalized_facts"]["fico"] == "700"
+    assert view["fico_aggregation"]["account_count"] == 2
+    assert {item["account_id"] for item in view["fico_account_audit"]} == {"A1", "G1"}
+    assert not {"UNRELATED-R", "ROWNER", "RUNTYPED"} & {item["record_id"] for item in view["source_evidence"]}
+
+
+@pytest.mark.parametrize("score", [None, "", "bad", "299", "851", "650.5", True, "NaN", "Infinity"])
+def test_any_missing_or_invalid_linked_personal_score_blocks_partial_average_with_refs(score):
+    view = demo(linked_party(rows(), score=score))
+    assert view["normalized_facts"]["fico"] is None
+    assert criterion(view, "fico")["status"] == "UNKNOWN"
+    assert view["fico_aggregation"]["account_count"] == 2
+    audit = view["fico_account_audit"]
+    assert audit[0]["score"] == "760" and audit[1]["score"] is None
+    refs = set(criterion(view, "fico")["evidence_refs"])
+    assert set(audit[0]["evidence_refs"]) | set(audit[1]["evidence_refs"]) == refs
+    evidence = {item["id"]: item for item in view["source_evidence"]}
+    assert refs <= evidence.keys()
+    assert {"R1", "JG1"} <= {evidence[ref]["record_id"] for ref in refs}
+
+
+def test_conflicting_guarantor_score_no_fallback_to_generic_or_later_report():
+    source = linked_party(rows(), score="650", fico="800", report_category="personal", report_role="guarantor")
+    source.append(("CreditReport", {"Id": "RG1", "account_id": "G1", "personal_fico": "651"}))
+    source.append(("CreditReport", {"Id": "LATER", "account_id": "G1", "personal_fico": "850"}))
+    view = demo(source)
+    assert criterion(view, "fico")["status"] == "UNKNOWN"
+    assert view["fico_account_audit"][1]["score_status"] == "CONFLICTING_REPORT"
+    assert len([item for item in view["source_evidence"]
+                if item["record_id"] == "RG1" and item["field"] == "personal_fico"]) == 2
+
+
+@pytest.mark.parametrize("category,role,expected", [
+    ("personal", "guarantor", "705"), ("consumer", "GUARANTOR", "705"),
+    ("personal_fico", "guarantor", "705"), ("business", "guarantor", None),
+    ("personal", "borrower", None), ("personal", None, None), (None, "guarantor", None),
+])
+def test_generic_guarantor_score_requires_personal_category_and_matching_explicit_role(category, role, expected):
+    source = linked_party(rows(), score="650", fico="650", report_category=category, report_role=role)
+    source[-1][1].pop("personal_fico")
+    view = demo(source)
+    assert view["normalized_facts"]["fico"] == expected
+    assert criterion(view, "fico")["status"] == ("PASS" if expected else "UNKNOWN")
+
+
+def test_canonical_personal_score_is_explicitly_typed_without_role_or_category_inference():
+    view = demo(linked_party(rows(), score="650", report_category="business", report_role="borrower"))
+    assert view["normalized_facts"]["fico"] == "705"
+    assert view["fico_account_audit"][1]["party_roles"] == ["guarantor"]
+
+
+@pytest.mark.parametrize("field,value", [("report_category", "business"), ("report_role", "borrower")])
+def test_conflicting_generic_report_typing_makes_whole_average_unknown(field, value):
+    source = linked_party(rows(), score="650", fico="650", report_category="personal", report_role="guarantor")
+    source[-1][1].pop("personal_fico")
+    source.append(("CreditReport", {"Id": "RG1", "account_id": "G1", field: value}))
+    view = demo(source)
+    assert view["normalized_facts"]["fico"] is None
+    assert view["fico_account_audit"][1]["score_status"] == "CONFLICTING_REPORT"
+    refs = set(criterion(view, "fico")["evidence_refs"])
+    assert len([item for item in view["source_evidence"] if item["id"] in refs
+                and item["record_id"] == "RG1" and item["field"] == field]) == 2
+
+
+def test_no_valid_linked_parties_has_no_invented_average():
+    source = rows()
+    source[1][1].pop("borrower_account_id")
+    view = demo(source)
+    assert view["normalized_facts"]["fico"] is None
+    assert view["fico_account_audit"] == []
+    assert view["fico_aggregation"]["account_count"] == 0
+    assert criterion(view, "fico")["status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("scores,expected,status,branch", [
+    (("649", "650"), "649.5", "FAIL", "KNOWN_KNOCKOUT"),
+    (("650", "651"), "650.5", "PASS", "SBSS_160_189_AMOUNT_LE_100K"),
+    (("759", "760"), "759.5", "PASS", "SBSS_160_189_AMOUNT_LE_100K"),
+    (("760", "761"), "760.5", "PASS", "SBSS_160_189_OWNERSHIP_LT_2_FICO_GE_760"),
+])
+def test_fractional_average_thresholds_and_bounded_context(scores, expected, status, branch):
+    source = linked_party(rows(), score=scores[1])
+    source[0][1]["ownership_years"] = "1"
+    source[2][1]["personal_fico"] = scores[0]
+    source[3][1]["sbss"] = "175"
+    report = demo_report(source)
+    view = report.underwriting.loan_results[0].normalized_data["demo_decision"]
+    assert view["normalized_facts"]["fico"] == expected
+    assert view["branch"] == branch
+    # Stale saved statuses are reconciled against the fractional aggregate.
+    criterion(view, "fico")["status"] = "FAIL" if status == "PASS" else "PASS"
+    view["fico_aggregation"]["raw"] = "RAW_PRIVATE_SENTINEL"
+    view["fico_account_audit"][0]["account_id"] = "PRIVATE_ACCOUNT_SENTINEL"
+    for context in (demo_explanation_context(report), report_context(report)):
+        bounded = context["underwriting"]["loan_results"][0]["demo_decision"]
+        assert bounded["normalized_facts"]["fico"] == expected
+        assert criterion(bounded, "fico")["status"] == status
+        assert bounded["fico_aggregation"] == {"basis": FICO_AGGREGATION_BASIS, "account_count": 2}
+        serialized = json.dumps(bounded)
+        assert "PRIVATE_ACCOUNT_SENTINEL" not in serialized and "RAW_PRIVATE_SENTINEL" not in serialized
+        assert "fico_account_audit" not in bounded and "source_evidence" not in bounded
+
+
+def test_legacy_context_does_not_guess_aggregation_and_metadata_is_allowlisted():
+    view = demo()
+    view.pop("fico_aggregation")
+    view.pop("fico_account_audit")
+    bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    assert bounded["normalized_facts"]["fico"] == "760"
+    assert "fico_aggregation" not in bounded
+    for aggregate in ({"basis": "UNTRUSTED", "account_count": 2},
+                      {"basis": FICO_AGGREGATION_BASIS, "account_count": True},
+                      {"basis": FICO_AGGREGATION_BASIS, "account_count": -1},
+                      {"basis": FICO_AGGREGATION_BASIS, "account_count": 1_000_001}):
+        view["fico_aggregation"] = aggregate
+        assert "fico_aggregation" not in bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    view["normalized_facts"]["fico"] = "900.5"
+    bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    assert "fico" not in bounded["normalized_facts"]
+    assert criterion(bounded, "fico")["status"] == "UNKNOWN"
 
 
 def test_known_low_scores_decline_without_any_dates_and_without_other_inputs():
@@ -218,8 +406,15 @@ def test_query2_mapped_scalar_score_works_without_response_id():
     assert any(item["field"] == score for item in view["source_evidence"])
 
 
-def test_graph_documents_and_strict_result_are_immutable(monkeypatch):
-    source = document(rows())
+@pytest.mark.parametrize("parties", ["borrower", "borrower_guarantor", "guarantors_only"])
+def test_graph_documents_and_strict_result_are_immutable(monkeypatch, parties):
+    source_rows = rows()
+    if parties != "borrower":
+        linked_party(source_rows, "G1", "650")
+    if parties == "guarantors_only":
+        source_rows[1][1].pop("borrower_account_id")
+        linked_party(source_rows, "G2", "651")
+    source = document(source_rows)
     original = copy.deepcopy(source)
     config = load_underwriting_config()
     graph = build_entity_graph([source], config)
@@ -277,7 +472,9 @@ def test_conflicting_same_report_scores_remain_unknown_not_overwritten():
     assert view["selected_report_id"] == "R1"
     assert view["label"] == "Refer"
     assert criterion(view, "fico")["status"] == "UNKNOWN"
-    assert len(criterion(view, "fico")["evidence_refs"]) == 2
+    refs = set(criterion(view, "fico")["evidence_refs"])
+    assert len([item for item in view["source_evidence"]
+                if item["id"] in refs and item["field"] == "personal_fico"]) == 2
 
 
 def test_context_keeps_demo_fico_separate_from_strict_saved_selection_guard():

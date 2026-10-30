@@ -113,6 +113,43 @@ def test_per_loan_claude_failure_is_recorded_and_resume_retries_only_failures(re
     assert state["status"] == "completed" and state["processed"] == 8 and state["errors"] == 0
 
 
+def test_retry_selected_failed_loans_reprocesses_only_those(reviewer, claude, monkeypatch):
+    original = AnthropicLLM.complete
+    failing = {"L00001", "L00004", "L00006"}
+
+    def flaky(self, system, prompt):
+        if json.loads(prompt)["underwriting"]["loan_results"][0]["loan_id"] in failing:
+            raise LLMError("Anthropic request failed.", 502)
+        return original(self, system, prompt)
+
+    monkeypatch.setattr(AnthropicLLM, "complete", flaky)
+    reviewer.start()
+    assert wait_done(reviewer)["errors"] == 3
+    rows = {row["loan_id"]: row["processing"] for row in reviewer.results()["results"]}
+    assert rows["L00001"] == "failed" and rows["L00000"] == "succeeded"
+    assert reviewer.results(status="Succeeded")["total"] == 5
+
+    monkeypatch.setattr(AnthropicLLM, "complete", original)
+    claude.clear()
+    with pytest.raises(Exception, match="None of the selected loans"):
+        reviewer.start(loan_ids=["L00000", "NOPE"])
+    state = reviewer.start(loan_ids=["L00004", "L00006", "L00000"])
+    assert state["job_mode"] == "retry" and state["job_total"] == 2
+    assert state["retrying_loan_ids"] == ["L00004", "L00006"]
+    state = wait_done(reviewer)
+    assert sorted(claude) == ["L00004", "L00006"]
+    assert state["status"] == "completed" and state["processed"] == 8 and state["errors"] == 1
+    assert [row["loan_id"] for row in reviewer.results(status="Error")["results"]] == ["L00001"]
+    # Retried rows keep their original ordering.
+    assert [row["loan_id"] for row in reviewer.results()["results"]] == [f"L{i:05d}" for i in range(8)]
+
+    claude.clear()
+    reviewer.start(failed_only=True)
+    assert wait_done(reviewer)["errors"] == 0 and claude == ["L00001"]
+    with pytest.raises(Exception, match="no failed loans"):
+        reviewer.start(failed_only=True)
+
+
 def test_provider_configuration_failure_stops_the_run(reviewer, claude, monkeypatch):
     def unavailable(self, system, prompt):
         raise LLMError("Anthropic authentication failed. Check the backend ANTHROPIC_API_KEY.", 503)
@@ -203,3 +240,6 @@ def test_batch_api_flow(tmp_path, claude):
         assert len(list(load_workbook(BytesIO(exported.content)).active.iter_rows())) == 6
         assert client.post("/api/batch/cancel").status_code == 409
         assert client.post("/api/batch", json={"extra": 1}).status_code == 422
+        assert client.post("/api/batch", json={"loan_ids": []}).status_code == 422
+        assert client.post("/api/batch", json={"loan_ids": ["L00001"]}).status_code == 409
+        assert client.post("/api/batch", json={"failed_only": True}).status_code == 409

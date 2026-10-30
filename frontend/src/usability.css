@@ -114,3 +114,12 @@ summary:focus-visible { outline: 3px solid #497447; outline-offset: 3px; }
 .batch-rationale { white-space: pre-wrap; line-height: 1.7; min-width: 320px; overflow-wrap: anywhere; }
 .batch-rationale em, .batch-rationale small { display: block; margin-top: 6px; color: #875638; font-style: normal; }
 .batch-pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; font-size: 12px; color: #52634a; }
+.batch-processing { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.batch-processing.succeeded { background: #dfeedd; color: #2f5a35; }
+.batch-processing.failed { background: #f8e2dc; color: #92513a; }
+.batch-processing.retrying { background: #e8f0e1; color: #315c43; }
+.batch-table .batch-select { width: 36px; text-align: center; }
+.batch-table .batch-select input { width: 16px; height: 16px; accent-color: #345c43; cursor: pointer; }
+.batch-table tr.failed-row td { background: #fffaf7; }
+.batch-table .batch-retry { min-height: 30px; padding: 4px 10px; font-size: 12px; white-space: nowrap; }
+.batch-filter .batch-hint { margin-left: auto; color: #2f5a35; }

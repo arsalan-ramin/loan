@@ -331,6 +331,10 @@ export type BatchLoanStatus = 'Approved' | 'Decline' | 'Refer';
 
 export interface BatchState {
   status: BatchRunStatus;
+  job_mode: 'all' | 'resume' | 'retry' | null;
+  job_total: number;
+  job_done: number;
+  retrying_loan_ids: string[];
   started_at: string | null;
   finished_at: string | null;
   total: number;
@@ -356,6 +360,7 @@ export interface BatchResult {
   engine_rationale: string | null;
   error: string | null;
   processed_at: string;
+  processing: 'succeeded' | 'failed';
 }
 
 export interface BatchResultPage {

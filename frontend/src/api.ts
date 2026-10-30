@@ -64,6 +64,7 @@ export const api = {
     `/batch/results?offset=${offset}&limit=${limit}${status ? `&status=${encodeURIComponent(status)}` : ''}`,
   ),
   startBatch: (resume = false) => request<BatchState>('/batch', json('POST', { resume })),
+  retryBatch: (loanIds?: string[]) => request<BatchState>('/batch', json('POST', loanIds ? { loan_ids: loanIds } : { failed_only: true })),
   cancelBatch: () => request<BatchState>('/batch/cancel', { method: 'POST' }),
   useStoredDataset: (id: string) => request<Session>(`/sessions/${segment(id)}/stored-dataset`, { method: 'POST' }),
   rules: (id: string, rules: Rule[]) => request<Session>(`/sessions/${segment(id)}/rules`, json('PUT', { rules })),

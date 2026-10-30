@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StringConstraints
+from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -50,6 +51,9 @@ logger = logging.getLogger(__name__)
 class BatchStartRequest(BaseModel):
     model_config = {"extra": "forbid"}
     resume: bool = False
+    failed_only: bool = False
+    loan_ids: list[Annotated[str, StringConstraints(min_length=1, max_length=128)]] | None = Field(
+        None, min_length=1, max_length=10000)
 
 
 async def uploaded_files(request: Request) -> AsyncIterator[list[StarletteUploadFile]]:
@@ -438,13 +442,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @application.get("/api/batch/results")
     def batch_results(request: Request, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
-                      status: Literal["Approved", "Decline", "Refer", "Error"] | None = None):
+                      status: Literal["Approved", "Decline", "Refer", "Error", "Succeeded"] | None = None):
         return request.app.state.batch.results(offset, limit, status)
 
     @application.post("/api/batch", status_code=202)
     def start_batch(request: Request, body: BatchStartRequest):
         try:
-            return request.app.state.batch.start(resume=body.resume)
+            return request.app.state.batch.start(resume=body.resume, loan_ids=body.loan_ids,
+                                                 failed_only=body.failed_only)
         except BatchError as exc:
             raise HTTPException(exc.status_code, str(exc)) from None
 

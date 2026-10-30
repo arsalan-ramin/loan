@@ -73,6 +73,8 @@ class BatchReviewer:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._cancel = threading.Event()
+        # Progress of the current invocation (full run, resume or retry of failed loans).
+        self._job: dict = {"mode": None, "total": 0, "done": 0, "loan_ids": []}
 
     # ---- state ------------------------------------------------------------------------
 
@@ -97,7 +99,12 @@ class BatchReviewer:
         state = run[0] if run else "none"
         if state == "running" and not self.running():
             state = "interrupted"
+        job = self._job if state == "running" else {"mode": None, "total": 0, "done": 0, "loan_ids": []}
         return {
+            "job_mode": job["mode"],
+            "job_total": job["total"],
+            "job_done": job["done"],
+            "retrying_loan_ids": list(job["loan_ids"]),
             "status": state,
             "started_at": run[1] if run else None,
             "finished_at": run[2] if run else None,
@@ -119,6 +126,8 @@ class BatchReviewer:
         where, params = "", []
         if status == "Error":
             where = "WHERE error IS NOT NULL"
+        elif status == "Succeeded":
+            where = "WHERE error IS NULL"
         elif status:
             where, params = "WHERE status = ?", [status]
         with self.dataset.connect() as conn:
@@ -127,11 +136,16 @@ class BatchReviewer:
                 "SELECT loan_id, account_id, status, branch, rationale, engine_rationale, error, processed_at "
                 f"FROM batch_results {where} ORDER BY seq LIMIT ? OFFSET ?", [*params, limit, offset]).fetchall()
         keys = ("loan_id", "account_id", "status", "branch", "rationale", "engine_rationale", "error", "processed_at")
-        return {"results": [dict(zip(keys, row)) for row in rows], "total": total, "offset": offset, "limit": limit}
+        results = [dict(zip(keys, row)) for row in rows]
+        for row in results:
+            row["processing"] = "failed" if row["error"] else "succeeded"
+        return {"results": results, "total": total, "offset": offset, "limit": limit}
 
     # ---- control ----------------------------------------------------------------------
 
-    def start(self, *, resume: bool = False) -> dict:
+    def start(self, *, resume: bool = False, loan_ids: list[str] | None = None, failed_only: bool = False) -> dict:
+        """Start a full run, resume one, or retry failed loans (all failed, or the given loan IDs)."""
+        retry = failed_only or loan_ids is not None
         with self._lock:
             if self.running():
                 raise BatchError("A batch review is already running.")
@@ -145,9 +159,20 @@ class BatchReviewer:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
                     run = conn.execute("SELECT dataset_updated_at FROM batch_run WHERE id = 1").fetchone()
-                    if resume and (run is None or run[0] != dataset["updated_at"]):
+                    if (resume or retry) and (run is None or run[0] != dataset["updated_at"]):
                         raise BatchError("There is no batch review of the current stored data to resume. Start a new run.")
-                    if not resume:
+                    targets = None
+                    if retry:
+                        failed = [row[0] for row in conn.execute(
+                            "SELECT loan_id FROM batch_results WHERE error IS NOT NULL ORDER BY seq")]
+                        if loan_ids is not None:
+                            wanted = set(loan_ids)
+                            failed = [loan_id for loan_id in failed if loan_id in wanted]
+                        if not failed:
+                            raise BatchError("None of the selected loans has a failed result to retry."
+                                             if loan_ids is not None else "There are no failed loans to retry.")
+                        targets = failed
+                    elif not resume:
                         conn.execute("DELETE FROM batch_results")
                     conn.execute("INSERT OR REPLACE INTO batch_run VALUES (1, 'running', ?, NULL, ?, ?, ?, NULL)",
                                  (_now(), dataset["loan_count"], dataset["updated_at"], AnthropicLLM().model))
@@ -156,7 +181,9 @@ class BatchReviewer:
                     conn.execute("ROLLBACK")
                     raise
             self._cancel.clear()
-            self._thread = threading.Thread(target=self._run, args=(dataset["updated_at"],),
+            self._job = {"mode": "retry" if retry else "resume" if resume else "all", "done": 0,
+                         "total": len(targets) if targets is not None else 0, "loan_ids": targets or []}
+            self._thread = threading.Thread(target=self._run, args=(dataset["updated_at"], targets),
                                             name="batch-review", daemon=True)
             self._thread.start()
         return self.status()
@@ -195,7 +222,7 @@ class BatchReviewer:
                 raise
         return bool(current)
 
-    def _run(self, snapshot: str) -> None:
+    def _run(self, snapshot: str, targets: list[str] | None = None) -> None:
         workdir = self.workroot / uuid4().hex
         status, error = "completed", None
         try:
@@ -209,8 +236,11 @@ class BatchReviewer:
                 loans = conn.execute("SELECT loan_id, account_id FROM dataset_loans "
                                      "ORDER BY loan_id COLLATE NOCASE").fetchall()
                 done = {row[0] for row in conn.execute("SELECT loan_id FROM batch_results WHERE error IS NULL")}
-            pending = iter([(seq, loan_id, account_id) for seq, (loan_id, account_id) in enumerate(loans)
-                            if loan_id not in done])
+            wanted = set(targets) if targets is not None else None
+            queue = [(seq, loan_id, account_id) for seq, (loan_id, account_id) in enumerate(loans)
+                     if (loan_id in wanted if wanted is not None else loan_id not in done)]
+            self._job["total"] = len(queue)
+            pending = iter(queue)
             with ThreadPoolExecutor(self.concurrency, thread_name_prefix="batch-loan") as pool:
                 futures: set[Future] = set()
 
@@ -236,6 +266,7 @@ class BatchReviewer:
                             status, error = "cancelled", "The stored data was replaced during the batch review."
                             self._cancel.set()
                             continue
+                        self._job["done"] += 1
                         submit()
             if status == "completed" and self._cancel.is_set():
                 status = "cancelled"

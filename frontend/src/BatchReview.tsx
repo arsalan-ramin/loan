@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertCircle, ArrowDownToLine, ChevronLeft, ChevronRight, ListChecks, LoaderCircle, Play, RefreshCw, Square } from 'lucide-react';
+import { AlertCircle, ArrowDownToLine, ChevronLeft, ChevronRight, ListChecks, LoaderCircle, Play, RefreshCw, RotateCcw, Square } from 'lucide-react';
 import { api, downloadBatchResults } from './api';
 import type { BatchResultPage, BatchState } from './types';
 
 const PAGE_SIZE = 25;
-const FILTERS = ['', 'Approved', 'Decline', 'Refer', 'Error'] as const;
+const FILTERS = ['', 'Succeeded', 'Error', 'Approved', 'Decline', 'Refer'] as const;
+const filterLabels: Record<(typeof FILTERS)[number], string> = {
+  '': 'All results', Succeeded: 'Succeeded', Error: 'Failed', Approved: 'Approved', Decline: 'Decline', Refer: 'Refer',
+};
 
 const runLabels: Record<BatchState['status'], string> = {
   none: 'Not started',
@@ -28,11 +31,16 @@ export default function BatchReview() {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(async () => {
     const [next, results] = await Promise.all([api.batchStatus(), api.batchResults(offset, PAGE_SIZE, filter)]);
     if (isBatchState(next)) setState(next);
-    if (isResultPage(results)) setPage(results);
+    if (isResultPage(results)) {
+      setPage(results);
+      const done = new Set(results.results.filter((row) => row.processing === 'succeeded').map((row) => row.loan_id));
+      setSelected((current) => ([...current].some((id) => done.has(id)) ? new Set([...current].filter((id) => !done.has(id))) : current));
+    }
   }, [offset, filter]);
 
   useEffect(() => {
@@ -63,9 +71,35 @@ export default function BatchReview() {
   const datasetReady = state?.dataset_status === 'ready' && loanCount > 0;
   const total = state?.total || loanCount;
   const processed = state?.processed ?? 0;
-  const percent = total ? Math.min(100, Math.round((processed / total) * 100)) : 0;
   const canResume = !!state && state.dataset_current && !running && ['cancelled', 'failed', 'interrupted', 'completed'].includes(state.status)
-    && (processed < total || state.errors > 0);
+    && processed < total;
+  const canRetry = !!state && state.dataset_current && !running && !busy;
+  const retrying = new Set(running ? state?.retrying_loan_ids ?? [] : []);
+  const failedOnPage = (page?.results ?? []).filter((row) => row.processing === 'failed' && !retrying.has(row.loan_id));
+  const allPageFailedSelected = failedOnPage.length > 0 && failedOnPage.every((row) => selected.has(row.loan_id));
+  const retryJob = running && state?.job_mode === 'retry';
+  const barDone = retryJob ? state.job_done : processed;
+  const barTotal = retryJob ? state.job_total : total;
+  const barPercent = barTotal ? Math.min(100, Math.round((barDone / barTotal) * 100)) : 0;
+
+  const toggle = (loanId: string) => setSelected((current) => {
+    const next = new Set(current);
+    if (next.has(loanId)) next.delete(loanId); else next.add(loanId);
+    return next;
+  });
+  const togglePage = () => setSelected((current) => {
+    const next = new Set(current);
+    failedOnPage.forEach((row) => (allPageFailedSelected ? next.delete(row.loan_id) : next.add(row.loan_id)));
+    return next;
+  });
+  const retry = (loanIds: string[] | undefined, label: string) => {
+    const count = loanIds?.length ?? state?.errors ?? 0;
+    if (!window.confirm(`Retry ${count} failed ${count === 1 ? 'loan' : 'loans'}? This makes one paid Claude call per loan.`)) return;
+    void act(label, async () => {
+      await api.retryBatch(loanIds);
+      setSelected(new Set());
+    });
+  };
 
   const start = () => {
     if (!window.confirm(`Review all ${loanCount} stored loans? This makes one paid Claude call per loan and replaces the previous batch results.`)) return;
@@ -92,18 +126,21 @@ export default function BatchReview() {
           {busy === 'Starting batch review' ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />}Start batch review
         </button>
         {canResume && <button className="button secondary" disabled={!!busy} onClick={() => void act('Resuming batch review', () => api.startBatch(true))}><RefreshCw size={16} />Resume remaining</button>}
+        {!!state?.errors && <button className="button secondary" disabled={!canRetry} onClick={() => retry(undefined, 'Retrying failed loans')}><RotateCcw size={16} />Retry all failed ({state.errors})</button>}
+        {selected.size > 0 && <button className="button secondary" disabled={!canRetry} onClick={() => retry([...selected], 'Retrying selected loans')}><RotateCcw size={16} />Retry selected ({selected.size})</button>}
         {running && <button className="button secondary" disabled={!!busy} onClick={() => void act('Cancelling batch review', () => api.cancelBatch())}><Square size={16} />Cancel</button>}
         <button className="button secondary" disabled={!processed || !!busy} onClick={() => void act('Downloading Excel', downloadBatchResults)}><ArrowDownToLine size={16} />Download Excel</button>
       </div>
 
       {state && state.status !== 'none' && <div className="batch-progress">
-        <div className="batch-progress-label"><span>{running && <LoaderCircle size={14} className="spin" />}{processed} of {total} loans processed</span><strong>{percent}%</strong></div>
-        <div className="batch-bar" role="progressbar" aria-label="Batch progress" aria-valuemin={0} aria-valuemax={total} aria-valuenow={processed}><span style={{ width: `${percent}%` }} /></div>
+        <div className="batch-progress-label"><span>{running && <LoaderCircle size={14} className="spin" />}{retryJob ? `Retrying ${barDone} of ${barTotal} failed loans` : `${processed} of ${total} loans processed`}</span><strong>{barPercent}%</strong></div>
+        <div className="batch-bar" role="progressbar" aria-label="Batch progress" aria-valuemin={0} aria-valuemax={barTotal} aria-valuenow={barDone}><span style={{ width: `${barPercent}%` }} /></div>
         <div className="batch-counts">
+          <span className="batch-processing succeeded">Succeeded {processed - state.errors}</span>
+          <span className="batch-processing failed">Failed {state.errors}</span>
           <span className="batch-status Approved">Approved {state.approved}</span>
           <span className="batch-status Decline">Decline {state.declined}</span>
           <span className="batch-status Refer">Refer {state.referred}</span>
-          {state.errors > 0 && <span className="batch-status Error">Errors {state.errors}</span>}
         </div>
       </div>}
 
@@ -111,20 +148,33 @@ export default function BatchReview() {
         <div className="batch-filter">
           <label htmlFor="batch-filter">Show</label>
           <select id="batch-filter" value={filter} onChange={(event) => { setOffset(0); setFilter(event.target.value as (typeof FILTERS)[number]); }}>
-            {FILTERS.map((value) => <option key={value} value={value}>{value || 'All results'}</option>)}
+            {FILTERS.map((value) => <option key={value} value={value}>{filterLabels[value]}</option>)}
           </select>
           <span>{page.total} {page.total === 1 ? 'loan' : 'loans'}</span>
+          {state && state.errors === 0 && processed > 0 && <span className="batch-hint">No failed records — nothing to retry.</span>}
         </div>
         <div className="batch-table-wrap">
           <table className="batch-table">
-            <thead><tr><th>Loan ID</th><th>Account ID</th><th>Status</th><th>Rationale / result</th></tr></thead>
+            <thead><tr>
+              <th className="batch-select">{failedOnPage.length > 0
+                ? <input type="checkbox" aria-label="Select all failed loans on this page" title="Select all failed loans on this page" checked={allPageFailedSelected} disabled={running} onChange={togglePage} />
+                : <span className="sr-only">Select</span>}</th>
+              <th>Loan ID</th><th>Account ID</th><th>Status</th><th>Processing</th><th>Rationale / result</th><th><span className="sr-only">Actions</span></th>
+            </tr></thead>
             <tbody>
-              {page.results.map((row) => <tr key={row.loan_id}>
-                <td>{row.loan_id}</td>
-                <td>{row.account_id ?? '—'}</td>
-                <td><span className={`batch-status ${row.status ?? 'Error'}`}>{row.status ?? 'Error'}</span></td>
-                <td className="batch-rationale">{row.rationale ?? row.error ?? ''}{row.rationale && row.error && <em>{row.error}</em>}{!row.rationale && row.error && row.engine_rationale && <small>Decision flow: {row.engine_rationale}</small>}</td>
-              </tr>)}
+              {page.results.map((row) => {
+                const isRetrying = retrying.has(row.loan_id);
+                const failed = row.processing === 'failed';
+                return <tr key={row.loan_id} className={failed ? 'failed-row' : undefined}>
+                  <td className="batch-select">{failed && <input type="checkbox" aria-label={`Select ${row.loan_id}`} checked={selected.has(row.loan_id)} disabled={running} onChange={() => toggle(row.loan_id)} />}</td>
+                  <td>{row.loan_id}</td>
+                  <td>{row.account_id ?? '—'}</td>
+                  <td><span className={`batch-status ${row.status ?? 'Error'}`}>{row.status ?? 'Error'}</span></td>
+                  <td><span className={`batch-processing ${isRetrying ? 'retrying' : row.processing}`}>{isRetrying ? <><LoaderCircle size={12} className="spin" />Retrying</> : failed ? 'Failed' : 'Succeeded'}</span></td>
+                  <td className="batch-rationale">{row.rationale ?? row.error ?? ''}{row.rationale && row.error && <em>{row.error}</em>}{!row.rationale && row.error && row.engine_rationale && <small>Decision flow: {row.engine_rationale}</small>}</td>
+                  <td>{failed && !isRetrying && <button className="button secondary batch-retry" aria-label={`Retry ${row.loan_id}`} disabled={!canRetry} onClick={() => retry([row.loan_id], 'Retrying loan')}><RotateCcw size={14} />Retry</button>}</td>
+                </tr>;
+              })}
             </tbody>
           </table>
         </div>

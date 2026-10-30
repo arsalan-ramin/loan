@@ -315,3 +315,52 @@ export interface LoanCandidatePage {
   limit: number;
   loan_count: number;
 }
+
+export interface StoredDataset {
+  status: 'empty' | 'indexing' | 'ready' | 'failed' | 'stale';
+  updated_at: string | null;
+  error: string | null;
+  record_count: number;
+  loan_count: number;
+  account_count: number;
+  files: { query_role: number; name: string; size: number; sha256: string }[];
+}
+
+export type BatchRunStatus = 'none' | 'running' | 'completed' | 'cancelled' | 'failed' | 'interrupted';
+export type BatchLoanStatus = 'Approved' | 'Decline' | 'Refer';
+
+export interface BatchState {
+  status: BatchRunStatus;
+  started_at: string | null;
+  finished_at: string | null;
+  total: number;
+  processed: number;
+  approved: number;
+  declined: number;
+  referred: number;
+  errors: number;
+  model: string | null;
+  error: string | null;
+  dataset_status: StoredDataset['status'];
+  dataset_loan_count: number;
+  dataset_current: boolean;
+  concurrency: number;
+}
+
+export interface BatchResult {
+  loan_id: string;
+  account_id: string | null;
+  status: BatchLoanStatus | null;
+  branch: string | null;
+  rationale: string | null;
+  engine_rationale: string | null;
+  error: string | null;
+  processed_at: string;
+}
+
+export interface BatchResultPage {
+  results: BatchResult[];
+  total: number;
+  offset: number;
+  limit: number;
+}

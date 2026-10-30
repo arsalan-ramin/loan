@@ -64,18 +64,32 @@ catalog matches, not approved adverse-action reasons; SUPPLIED_STRATEGY labels
 are strategy-specific criteria, not catalog adverse-action reasons. A personal
 FICO observation is not a newly calculated multi-party average. Never invent
 adverse-action codes or lending authority. Keep recommended_route MANUAL_REVIEW,
-decision_recommendation null, confidence null and requires_human_approval true.
-Authorization remains NOT_ISSUED and no operational action is taken.
-Use short labeled paragraphs: Result:, Why:, What is unresolved:, Next steps:.
-Explain only supplied normalized demo facts, prioritize at most three actual gaps,
-and do not add a separate STRICT discussion or repeated UI disclaimers.
+decision_recommendation null, confidence null and requires_human_approval true
+in their structured fields only.
+NARRATIVE SCOPE: the explanation covers only the decision flow. These rules are
+for you; never restate them in the explanation.
+Result: one sentence giving the loan ID and its exact Approve, Decline or Refer
+label with its normalized branch. Nothing else.
+Why: only the decision-flow criteria that produced that label, with their supplied
+values, thresholds and statuses. For Decline, the failing knockout criteria, then
+briefly the other knockout statuses. For Approve, the passed knockouts and the
+SBSS/ownership/FICO/amount/NAICS/vehicle-only path to the branch. For Refer, the
+specific unknown or conflicting diagram inputs at which the flow stopped.
+Never mention authorization or NOT_ISSUED, operational action, human review or
+reviewer confirmation, TEST/demo/simulation disclaimers, adverse-action or catalog
+classification, report-selection method, or UNKNOWN inputs that did not determine
+the label. For Approve or Decline write only Result: and Why:. For Refer only, add
+What is unresolved: naming just the unknown or conflicting diagram inputs that
+caused the Refer. Never write a Next steps: paragraph.
 Return only the requested compact schema-valid JSON, no Markdown or extra fields.
 """
 
 DEMO_AGGREGATE_INSTRUCTIONS = (
     "\nReturn exactly: recommended_route (MANUAL_REVIEW), decision_recommendation (null), "
-    "confidence (null), requires_human_approval (true), positive_factors, risk_factors, "
-    "missing_information (string arrays, at most 3 short loan-scoped items each), "
+    "confidence (null), requires_human_approval (true), positive_factors, risk_factors "
+    "(string arrays, at most 3 short loan-scoped decision-flow items each), missing_information "
+    "(at most 3 loan-scoped unknown or conflicting diagram inputs that caused a Refer; empty when "
+    "no included loan is Refer), "
     "explanation (at most 220 words), triggered_rules (empty array), "
     "loan_ids (at most 3 supplied loan IDs), evidence_refs (at most 3 supplied evidence IDs). "
     "Keep citations in arrays, with each citation belonging to the loan being discussed. "
@@ -86,7 +100,9 @@ DEMO_AGGREGATE_INSTRUCTIONS = (
 DEMO_SELECTED_LOAN_INSTRUCTIONS = (
     "\nReturn exactly: recommended_route (MANUAL_REVIEW), decision_recommendation (null), "
     "confidence (null), requires_human_approval (true), loan_ids ([the selected loan ID]), "
-    "positive_factors, risk_factors, missing_information (string arrays, at most 3 short items each), "
+    "positive_factors, risk_factors (string arrays, at most 3 short decision-flow items each), "
+    "missing_information (at most 3 unknown or conflicting diagram inputs that caused a Refer; "
+    "empty for Approve or Decline), "
     "explanation (at most 200 words), triggered_rules (empty array), "
     "evidence_refs (at most 3 supplied evidence IDs), check_reconciliation (empty array). "
     "No strict checks are supplied to reconcile; do not invent any. Cite only selected-loan evidence."

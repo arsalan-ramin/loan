@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, ArrowDownToLine, ArrowRight, ArrowUp, BookOpen, Check, CheckCheck, ChevronDown, ChevronRight, CircleCheck, Clock3, FileCheck2, FileSearch, FileText, FolderOpen, Layers3, LoaderCircle, MessageSquare, Paperclip, Plus, RefreshCw, Settings2, ShieldCheck, Sparkles, Trash2, Upload, X, AlertCircle } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowRight, ArrowUp, BookOpen, Check, CheckCheck, ChevronDown, ChevronRight, CircleCheck, Clock3, Database, FileCheck2, FileSearch, FileText, FolderOpen, Layers3, ListChecks, LoaderCircle, MessageSquare, Paperclip, Plus, RefreshCw, Settings2, ShieldCheck, Sparkles, Trash2, Upload, X, AlertCircle } from 'lucide-react';
 import { api, downloadReport, downloadSourceDocument, downloadUnderwriting } from './api';
 import type { UnderwritingFormat } from './api';
 import RulesDialog from './RulesDialog';
@@ -9,7 +9,8 @@ import UnderwritingReport from './UnderwritingReport';
 import GuidedAssistant from './GuidedAssistant';
 import ClaudeExplanationText from './ClaudeExplanationText';
 import AssistantMessage from './AssistantMessage';
-import type { Document, Mode, Session } from './types';
+import BatchReview from './BatchReview';
+import type { Document, Mode, Session, StoredDataset } from './types';
 
 const statusLabels: Record<Session['status'], string> = { awaiting_upload: 'Awaiting documents', ready: 'Ready to review', processing: 'Processing', completed: 'Review complete', failed: 'Review failed' };
 const formatSize = (size: number) => size < 1024 ? `${size} B` : size < 1024 * 1024 ? `${(size / 1024).toFixed(1)} KB` : `${(size / 1024 / 1024).toFixed(1)} MB`;
@@ -19,6 +20,12 @@ const dateLabel = (value: string) => new Date(value).toLocaleDateString(undefine
 
 function isMtbSession(session: Session | null): boolean {
   return !!session?.policy_rules?.length || !!session?.preflight?.recognized_mtb || !!session?.report?.underwriting || !!session?.report?.policy_evaluation || !!session?.documents.some((doc) => /^MTB[ _-]+Query[ _-]+(1|2|3|4)(?=$|[ _().-]).*\.xlsx$/i.test(doc.name));
+}
+
+function isStoredDataset(value: unknown): value is StoredDataset {
+  const candidate = value as StoredDataset | null;
+  return !!candidate && typeof candidate === 'object' && typeof candidate.loan_count === 'number'
+    && Array.isArray(candidate.files) && ['empty', 'indexing', 'ready', 'failed', 'stale'].includes(candidate.status);
 }
 
 export default function App() {
@@ -37,8 +44,9 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [policyRulesOpen, setPolicyRulesOpen] = useState(false);
-  const [tab, setTab] = useState<'workspace' | 'report'>('workspace');
+  const [tab, setTab] = useState<'workspace' | 'report' | 'batch'>('workspace');
   const [mobileNav, setMobileNav] = useState(false);
+  const [stored, setStored] = useState<StoredDataset | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const currentId = useRef<string | null>(null);
@@ -65,9 +73,19 @@ export default function App() {
     if (currentId.current === next.id) setSession(next);
   }, []);
 
+  const refreshStored = useCallback(async () => {
+    try {
+      const next = await api.storedDataset();
+      if (mounted.current) setStored(isStoredDataset(next) ? next : null);
+    } catch {
+      if (mounted.current) setStored(null);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
+    void refreshStored();
     const [, list] = await Promise.allSettled([
       api.health().then((health) => { if (mounted.current) setConnection(health.status.toLowerCase() === 'error' ? 'offline' : 'online'); }).catch(() => { if (mounted.current) setConnection('offline'); }),
       api.sessions(),
@@ -76,7 +94,13 @@ export default function App() {
     if (list.status === 'fulfilled') setSessions(list.value.sort((a, b) => b.updated_at.localeCompare(a.updated_at)));
     else setError(errorText(list.reason));
     setLoading(false);
-  }, []);
+  }, [refreshStored]);
+
+  useEffect(() => {
+    if (stored?.status !== 'indexing') return;
+    const timer = setTimeout(() => void refreshStored(), 2000);
+    return () => clearTimeout(timer);
+  }, [stored, refreshStored]);
 
   useEffect(() => {
     mounted.current = true;
@@ -164,6 +188,25 @@ export default function App() {
       const active = await ensureSession();
       const uploaded = await api.upload(active.id, files);
       syncSession(uploaded);
+      // A complete Query 1, 2 and 4 set is stored and indexed in the background.
+      if (uploaded.documents.filter((document) => document.extension === '.xlsx').length === 3) {
+        void refreshStored();
+        setTimeout(() => void refreshStored(), 1500);
+      }
+    });
+  }
+
+  async function useStoredData() {
+    if (disabled) return;
+    await action('Loading stored loan data', async () => {
+      let active = session;
+      if (!active || active.documents.length) {
+        active = await api.create();
+        currentId.current = active.id;
+        syncSession(active);
+        setMessage(''); setTab('workspace'); setPollError('');
+      }
+      syncSession(await api.useStoredDataset(active.id));
     });
   }
 
@@ -206,6 +249,7 @@ export default function App() {
         <div className="nav-label">WORKSPACE</div>
         <button className={`nav-item ${tab === 'workspace' ? 'active' : ''}`} onClick={() => { setTab('workspace'); setMobileNav(false); }}><FolderOpen size={19} />Document studio<span className="nav-active-dot" /></button>
         <button className={`nav-item ${tab === 'report' ? 'active' : ''}`} onClick={() => { setTab('report'); setMobileNav(false); }}><FileCheck2 size={19} />Review report{session?.report && <span className="tiny-count">1</span>}</button>
+        <button className={`nav-item ${tab === 'batch' ? 'active' : ''}`} onClick={() => { setTab('batch'); setMobileNav(false); }}><ListChecks size={19} />Batch review</button>
         <div className="sessions-heading"><span className="nav-label">YOUR SESSIONS</span><button className="sidebar-icon" title="New session" aria-label="New session" disabled={disabled} onClick={() => void newSession()}><Plus size={17} /></button></div>
         <div className="session-list">
           {loading && <p className="sidebar-empty">Loading your sessions…</p>}
@@ -216,13 +260,15 @@ export default function App() {
       </aside>
 
       <div className="main-shell">
-        <header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMobileNav(true)}><Layers3 size={21} /></button><span>Workspace</span><ChevronRight size={14} /><strong>{tab === 'workspace' ? 'Document studio' : 'Review report'}</strong></div><div className="topbar-right"><span className="local-badge"><span className={`connection-dot ${connection}`} />{connection === 'online' ? 'Connected to your API' : connection === 'offline' ? 'API offline' : 'Connecting to API'}</span><span className="top-avatar">Y</span></div></header>
+        <header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMobileNav(true)}><Layers3 size={21} /></button><span>Workspace</span><ChevronRight size={14} /><strong>{tab === 'workspace' ? 'Document studio' : tab === 'batch' ? 'Batch review' : 'Review report'}</strong></div><div className="topbar-right"><span className="local-badge"><span className={`connection-dot ${connection}`} />{connection === 'online' ? 'Connected to your API' : connection === 'offline' ? 'API offline' : 'Connecting to API'}</span><span className="top-avatar">Y</span></div></header>
 
         <main>
-          <section className="page-heading"><div><div className="eyebrow"><span />DOCUMENT INTELLIGENCE, SIMPLIFIED</div><h1>{tab === 'workspace' ? 'Good documents. Clear decisions.' : 'The details. The bigger picture.'}</h1><p>{tab === 'workspace' ? 'From a stack of files to a clear next step. Let’s make sense of it.' : 'A transparent review, grounded in your documents and your rules.'}</p></div><button className="button secondary new-session" disabled={disabled} onClick={() => void newSession()}><Plus size={17} />New session</button></section>
+          <section className="page-heading"><div><div className="eyebrow"><span />DOCUMENT INTELLIGENCE, SIMPLIFIED</div><h1>{tab === 'workspace' ? 'Good documents. Clear decisions.' : tab === 'batch' ? 'Every loan. One run.' : 'The details. The bigger picture.'}</h1><p>{tab === 'workspace' ? 'From a stack of files to a clear next step. Let’s make sense of it.' : tab === 'batch' ? 'Review the whole stored loan set, track progress, and export the results.' : 'A transparent review, grounded in your documents and your rules.'}</p></div><button className="button secondary new-session" disabled={disabled} onClick={() => void newSession()}><Plus size={17} />New session</button></section>
 
           {error && <div className="error-banner" role="alert"><AlertCircle size={19} /><span>{error}</span><button className="text-button" disabled={!!busy} onClick={() => void load()}><RefreshCw size={14} />Reconnect</button><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={17} /></button></div>}
           {pollError && <div className="error-banner" role="status"><RefreshCw size={17} /><span>{pollError}</span></div>}
+
+          {tab === 'batch' ? <BatchReview /> : <>
 
           <div className="workspace-summary"><div className="session-title"><span className="icon-tile small"><FolderOpen size={18} /></span><div><h2>{session?.title || 'Your next great review'}</h2><span>{session ? `Created ${dateLabel(session.created_at)}` : 'A fresh space for your documents'}</span></div></div><span className={`status-pill ${session?.status || 'awaiting_upload'}`}><span />{statusLabels[session?.status || 'awaiting_upload']}</span></div>
 
@@ -248,6 +294,15 @@ export default function App() {
                     <input ref={fileInput} className="sr-only" type="file" accept=".pdf,.docx,.xlsx,.txt,.md,.csv,.json" multiple aria-label="Choose documents" disabled={disabled} onChange={(event) => { void upload(Array.from(event.target.files || [])); event.target.value = ''; }} />
                   </div>
                   <div className="upload-notices">
+                    {stored && stored.status !== 'empty' && <div className="stored-dataset">
+                      {stored.status === 'ready' ? <>
+                        <button className="button secondary dataset-button" disabled={disabled} onClick={() => void useStoredData()}><Database size={16} />Use stored loan data{documents.length ? ' in a new session' : ''}</button>
+                        <p className="dataset-note">{stored.loan_count.toLocaleString()} loans and {stored.account_count.toLocaleString()} borrower accounts are stored and indexed{stored.updated_at ? ` (updated ${dateLabel(stored.updated_at)})` : ''}, so no upload is needed. Uploading a new Query 1, 2 and 4 set clears and replaces all stored data.</p>
+                      </> : <p className="dataset-note" role="status">{stored.status === 'indexing'
+                        ? <><LoaderCircle size={13} className="spin" /> Clearing previous stored data and indexing the uploaded Query 1, 2 and 4 workbooks by loan and account…</>
+                        : stored.status === 'stale' ? 'Stored loan data was indexed with older mappings. Upload Query 1, 2 and 4 again to rebuild it.'
+                          : stored.error || 'Stored loan data could not be indexed. Upload Query 1, 2 and 4 again.'}</p>}
+                    </div>}
                     <p className="dataset-note">Upload the three MTB source workbooks together: Query 1 (Loans, Accounts & Financials), Query 2 (SBSS & Entity Relationships), and Query 4 (Credit Reports). Then enter a loan number to load only its related rows through explicit IDs; no row-position or name joins are used. Excel .xls and .xlsm are unsupported.</p>
                     <p className="dataset-note">V4 guideline available. Amounts use actual USD dollars; source currency and scale must match. Policy conflicts, production signoff and missing field mappings still require review. Generic document checks cannot approve financing.</p>
                   </div>
@@ -312,6 +367,7 @@ export default function App() {
             </section>
             {session?.error && <div role="alert" className="error-banner"><AlertCircle size={18} /><span>{session.error}</span></div>}
             {session?.report && <div className="report-ready"><span className="icon-tile"><FileCheck2 size={23} /></span><div><h3>Your review is ready.</h3><p>{session.report.summary}</p></div><button className="button secondary" onClick={() => setTab('report')}>Explore findings<ArrowRight size={16} /></button></div>}
+          </>}
           </>}
           <footer className="page-footer"><span className="footer-brand"><Layers3 size={14} />A clearer way forward.</span><span>Thoughtfully reviewed. Always in your control.</span></footer>
         </main>

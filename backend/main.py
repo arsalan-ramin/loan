@@ -7,6 +7,7 @@ import os
 import io
 import re
 from time import perf_counter
+from datetime import datetime, timezone
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import AsyncIterator
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
+from pydantic import BaseModel
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -27,6 +29,8 @@ from .assistant_workflow import (
     preflight, require_loan,
 )
 from .llm import LLMError
+from .batch_review import BatchError, BatchReviewer
+from .loan_dataset import DatasetError, LoanDataset
 from .loan_review import LoanReviewRequest, review_selected_loan
 from .loan_loading import load_loan_documents
 from .entity_graph import scalar_id
@@ -41,6 +45,11 @@ from .underwriting_models import UnderwritingBatch
 
 load_dotenv(Path(__file__).with_name(".env"))
 logger = logging.getLogger(__name__)
+
+
+class BatchStartRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    resume: bool = False
 
 
 async def uploaded_files(request: Request) -> AsyncIterator[list[StarletteUploadFile]]:
@@ -100,7 +109,8 @@ def process_session(store: Store, session_id: str) -> None:
                 if any(doc.extension == ".xlsx" for doc in session.documents):
                     if not session.selected_loan_id:
                         raise ValueError("Enter a loan number before loading workbook data.")
-                    load_loan_documents(session.documents, store.root / "uploads" / session.id, session.selected_loan_id)
+                    load_loan_documents(session.documents, store.root / "uploads" / session.id, session.selected_loan_id,
+                                        dataset=LoanDataset.for_root(store.root))
                 else:
                     extractor = ExtractionAgent()
                     for doc in session.documents:
@@ -150,6 +160,14 @@ def process_session(store: Store, session_id: str) -> None:
             store.save(session)
 
 
+def index_dataset(dataset: LoanDataset, files: list[tuple[str, Path]], session_id: str | None) -> None:
+    try:
+        if not dataset.replace(files, session_id):
+            logger.info("Uploaded workbooks are not a complete Query 1, 2 and 4 set; stored data unchanged.")
+    except Exception:
+        logger.exception("Stored loan dataset could not be replaced")
+
+
 def create_app(data_dir: Path | None = None) -> FastAPI:
     root = data_dir or Path(os.getenv("FOLIO_DATA_DIR", str(Path(__file__).parent / "data")))
 
@@ -160,6 +178,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         store = Store(root)
         application.state.store = store
         application.state.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="folio")
+        dataset = LoanDataset.for_root(root)
+        dataset.recover_interrupted()
+        application.state.dataset = dataset
+        # One worker serializes clear-and-reload jobs for the shared stored dataset.
+        application.state.dataset_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="folio-dataset")
+        if (stale := dataset.stale_files()) is not None:
+            application.state.dataset_executor.submit(index_dataset, dataset, stale, None)
+        batch = BatchReviewer(dataset)
+        batch.recover_interrupted()
+        application.state.batch = batch
         # In-process jobs cannot survive a restart. Make interrupted reviews explicitly retryable.
         for session in store.list():
             if session.policy_rules or (session.preflight is not None and session.preflight.recognized_mtb):
@@ -183,7 +211,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         step.detail = session.error
                 store.save(session)
         yield
+        application.state.batch.shutdown()
         application.state.executor.shutdown(wait=True, cancel_futures=False)
+        application.state.dataset_executor.shutdown(wait=True, cancel_futures=False)
 
     application = FastAPI(title="Agent document intelligence", version="1.0.0", lifespan=lifespan)
 
@@ -338,9 +368,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     + ("What loan number would you like to review? The uploaded workbooks have not been loaded. Enter the exact loan number to load only its related data."
                        if any(doc.extension == ".xlsx" for doc in session.documents) else
                        "Use Validate files locally to inspect the documents. Processing requires your explicit start."))
+                workbook_set = [doc for doc in session.documents if doc.extension == ".xlsx"]
+                index_set = len(workbook_set) == 3 and len(workbook_set) == len(session.documents)
+                if index_set:
+                    message.content += (" If these are one Query 1, Query 2 and Query 4 workbook, they now replace all previously "
+                                        "stored loan data and are indexed by loan and account, so later sessions can use them without uploading.")
                 store.remember(session.id, message.id, message.content, "conversation", "assistant")
                 session.messages.append(message)
                 store.save(session)
+                if index_set:
+                    request.app.state.dataset_executor.submit(
+                        index_dataset, request.app.state.dataset,
+                        [(doc.name, directory / doc.id) for doc in workbook_set], session.id)
                 return session
         except Exception:
             for path in created:
@@ -372,6 +411,90 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             finally:
                 for file in files:
                     file.file.close()
+
+    @application.get("/api/dataset")
+    def stored_dataset_status(request: Request):
+        return request.app.state.dataset.status()
+
+    @application.get("/api/dataset/loans", response_model=LoanCandidatePage)
+    def stored_dataset_loans(request: Request, q: str = Query("", max_length=128),
+                             offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
+        dataset: LoanDataset = request.app.state.dataset
+        results, total = dataset.search_loans(q, offset, limit)
+        return LoanCandidatePage(results=results, total=total, offset=offset, limit=limit,
+                                 loan_count=dataset.status()["loan_count"])
+
+    @application.get("/api/dataset/accounts", response_model=AccountCandidatePage)
+    def stored_dataset_accounts(request: Request, q: str = Query("", max_length=128),
+                                offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
+        dataset: LoanDataset = request.app.state.dataset
+        results, total = dataset.search_accounts(q, offset, limit)
+        return AccountCandidatePage(results=results, total=total, offset=offset, limit=limit,
+                                    account_count=dataset.status()["account_count"])
+
+    @application.get("/api/batch")
+    def batch_status(request: Request):
+        return request.app.state.batch.status()
+
+    @application.get("/api/batch/results")
+    def batch_results(request: Request, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+                      status: Literal["Approved", "Decline", "Refer", "Error"] | None = None):
+        return request.app.state.batch.results(offset, limit, status)
+
+    @application.post("/api/batch", status_code=202)
+    def start_batch(request: Request, body: BatchStartRequest):
+        try:
+            return request.app.state.batch.start(resume=body.resume)
+        except BatchError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from None
+
+    @application.post("/api/batch/cancel")
+    def cancel_batch(request: Request):
+        try:
+            return request.app.state.batch.cancel()
+        except BatchError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from None
+
+    @application.get("/api/batch/export")
+    def export_batch(request: Request):
+        try:
+            content = request.app.state.batch.export_xlsx()
+        except BatchError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from None
+        filename = f"loan-batch-results-{datetime.now(timezone.utc):%Y%m%d-%H%M}.xlsx"
+        return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+    @application.post("/api/sessions/{session_id}/stored-dataset", response_model=Session)
+    def use_stored_dataset(request: Request, session_id: str):
+        """Attach the stored Query 1/2/4 workbooks to an empty session without re-uploading."""
+        store: Store = request.app.state.store
+        dataset: LoanDataset = request.app.state.dataset
+        with store.lock:
+            session = require_session(store, session_id)
+            editable(session)
+            if session.documents:
+                raise HTTPException(409, "Use a new empty session to load the stored loan data.")
+            directory = store.root / "uploads" / session.id
+            try:
+                documents = dataset.attach(directory)
+            except DatasetError as exc:
+                raise HTTPException(409, str(exc)) from None
+            store.forget_documents(session.id)
+            store.forget_account_candidates(session.id)
+            session.documents.extend(documents)
+            if session.title == "Untitled review":
+                session.title = "Stored loan data"
+            invalidate(session)
+            state = dataset.status()
+            message = Message(role="assistant", content=(
+                f"Loaded the stored Query 1, 2 and 4 workbooks ({state['loan_count']} indexed loans, "
+                f"{state['account_count']} borrower accounts) without uploading. What loan number would you like to review? "
+                "Enter the exact loan number to load only its related data from the index."))
+            store.remember(session.id, message.id, message.content, "conversation", "assistant")
+            session.messages.append(message)
+            store.save(session)
+        return session
 
     @application.delete("/api/sessions/{session_id}/documents/{document_id}", response_model=Session)
     def delete_document(request: Request, session_id: str, document_id: str):

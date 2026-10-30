@@ -20,9 +20,24 @@ def safe_excel_error_reason(error: Exception) -> str:
     return "UNSUPPORTED_WORKBOOK_STRUCTURE: workbook could not be parsed; attach the original failing file for diagnosis"
 
 
+def row_text(sheet_title: str, nonempty: list) -> str:
+    values = []
+    for cell in nonempty:
+        value = cell.value
+        if isinstance(value, (datetime, date, time)):
+            value = value.isoformat()
+        if cell.data_type == "f":
+            value = f"FORMULA (not evaluated): {value}"
+        values.append(f"{cell.coordinate}={value}")
+    return f"[{sheet_title}!row {nonempty[0].row}] " + " | ".join(values)
+
+
 def extract_excel(raw: bytes | Path, *, include_text: bool = True,
                   headers_only: bool = False,
-                  record_filter: Callable[[dict, list[str]], bool] | None = None) -> tuple[str, dict]:
+                  record_filter: Callable[[dict, list[str]], bool] | None = None,
+                  record_observer: Callable[[dict, list[str], str, int], None] | None = None,
+                  ) -> tuple[str, dict]:
+    """``record_observer`` sees every data record with its text line and formula count before filtering."""
     # Uploaded XLSX files are already on disk. Stream directly from that file
     # instead of retaining another compressed-workbook byte copy in memory.
     source = raw if isinstance(raw, Path) else io.BytesIO(raw)
@@ -87,6 +102,9 @@ def extract_excel(raw: bytes | Path, *, include_text: bool = True,
                             sources[key] = f"{sheet.title}!{cell.coordinate}"
                         record = {"sheet": sheet.title, "row": nonempty[0].row,
                                   "values": record, "sources": sources}
+                        if record_observer is not None:
+                            record_observer(record, headers, row_text(sheet.title, nonempty),
+                                            sum(cell.data_type == "f" for cell in nonempty))
                         if record_filter is not None and not record_filter(record, headers):
                             continue
                         records.append(record)
@@ -98,16 +116,7 @@ def extract_excel(raw: bytes | Path, *, include_text: bool = True,
                     if cell.data_type == "f":
                         formula_count += 1
                 if include_text:
-                    values = []
-                    for cell in nonempty:
-                        value = cell.value
-                        if isinstance(value, (datetime, date, time)):
-                            value = value.isoformat()
-                        if cell.data_type == "f":
-                            value = f"FORMULA (not evaluated): {value}"
-                        values.append(f"{cell.coordinate}={value}")
-                    line = f"[{sheet.title}!row {nonempty[0].row}] " + " | ".join(values)
-                    parts.append(line)
+                    parts.append(row_text(sheet.title, nonempty))
             sheets.append({"name": sheet.title, "headers": headers, "header_row": header_row,
                            "data_rows": data_rows, "columns": columns, "is_reference": is_reference})
         total_rows = sum(sheet["data_rows"] for sheet in sheets if not sheet["is_reference"])

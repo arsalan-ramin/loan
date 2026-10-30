@@ -12,9 +12,9 @@ from backend import commentary, llm, llm_context, loan_review, prompts
 # SHA-256 runtime snapshots: five structured prompts intentionally now include
 # their generated Pydantic JSON schemas; all reasoning/context text is unchanged.
 @pytest.mark.parametrize("name,digest", [
-    ("DEMO_SYSTEM", "458bbfc34ed2163e170162e65e4038f2f6680b532eaee73d8b792acddba22d2b"),
-    ("DEMO_AGGREGATE_INSTRUCTIONS", "414b2b5e97fd9cb7827cca9937d61cab02e611e67d2ab5c90fa0e5f7e6ab3e55"),
-    ("DEMO_SELECTED_LOAN_INSTRUCTIONS", "5a34307958e6296af42d6d766152cae984cb5a2f3f4225571952cec1b2f6974f"),
+    ("DEMO_SYSTEM", "e757c06558942610c373032c5a2b2754a4485e5b5834b8d38f47d4934427ce78"),
+    ("DEMO_AGGREGATE_INSTRUCTIONS", "2af57801015688a835132d258d62364f0535f0375f208e917bdcc52771aa3267"),
+    ("DEMO_SELECTED_LOAN_INSTRUCTIONS", "7ab96a406f02e1e2839ac607dffdadc33be313a2e728f846458075862ef1fb7b"),
     ("DEMO_SELECTED_LOAN_CONTEXT_NOTE", "d34a861b02ad0ea91c2ac40ef878ec29eda611bcd844a9d93410cc0ed4be81e3"),
     ("SYSTEM", "7a32923c79885a9a044f846870274c71beec603d6c9fcac53f87a487c9f7fc19"),
     ("V4_SYSTEM", "a357a49510aaff807e48008ecec9b33155119ff0ca6c5040ebf5d3ae16bec71e"),
@@ -54,6 +54,18 @@ def test_explanations_name_requirements_instead_of_scope_jargon():
 def test_explanation_does_not_repeat_ui_disclaimers():
     assert "do not append another disclaimer to the explanation" in prompts.REVIEW_REASONING_GUIDANCE
     assert "A simulated candidate is not a decision." not in prompts.V4_SYSTEM
+
+
+def test_demo_rationale_covers_only_the_decision_flow():
+    system = prompts.DEMO_SYSTEM
+    assert "Authorization remains NOT_ISSUED" not in system
+    assert "Next steps:" in system and "Never write a Next steps: paragraph" in system
+    assert "Never mention authorization or NOT_ISSUED" in system
+    assert "human review or\nreviewer confirmation" in system
+    assert "UNKNOWN inputs that did not determine\nthe label" in system
+    assert "For Refer only, add\nWhat is unresolved:" in system
+    for instructions in (prompts.DEMO_SELECTED_LOAN_INSTRUCTIONS, prompts.DEMO_AGGREGATE_INSTRUCTIONS):
+        assert "that caused a Refer" in instructions
 
 
 def test_rationale_separates_observed_risk_from_blockers_and_stale_snapshots():

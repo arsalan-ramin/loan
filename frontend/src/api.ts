@@ -1,4 +1,4 @@
-import type { AccountCandidatePage, LoanCandidatePage, Mode, Rule, Session } from './types';
+import type { AccountCandidatePage, BatchResultPage, BatchState, LoanCandidatePage, Mode, Rule, Session, StoredDataset } from './types';
 
 const BASE = '/api';
 const segment = encodeURIComponent;
@@ -58,6 +58,14 @@ export const api = {
     return request<Session>(`/sessions/${segment(id)}/documents`, { method: 'POST', body });
   },
   remove: (id: string, docId: string) => request<Session>(`/sessions/${segment(id)}/documents/${segment(docId)}`, { method: 'DELETE' }),
+  storedDataset: () => request<StoredDataset>('/dataset'),
+  batchStatus: () => request<BatchState>('/batch'),
+  batchResults: (offset = 0, limit = 50, status = '') => request<BatchResultPage>(
+    `/batch/results?offset=${offset}&limit=${limit}${status ? `&status=${encodeURIComponent(status)}` : ''}`,
+  ),
+  startBatch: (resume = false) => request<BatchState>('/batch', json('POST', { resume })),
+  cancelBatch: () => request<BatchState>('/batch/cancel', { method: 'POST' }),
+  useStoredDataset: (id: string) => request<Session>(`/sessions/${segment(id)}/stored-dataset`, { method: 'POST' }),
   rules: (id: string, rules: Rule[]) => request<Session>(`/sessions/${segment(id)}/rules`, json('PUT', { rules })),
   mode: (id: string, mode: Mode) => request<Session>(`/sessions/${segment(id)}/mode`, json('PUT', { mode })),
   process: (id: string) => request<Session>(`/sessions/${segment(id)}/process`, { method: 'POST' }),
@@ -79,6 +87,11 @@ export type UnderwritingFormat = 'json' | 'csv';
 
 export async function downloadUnderwriting(id: string, format: UnderwritingFormat): Promise<void> {
   return downloadBlob(`${BASE}/sessions/${segment(id)}/underwriting?format=${format}`, `agent-underwriting-${id}.${format}`);
+}
+
+export async function downloadBatchResults(): Promise<void> {
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+  return downloadBlob(`${BASE}/batch/export`, `loan-batch-results-${stamp}.xlsx`);
 }
 
 async function downloadBlob(path: string, filename: string): Promise<void> {

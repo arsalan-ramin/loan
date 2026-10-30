@@ -489,4 +489,38 @@ describe('Agent', () => {
     expect(screen.getByText('Agreement between parties')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Download HTML' })).toBeEnabled();
   });
+
+  it('loads stored Query 1, 2 and 4 data into a session without uploading', async () => {
+    const stored = { status: 'ready', updated_at: '2026-10-29T12:00:00Z', error: null, record_count: 30, loan_count: 1200, account_count: 900,
+      files: [1, 2, 4].map((role) => ({ query_role: role, name: `MTB_Query_${role}.xlsx`, size: 10, sha256: 'x' })) };
+    const created = session({ id: 'fresh' });
+    const attached = session({ id: 'fresh', status: 'ready', documents: [1, 2, 4].map((role) => ({ id: `d${role}`, name: `MTB_Query_${role}.xlsx`, size: 10, extension: '.xlsx', metadata: {} })),
+      messages: [{ id: 'm', role: 'assistant', content: 'Loaded the stored Query 1, 2 and 4 workbooks. What loan number would you like to review?', created_at: created.created_at }] });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/health')) return response({ status: 'ok' });
+      if (url === '/api/dataset') return response(stored);
+      if (url === '/api/sessions' && init?.method === 'POST') return response(created, 201);
+      if (url === '/api/sessions') return response([]);
+      if (url === '/api/sessions/fresh/stored-dataset' && init?.method === 'POST') return response(attached);
+      return response({ detail: 'unexpected' }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup(); render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Use stored loan data' }));
+    expect(await screen.findByText('MTB_Query_4.xlsx')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/fresh/stored-dataset', expect.objectContaining({ method: 'POST' }));
+    expect(screen.getByText(/1,200 loans and 900 borrower accounts are stored and indexed/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Use stored loan data in a new session' })).toBeEnabled();
+  });
+
+  it('shows indexing progress instead of the stored data action', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/health')) return response({ status: 'ok' });
+      if (url === '/api/dataset') return response({ status: 'indexing', updated_at: null, error: null, record_count: 0, loan_count: 0, account_count: 0, files: [] });
+      return response([]);
+    }));
+    render(<App />);
+    expect(await screen.findByText(/indexing the uploaded Query 1, 2 and 4 workbooks/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Use stored loan data/ })).toBeNull();
+  });
 });

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from .agents import ExtractionAgent
 from .excel import safe_excel_error_reason
 from .loan_loading import load_loan_documents
+from .loan_dataset import LoanDataset
 from .datasets import (account_reference_headers, borrower_role_headers,
                        loan_reference_headers, mtb_query_ids,
                        soql_field_headers, soql_mapping_coverage,
@@ -262,7 +263,8 @@ def preflight(session: Session, root: Path) -> PreflightResult:
     requires_loan_number = any(doc.extension == ".xlsx" for doc in detached.documents) and not session.selected_loan_id
     if session.selected_loan_id and not any(item.startswith("FILE_PARSE_FAILED") for item in issues):
         try:
-            load_loan_documents(detached.documents, root / "uploads" / session.id, session.selected_loan_id)
+            load_loan_documents(detached.documents, root / "uploads" / session.id, session.selected_loan_id,
+                                dataset=LoanDataset.for_root(root))
         except (ValueError, OSError) as exc:
             issues.append("FILE_PARSE_FAILED: " + safe_excel_error_reason(exc))
     recognized = bool(roles)
@@ -478,7 +480,7 @@ def loan_attribute_inventory(session: Session, root: Path, query: str,
                         or path.is_symlink() or path.resolve().parent != session_dir
                         or not path.is_file()):
                     continue
-                load_loan_documents([document], session_dir, selected_id)
+                load_loan_documents([document], session_dir, selected_id, dataset=LoanDataset.for_root(root))
             except (OSError, ValueError):
                 continue
         documents.append(document)

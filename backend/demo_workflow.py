@@ -242,12 +242,14 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
             role = str(selected.fields.get("report_role", "")).strip().casefold()
             typed = explicit or (category in {"personal", "consumer", "personal_fico"} and role in roles)
             relevant = {"account_id", field} | (set() if explicit else {"report_category", "report_role"})
+            raw, _ = read(field, [selected])
             if selected.poisoned & relevant:
                 status = "CONFLICTING_REPORT"
+            elif raw is None or (isinstance(raw, str) and not raw.strip()):
+                status = "MISSING_PERSONAL_FICO"
             elif not typed:
                 status = "UNTYPED_PERSONAL_FICO"
             else:
-                raw, _ = read(field, [selected])
                 number = _number(raw)
                 if number is not None and 300 <= number <= 850 and number == number.to_integral_value():
                     score, status = number, "VALID_PERSONAL_FICO"
@@ -260,12 +262,16 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                            "report_status": "FIRST_ACCOUNT_MATCH" if selected else "NO_ACCOUNT_MATCH",
                            "score_status": status, "score": str(score) if score is not None else None,
                            "evidence_refs": sorted(refs)})
+    invalid_scores = any(item["score_status"] not in {
+        "VALID_PERSONAL_FICO", "MISSING_PERSONAL_FICO", "NO_ACCOUNT_MATCH"
+    } for item in fico_audit)
     fico = (sum(scores, Decimal(0)) / Decimal(len(scores))
-            if scores and len(scores) == len(party_roles) else None)
+            if scores and not invalid_scores else None)
     add("fico", fico, fico >= 650 if fico is not None else None, sorted(fico_refs),
-        "Average personal FICO across all explicitly loan-linked borrower and guarantor accounts, once per account; "
+        "Average available personal FICO across explicitly loan-linked borrower and guarantor accounts, once per account; "
         "below 650 matches a knockout. Each raw score must be integral 300–850; fractional averages are allowed. "
-        "Any missing, conflicting, invalid or untyped party score makes the entire average UNKNOWN.")
+        "Missing scores are excluded from both sum and count. No available scores, or any conflicting, invalid "
+        "or untyped supplied party score, makes the average UNKNOWN.")
 
     # Prefer the explicitly loan-scoped Query 2 scalar. A strict selected response
     # may supply a canonical score, but this module never changes response selection.

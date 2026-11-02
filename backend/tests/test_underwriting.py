@@ -350,15 +350,16 @@ def test_one_account_many_loans_and_many_guarantors():
     assert second.normalized_data["sbss_bucket"] == "LT_160"
 
 
-def test_screenshot_average_fico_is_unknown_when_any_linked_party_score_is_missing():
+def test_screenshot_average_fico_excludes_missing_linked_party_scores():
     source = rows()
     source.append(("EntityInvolvement", {"Id": "J1", "account_id": "G1", "loan_id": "L1", "role": "guarantor"}))
     source.append(("Account", {"Id": "G1"}))
 
     result = evaluate(source)
 
-    assert result.normalized_data["fico"] is None
-    assert result.normalized_data["fico_band"] is None
+    assert result.normalized_data["fico"] == "760"
+    assert result.normalized_data["fico_band"] == "GE_760"
+    assert result.normalized_data["personal_fico_scores_for_average"] == ["760"]
     assert any(item.startswith("guarantor_fico_average:G1:") for item in result.missing_inputs)
     assert result.recommendation_path == "SIMULATED_REVIEW"
 

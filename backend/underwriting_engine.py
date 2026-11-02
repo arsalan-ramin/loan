@@ -540,8 +540,8 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
         })
     # The supplied screenshot explicitly evaluates average personal FICO when
     # multiple parties are linked. For a sole borrower, use that explicitly
-    # typed personal score unchanged. Never use unrelated accounts, business
-    # scores, or a partial average when a linked party is missing.
+    # typed personal score unchanged. Missing scores do not contribute to the
+    # sum or count; unrelated accounts and business scores are never included.
     party_scores: list[Decimal] = []
     fico_refs: list[str] = list(refs.get("fico", []))
     borrower_score = _number(personal_fico(report))
@@ -562,16 +562,12 @@ def _evaluate_loan(graph: EntityGraph, loan: EntityNode, mode: Mode, config: dic
         party_scores.append(guarantor_score)
         fico_refs.extend(guarantor_report.field_refs.get(
             "personal_fico", guarantor_report.field_refs.get("fico", [])))
-    average_complete = borrower_score is not None and not any(
-        item.startswith("guarantor_fico_average:") for item in missing
-    )
     profile["fico"] = (
-        borrower_score if average_complete and len(party_scores) == 1 else
         sum(party_scores, Decimal(0)) / Decimal(len(party_scores))
-        if average_complete and party_scores else None
+        if party_scores else None
     )
     refs["fico"] = sorted(set(fico_refs))
-    profile["personal_fico_scores_for_average"] = [str(score) for score in party_scores] if average_complete else None
+    profile["personal_fico_scores_for_average"] = [str(score) for score in party_scores] if party_scores else None
     response, response_error = _select_response(graph, loan, borrower)
     if response_error and profile.get("sbss") is not None:
         # SOQL may select the scalar SBSS score through an explicit

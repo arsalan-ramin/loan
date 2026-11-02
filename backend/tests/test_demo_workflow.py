@@ -113,8 +113,35 @@ def test_duplicate_associations_count_each_account_once_and_exclude_unknown_unre
     assert not {"UNRELATED-R", "ROWNER", "RUNTYPED"} & {item["record_id"] for item in view["source_evidence"]}
 
 
-@pytest.mark.parametrize("score", [None, "", "bad", "299", "851", "650.5", True, "NaN", "Infinity"])
-def test_any_missing_or_invalid_linked_personal_score_blocks_partial_average_with_refs(score):
+@pytest.mark.parametrize("score", [None, "", "   "])
+def test_missing_linked_personal_scores_are_excluded_from_average(score):
+    source = linked_party(rows(), score=score)
+    linked_party(source, "G2", "650")
+    view = demo(source)
+    assert view["normalized_facts"]["fico"] == "705"
+    assert criterion(view, "fico")["status"] == "PASS"
+    assert view["fico_account_audit"][1]["score"] is None
+    assert "fico" not in view["missing_inputs"]
+
+
+def test_missing_borrower_score_uses_only_available_guarantor_scores():
+    source = rows()
+    source[2][1].pop("personal_fico")
+    linked_party(source, "G1", "640")
+    view = demo(source)
+    assert view["normalized_facts"]["fico"] == "640"
+    assert view["label"] == "Decline"
+
+
+def test_all_missing_personal_scores_keep_average_unknown():
+    source = rows()
+    source[2][1].pop("personal_fico")
+    linked_party(source, score=None)
+    assert demo(source)["normalized_facts"]["fico"] is None
+
+
+@pytest.mark.parametrize("score", ["bad", "299", "851", "650.5", True, "NaN", "Infinity"])
+def test_invalid_linked_personal_score_blocks_partial_average_with_refs(score):
     view = demo(linked_party(rows(), score=score))
     assert view["normalized_facts"]["fico"] is None
     assert criterion(view, "fico")["status"] == "UNKNOWN"

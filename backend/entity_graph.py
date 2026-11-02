@@ -276,6 +276,9 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                         if alias not in values or values[alias] is None or values[alias] == "":
                             continue
                         raw = values[alias]
+                        if (table == "CreditReport" and target in {"fico", "personal_fico"}
+                                and isinstance(raw, float) and math.isfinite(raw)):
+                            raw = str(raw)
                         evidence_id = "ev-" + hashlib.sha256(f"{prefix}:{alias}".encode()).hexdigest()[:24]
                         safe = raw if isinstance(raw, (str, bool)) else str(raw) if isinstance(raw, (int, date)) else None
                         # Decimal values preserve lexical precision; floats/objects are omitted.

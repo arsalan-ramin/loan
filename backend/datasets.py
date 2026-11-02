@@ -103,6 +103,7 @@ SOQL_FIELD_SUFFIXES = {
     ("CreditReport", "account_id"): ("nfusecreditreportrnfuseaccountc", "nfuseaccountc"),
     ("CreditReport", "status"): ("nfusecreditreportrnfusestatusc", "nfusestatusc"),
     ("CreditReport", "fico"): ("nfusecreditreportrnfusecreditscorec", "nfusecreditscorec"),
+    ("CreditReport", "personal_fico"): ("nfusecreditreportrnfusecreditscorec", "nfusecreditscorec"),
     ("CreditReport", "report_category"): ("nfusecreditreportrnfusereportcategoryc", "nfusereportcategoryc"),
     ("CreditReport", "report_role"): ("llcbiborrowertypec",),
     ("CreditReport", "judgment_count"): ("nfusecreditreportrnfusenumberofjudgementsc", "nfusenumberofjudgementsc"),

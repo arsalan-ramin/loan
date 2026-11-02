@@ -736,7 +736,7 @@ def test_selected_account_does_not_merge_different_zero_padded_ids():
     assert any("leading zeros" in warning for warning in graph.mapping_warnings)
 
 
-def test_proposal_ready_exact_aliases_link_without_inferred_policy_fields():
+def test_proposal_ready_exact_aliases_link_with_confirmed_fico_field():
     base = {"loan_id": "L1", "account_id": "A1", "LLC_BI__Account__c": "A1",
             "entity_involvement_id": "J1", "lcresponse_id": "S1", "lcrentity_id": "E1",
             "analysis_id": "D1", "LLC_BI__Borrower_Type__c": "Borrower"}
@@ -761,7 +761,7 @@ def test_proposal_ready_exact_aliases_link_without_inferred_policy_fields():
     assert graph.table("LCREntity")["E1"].fields["response_id"] == "S1"
     assert "ebitda" not in graph.table("Account")["A1"].fields
     assert "as_of_date" not in graph.table("Loan")["L1"].fields
-    assert "personal_fico" not in graph.table("CreditReport")["R1"].fields
+    assert graph.table("CreditReport")["R1"].fields["personal_fico"] == 790
 
 
 def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields():

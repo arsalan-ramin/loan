@@ -29,7 +29,7 @@
     "explicit_flattened_aliases": {
       "Loan": {"fields": {"product": ["LLC_BI__Product__c"], "requested_amount": ["LLC_BI__Amount__c"], "sbss": ["SCOC__SBSS7Score__c"]}},
       "Account": {"fields": {"name": ["Name"], "ownership_years": ["Years_Under_Current_Ownership"], "naics": ["NAICS_Code_Formula__c"]}},
-      "CreditReport": {"id": ["credit_report_id"], "fields": {"status": ["nFUSE__Status__c"]}},
+      "CreditReport": {"id": ["credit_report_id"], "fields": {"status": ["nFUSE__Status__c"], "personal_fico": ["nFUSE__Credit_Score__c"]}},
       "LCRESPONSE": {"id": ["lcresponse_id"], "fields": {"sbss": ["SCOC__SBSS7Score__c"]}},
       "LCREntity": {"id": ["lcrentity_id", "SCOC__LCREntity__r"], "fields": {"response_id": ["lcresponse_id"]}},
       "DataSourceAnalysis": {"fields": {"entity_id": ["lcrentity_id", "SCOC__LCREntity__r"]}}

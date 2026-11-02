@@ -140,7 +140,33 @@ def test_all_missing_personal_scores_keep_average_unknown():
     assert demo(source)["normalized_facts"]["fico"] is None
 
 
-@pytest.mark.parametrize("score", ["bad", "299", "851", "650.5", True, "NaN", "Infinity"])
+def test_fico_skips_blank_reports_and_keeps_first_populated_report_per_account():
+    source = rows()
+    source[2][1].pop("personal_fico")
+    source.extend([
+        ("CreditReport", {"Id": "BLANK", "account_id": "A1", "personal_fico": " "}),
+        ("CreditReport", {"Id": "SCORED", "account_id": "A1", "personal_fico": "94.57"}),
+        ("CreditReport", {"Id": "LATER", "account_id": "A1", "personal_fico": "800"}),
+    ])
+    view = demo(source)
+    assert view["normalized_facts"]["fico"] == "94.57"
+    assert view["fico_account_audit"][0]["selected_report_id"] == "SCORED"
+    assert criterion(view, "fico")["status"] == "FAIL"
+    assert view["label"] == "Decline"
+    bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    assert bounded["normalized_facts"]["fico"] == "94.57"
+
+
+@pytest.mark.parametrize("score", ["0", "94.57", "299", "650.5"])
+def test_supplied_numeric_fico_scores_use_existing_threshold_without_conversion(score):
+    source = rows()
+    source[2][1]["personal_fico"] = score
+    view = demo(source)
+    assert view["normalized_facts"]["fico"] == score
+    assert criterion(view, "fico")["status"] == ("FAIL" if Decimal(score) < 650 else "PASS")
+
+
+@pytest.mark.parametrize("score", ["bad", "-1", "851", True, "NaN", "Infinity"])
 def test_invalid_linked_personal_score_blocks_partial_average_with_refs(score):
     view = demo(linked_party(rows(), score=score))
     assert view["normalized_facts"]["fico"] is None

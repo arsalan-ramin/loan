@@ -1,7 +1,8 @@
 """Isolated screenshot simulation v1; never authoritative underwriting policy.
 
 Graph insertion order is source order. The first account-linked report is used
-without checking report date/completion; poisoned fields remain unknown. No raw
+without checking report date/completion; poisoned fields remain unknown.
+FICO lookup separately skips blank scores within each linked account. No raw
 characteristics are pivoted, no EBIT/net income is substituted for EBITDA, and
 no graph is modified. Age, EBITDA and public records are non-gating diagnostics.
 """
@@ -222,9 +223,19 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     fico_nodes: list[EntityNode] = []
     fico_refs: set[str] = set()
     scores: list[Decimal] = []
+
+    def has_fico_value(candidate: EntityNode) -> bool:
+        explicit = ("personal_fico" in candidate.fields or "personal_fico" in candidate.field_refs
+                    or "personal_fico" in candidate.poisoned)
+        field = "personal_fico" if explicit else "fico"
+        raw = candidate.fields.get(field)
+        return (bool(candidate.poisoned & {"account_id", field})
+                or (raw is not None and not (isinstance(raw, str) and not raw.strip())))
+
     for account_id, roles in party_roles.items():
         candidates = graph.related("CreditReport", "account_id", account_id)
-        selected = candidates[0] if candidates else None
+        selected = next((candidate for candidate in candidates if has_fico_value(candidate)),
+                        candidates[0] if candidates else None)
         refs = set(party_refs[account_id])
         score = None
         status = "NO_ACCOUNT_MATCH"
@@ -251,7 +262,7 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                 status = "UNTYPED_PERSONAL_FICO"
             else:
                 number = _number(raw)
-                if number is not None and 300 <= number <= 850 and number == number.to_integral_value():
+                if number is not None and 0 <= number <= 850:
                     score, status = number, "VALID_PERSONAL_FICO"
                     scores.append(number)
                 else:
@@ -259,7 +270,7 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         fico_refs.update(refs)
         fico_audit.append({"account_id": account_id, "party_roles": sorted(roles),
                            "selected_report_id": selected.id if selected else None,
-                           "report_status": "FIRST_ACCOUNT_MATCH" if selected else "NO_ACCOUNT_MATCH",
+                           "report_status": "FIRST_NONBLANK_FICO_ACCOUNT_MATCH" if selected else "NO_ACCOUNT_MATCH",
                            "score_status": status, "score": str(score) if score is not None else None,
                            "evidence_refs": sorted(refs)})
     invalid_scores = any(item["score_status"] not in {
@@ -269,7 +280,8 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
             if scores and not invalid_scores else None)
     add("fico", fico, fico >= 650 if fico is not None else None, sorted(fico_refs),
         "Average available personal FICO across explicitly loan-linked borrower and guarantor accounts, once per account; "
-        "below 650 matches a knockout. Each raw score must be integral 300–850; fractional averages are allowed. "
+        "below 650 matches a knockout. Use the first nonblank score per account in source order. "
+        "Supplied numeric scores from 0 to 850, including decimals, are used without rescaling. "
         "Missing scores are excluded from both sum and count. No available scores, or any conflicting, invalid "
         "or untyped supplied party score, makes the average UNKNOWN.")
 
@@ -450,7 +462,7 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
     if code in {Decimal(0), Decimal(1), Decimal(2), Decimal(3)}:
         normalized["public_record_code"] = str(code)
     fico = _number(facts.get("fico"))
-    if fico is not None and 300 <= fico <= 850 and len(str(fico)) <= 100:
+    if fico is not None and 0 <= fico <= 850 and len(str(fico)) <= 100:
         normalized["fico"] = str(fico)
     for key in ("sbss", "ebitda_usd", "requested_amount_usd"):
         number = _number(facts.get(key))

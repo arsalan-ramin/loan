@@ -1,5 +1,6 @@
 """Stored, indexed Query 1/2/4 dataset: equivalence with streaming, replacement and reuse."""
 
+import hashlib
 import time
 from contextlib import contextmanager
 from unittest.mock import Mock
@@ -50,6 +51,47 @@ def write_set(directory, count=40, *, canonical_query_1=False):
 def comparable(document: Document) -> tuple:
     metadata = {key: value for key, value in document.metadata.items() if key != "extracted_at"}
     return document.content, metadata
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+def test_query4_fico_uses_later_populated_row_and_preserves_decimal(tmp_path, indexed):
+    from backend.underwriting_engine import evaluate_underwriting
+
+    documents = synthetic_documents(2)
+    query4 = documents[-1]
+    query4.metadata = {}
+    headers = ["Id", "nFUSE__Account__c", "nFUSE__Credit_Score__c", "nFUSE__Status__c"]
+    query4_bytes = canonical_workbook([("Sheet1", headers, [
+        ["EMPTY1", "A00000", None, "Complete"],
+        ["EMPTY2", "A00000", None, "OPEN"],
+        ["SCORED", "A00000", 94.57, "OPEN"],
+        ["LATER", "A00000", 800, "Complete"],
+        ["UNRELATED", "A00001", 740, "Complete"],
+    ])])
+    files = []
+    for doc in documents:
+        path = tmp_path / doc.id
+        path.write_bytes(query4_bytes if doc is query4 else workbook_bytes(doc))
+        files.append((doc.name, path))
+        doc.metadata = {}
+    if indexed:
+        dataset = LoanDataset(tmp_path / "data")
+        assert dataset.replace(files)
+        for doc, (_, path) in zip(documents, files):
+            doc.metadata["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert dataset.load_scoped(documents, "L00000")
+    else:
+        load_loan_documents(documents, tmp_path, "L00000")
+    loan = evaluate_underwriting(documents, "TEST", selected_loan_id="L00000").loan_results[0]
+    view = loan.normalized_data["demo_decision"]
+    assert view["normalized_facts"]["fico"] == "94.57", [
+        (item["selected_report_id"], item["score_status"]) for item in view["fico_account_audit"]]
+    assert view["label"] == "Decline"
+    audit = view["fico_account_audit"]
+    assert len(audit) == 1
+    assert audit[0]["selected_report_id"] == "SCORED"
+    assert audit[0]["score_status"] == "VALID_PERSONAL_FICO"
+    assert any(item["value"] == "94.57" for item in view["source_evidence"])
 
 
 @pytest.mark.parametrize("canonical", [False, True])

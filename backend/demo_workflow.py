@@ -33,6 +33,11 @@ VEHICLE_UNKNOWN_BASIS = "INVALID_OR_CONFLICTING"
 BANKRUPTCY_FALLBACK_BASIS = "ASSUMED_ZERO_WHEN_NOT_PROVIDED"
 BANKRUPTCY_EXPLICIT_BASIS = "EXPLICIT_BANKRUPTCY_COUNT"
 BANKRUPTCY_UNKNOWN_BASIS = "INVALID_OR_CONFLICTING"
+BORROWER_ROLE_BASIS = "EXPLICIT_BORROWER_ROLE"
+BORROWER_BUSINESS_TYPE_BASIS = "BUSINESS_ACCOUNT_LINKED_BY_LOAN_ID"
+SBSS_SINGLE_BASIS = "SINGLE_SUPPLIED_SBSS"
+SBSS_BORROWER_ROW_BASIS = "BORROWER_ROW_SBSS"
+SBSS_LOWEST_BASIS = "LOWEST_OF_MULTIPLE_SBSS"
 NAICS_MATCH_BASIS = "SUPPLIED_HIGH_RISK_PREFIX_LIST_ONLY"
 NAICS_MAX_LENGTH = 128
 
@@ -87,6 +92,27 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         return None
     borrowers = graph.borrowers(loan.id)
     borrower = next(iter(borrowers)) if len(borrowers) == 1 else None
+    borrower_basis = BORROWER_ROLE_BASIS if borrower else None
+    borrower_link_refs: set[str] = set()
+    if not borrowers:
+        # TEST rule: with no explicit Borrower role, the single Business account
+        # linked to this loan ID is the borrower, whatever its role label.
+        business: dict[str, set[str]] = {}
+        for involvement in graph.related("EntityInvolvement", "loan_id", loan.id):
+            if involvement.poisoned & {"loan_id", "account_id"}:
+                continue
+            account_id = scalar_id(involvement.fields.get("account_id"))
+            candidate = graph.table("Account").get(account_id) if account_id else None
+            if (candidate is None or "account_type" in candidate.poisoned
+                    or str(candidate.fields.get("account_type") or "").strip().casefold() != "business"):
+                continue
+            business.setdefault(account_id, set()).update(
+                ref for field in ("loan_id", "account_id", "role")
+                for ref in involvement.field_refs.get(field, []))
+            business[account_id].update(candidate.field_refs.get("account_type", []))
+        if len(business) == 1:
+            borrower, borrower_link_refs = next(iter(business.items()))
+            borrowers, borrower_basis = {borrower}, BORROWER_BUSINESS_TYPE_BASIS
     account = graph.table("Account").get(borrower or "")
     reports = graph.related("CreditReport", "account_id", borrower) if borrower else []
     report = reports[0] if reports else None
@@ -177,6 +203,7 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     for account_id in sorted(borrowers):
         party_roles.setdefault(account_id, set()).add("borrower")
         party_refs.setdefault(account_id, set()).update(loan.field_refs.get("borrower_account_id", []))
+        party_refs[account_id].update(borrower_link_refs)
     age_audit: list[dict[str, Any]] = []
     age_nodes: list[EntityNode] = []
     age_refs: set[str] = set()
@@ -349,8 +376,33 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         sbss_raw, sbss_refs = read("sbss", [response])
     sbss = _number(sbss_raw)
     sbss = sbss if sbss is not None and 0 <= sbss <= 300 and sbss == sbss.to_integral_value() else None
+    sbss_basis = SBSS_SINGLE_BASIS if sbss is not None else None
+    if sbss is None and "sbss" in loan.poisoned:
+        # TEST rule for a loan carrying different SBSS values: use the value on
+        # the business borrower's own source row; otherwise the lowest value.
+        refs = set(loan.field_refs.get("sbss", []))
+        observed = []
+        for item in loan.evidence:
+            value = _number(item.value) if item.id in refs else None
+            if value is not None and 0 <= value <= 300 and value == value.to_integral_value():
+                observed.append((value, item))
+        borrower_rows = ({(item.workbook, item.sheet, item.row) for item in account.evidence}
+                         if account is not None else set())
+        on_borrower = [(value, item) for value, item in observed
+                       if (item.workbook, item.sheet, item.row) in borrower_rows]
+        if len({value for value, _ in on_borrower}) == 1:
+            sbss, sbss_basis = on_borrower[0][0], SBSS_BORROWER_ROW_BASIS
+            sbss_refs = sorted({item.id for _, item in on_borrower})
+        elif observed:
+            pool = on_borrower or observed
+            sbss, sbss_basis = min(value for value, _ in pool), SBSS_LOWEST_BASIS
+            sbss_refs = sorted({item.id for value, item in pool if value == sbss})
     add("sbss", sbss, sbss >= 160 if sbss is not None else None, sbss_refs,
-        "SBSS below 160 matches a knockout, independently of missing report dates or other inputs.")
+        "SBSS below 160 matches a knockout, independently of missing report dates or other inputs."
+        + (" The loan carries different SBSS values; the value on the business borrower's row is used."
+           if sbss_basis == SBSS_BORROWER_ROW_BASIS else
+           " The loan carries different SBSS values and none is uniquely on the borrower's row; the lowest is used."
+           if sbss_basis == SBSS_LOWEST_BASIS else ""))
 
     ownership_raw, ownership_refs = read("ownership_years", profile_nodes)
     ownership = _number(ownership_raw)
@@ -498,6 +550,8 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "ownership_years_basis": ownership_basis,
         "vehicle_only_basis": vehicle_basis,
         "bankruptcy_count_basis": bankruptcy_basis,
+        "borrower_link_basis": borrower_basis,
+        "sbss_basis": sbss_basis,
         "age_aggregation": {"basis": AGE_AGGREGATION_BASIS, "account_count": len(party_roles)},
         "age_account_audit": age_audit,
         "fico_aggregation": {"basis": FICO_AGGREGATION_BASIS, "account_count": sum(
@@ -556,6 +610,11 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
             or (bankruptcy_basis == BANKRUPTCY_EXPLICIT_BASIS and type(facts.get("bankruptcy_clear")) is bool)
             or (bankruptcy_basis == BANKRUPTCY_UNKNOWN_BASIS and facts.get("bankruptcy_clear") is None)):
         ownership_context["bankruptcy_count_basis"] = bankruptcy_basis
+    if (data.get("sbss_basis") in {SBSS_SINGLE_BASIS, SBSS_BORROWER_ROW_BASIS, SBSS_LOWEST_BASIS}
+            and _number(facts.get("sbss")) is not None):
+        ownership_context["sbss_basis"] = data["sbss_basis"]
+    if data.get("borrower_link_basis") in {BORROWER_ROLE_BASIS, BORROWER_BUSINESS_TYPE_BASIS}:
+        ownership_context["borrower_link_basis"] = data["borrower_link_basis"]
     if type(facts.get("age_years")) is int and 0 <= facts["age_years"] <= 150:
         normalized["age_years"] = facts["age_years"]
     for key in ("bankruptcy_clear", "vehicle_only"):

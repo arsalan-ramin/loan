@@ -210,6 +210,71 @@ def soql_business_with_individuals(individuals):
     return loan.normalized_data["demo_decision"]
 
 
+SBSS_HEADER = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__LCResponse__r.SCOC__SBSS7Score__c"
+
+
+def soql_client_shape(borrower_role, q2_parties):
+    """One Business account plus one Individual guarantor (FICO 696) on loan L1."""
+    def q1_row(row_id, account_id, role, account_type, score):
+        return {"Id": row_id, SOQL_JUNCTION + "LLC_BI__Loan__c": "L1",
+                SOQL_JUNCTION + "LLC_BI__Account__c": account_id,
+                SOQL_JUNCTION + "LLC_BI__Borrower_Type__c": role,
+                SOQL_JUNCTION + "LLC_BI__Account__r.Type": account_type,
+                SOQL_JUNCTION + "nFUSE__Credit_Report__r.Id": "R" + account_id,
+                SOQL_JUNCTION + "nFUSE__Credit_Report__r.nFUSE__Credit_Score__c": score,
+                "SCOC__CharacteristicKey__c": "k", "SCOC__CharacteristicValue__c": "v"}
+
+    q1_rows = [q1_row("J0", "B1", borrower_role, "Business", None),
+               q1_row("J1", "G1", "Guarantor", "Individual", "696")]
+    q2_rows = [{"Id": f"I{index}", SOQL_JUNCTION + "LLC_BI__Loan__c": "L1",
+                SOQL_JUNCTION + "LLC_BI__Account__c": account_id,
+                SOQL_JUNCTION + "LLC_BI__Borrower_Type__c": role, SBSS_HEADER: sbss,
+                "SCOC__IndicatorKey__c": "thinFileIndicator", "SCOC__IndicatorValue__c": "N"}
+               for index, (account_id, role, sbss) in enumerate(q2_parties)]
+    q1 = document([("Data", row) for row in q1_rows], "MTB_Query_1.xlsx", "q1")
+    q1.metadata["sheets"] = [{"name": "Data", "headers": list(q1_rows[0])}]
+    q2 = document([("Data", row) for row in q2_rows], "MTB_Query_2.xlsx", "q2")
+    q2.metadata["sheets"] = [{"name": "Data", "headers": list(q2_rows[0])}]
+    loan = next(item for item in evaluate_underwriting([q1, q2], mode="TEST").loan_results
+                if item.loan_id == "L1")
+    return loan.normalized_data["demo_decision"]
+
+
+@pytest.mark.parametrize("role", ["Primary Borrower", "Co-Borrower", None])
+def test_business_account_linked_by_loan_id_is_borrower_without_borrower_role(role):
+    view = soql_client_shape(role, [("G1", "Guarantor", "198")])
+    assert view["borrower_link_basis"] == "BUSINESS_ACCOUNT_LINKED_BY_LOAN_ID"
+    assert "explicit_unique_borrower_account_relationship" not in view["missing_inputs"]
+    assert criterion(view, "bankruptcy_clear")["status"] == "PASS"
+    assert view["normalized_facts"]["sbss"] == "198"
+    assert view["label"] == "Approve"
+    bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    assert bounded["borrower_link_basis"] == "BUSINESS_ACCOUNT_LINKED_BY_LOAN_ID"
+
+
+def test_explicit_borrower_role_still_wins():
+    view = soql_client_shape("Borrower", [("G1", "Guarantor", "198")])
+    assert view["borrower_link_basis"] == "EXPLICIT_BORROWER_ROLE"
+    assert view["sbss_basis"] == "SINGLE_SUPPLIED_SBSS"
+
+
+@pytest.mark.parametrize("parties,sbss,basis,label", [
+    ([("B1", "Borrower", "190"), ("G1", "Guarantor", "161")], "190", "BORROWER_ROW_SBSS", "Approve"),
+    ([("B1", "Borrower", "155"), ("G1", "Guarantor", "198")], "155", "BORROWER_ROW_SBSS", "Decline"),
+    ([("G1", "Guarantor", "198"), ("G1", "Guarantor", "161")], "161", "LOWEST_OF_MULTIPLE_SBSS", "Refer"),
+    ([("G1", "Guarantor", "205"), ("G1", "Guarantor", "198")], "198", "LOWEST_OF_MULTIPLE_SBSS", "Approve"),
+])
+def test_multiple_sbss_values_use_borrower_row_then_lowest(parties, sbss, basis, label):
+    view = soql_client_shape("Borrower", parties)
+    assert view["normalized_facts"]["sbss"] == sbss
+    assert view["sbss_basis"] == basis
+    assert "sbss" not in view["missing_inputs"]
+    assert view["label"] == label
+    refs = set(criterion(view, "sbss")["evidence_refs"])
+    assert {item["value"] for item in view["source_evidence"] if item["id"] in refs} == {sbss}
+    assert bounded_demo_context(view, mode="TEST", allowed_refs=set())["sbss_basis"] == basis
+
+
 @pytest.mark.parametrize("role", ["Guarantor", "Personal Guarantor", "Co-Borrower", "Owner", None])
 def test_individual_guarantors_connect_to_business_loan_by_loan_id(role):
     view = soql_business_with_individuals([("L1", "G1", role, "10.32")])

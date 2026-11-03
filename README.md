@@ -50,6 +50,12 @@ In the TEST decision flow, an absent or blank `vehicle_only` flag is treated as 
 
 The bankruptcy check reads the business borrower's credit-report `nFUSE__Number_Of_Bankruptcies__c`. When the borrower account is identified and the count is absent or blank, the TEST decision flow treats it as **0**, so the bankruptcy criterion passes (`bankruptcy_count_basis` is `ASSUMED_ZERO_WHEN_NOT_PROVIDED`). A supplied positive count still needs a discharge date to decide the five-year knockout; invalid or conflicting supplied counts stay unknown.
 
+### Borrower and SBSS resolution
+
+The business borrower is the account whose Query 1 Borrower Type is `Borrower`. If no account carries that role, the TEST decision flow uses the single **Business**-type account (`...LLC_BI__Account__r.Type`) linked to the loan by loan ID, whatever its role label (`borrower_link_basis` is `BUSINESS_ACCOUNT_LINKED_BY_LOAN_ID`). Two or more such Business accounts leave the borrower unresolved.
+
+SBSS is linked to the loan by loan ID from Query 2. When one loan carries different SBSS values, the flow uses the value on the business borrower's own Query 2 row (`sbss_basis` is `BORROWER_ROW_SBSS`). If the borrower row has no value, or has different values, it uses the lowest valid value (`LOWEST_OF_MULTIPLE_SBSS`).
+
 ## Guided assistant workflow
 
 The conversation now includes **Your next safe step** action cards:

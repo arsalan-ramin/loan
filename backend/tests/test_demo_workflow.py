@@ -513,15 +513,18 @@ def test_invalid_linked_personal_score_blocks_partial_average_with_refs(score):
     assert {"R1", "JG1"} <= {evidence[ref]["record_id"] for ref in refs}
 
 
-def test_conflicting_guarantor_score_no_fallback_to_generic_or_later_report():
+def test_repeated_guarantor_report_uses_first_nonblank_score_not_generic_or_later_report():
     source = linked_party(rows(), score="650", fico="800", report_category="personal", report_role="guarantor")
     source.append(("CreditReport", {"Id": "RG1", "account_id": "G1", "personal_fico": "651"}))
     source.append(("CreditReport", {"Id": "LATER", "account_id": "G1", "personal_fico": "850"}))
     view = demo(source)
-    assert criterion(view, "fico")["status"] == "UNKNOWN"
-    assert view["fico_account_audit"][1]["score_status"] == "CONFLICTING_REPORT"
-    assert len([item for item in view["source_evidence"]
-                if item["record_id"] == "RG1" and item["field"] == "personal_fico"]) == 2
+    assert criterion(view, "fico")["status"] == "PASS"
+    audit = view["fico_account_audit"][1]
+    assert (audit["selected_report_id"], audit["score_status"], audit["score"]) == ("RG1", "VALID_PERSONAL_FICO", "650")
+    assert view["normalized_facts"]["fico"] == "705"
+    refs = set(criterion(view, "fico")["evidence_refs"])
+    assert [item["value"] for item in view["source_evidence"]
+            if item["id"] in refs and item["record_id"] == "RG1" and item["field"] == "personal_fico"] == ["650"]
 
 
 @pytest.mark.parametrize("category,role,expected", [
@@ -1918,16 +1921,16 @@ def test_bounded_context_has_simulated_scores_not_raw_bureau_or_source_values():
     assert bounded_demo_context(view, mode="PRODUCTION", allowed_refs=set()) is None
 
 
-def test_conflicting_same_report_scores_remain_unknown_not_overwritten():
+def test_repeated_same_report_scores_use_first_nonblank_in_source_order():
     source = rows()
     source.append(("CreditReport", {"Id": "R1", "account_id": "A1", "personal_fico": "620"}))
     view = demo(source)
     assert view["selected_report_id"] == "R1"
-    assert view["label"] == "Refer"
-    assert criterion(view, "fico")["status"] == "UNKNOWN"
+    assert view["normalized_facts"]["fico"] == "760"
+    assert criterion(view, "fico")["status"] == "PASS"
     refs = set(criterion(view, "fico")["evidence_refs"])
-    assert len([item for item in view["source_evidence"]
-                if item["id"] in refs and item["field"] == "personal_fico"]) == 2
+    assert [item["value"] for item in view["source_evidence"]
+            if item["id"] in refs and item["field"] == "personal_fico"] == ["760"]
 
 
 def test_context_keeps_demo_fico_separate_from_strict_saved_selection_guard():

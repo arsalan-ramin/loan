@@ -125,6 +125,54 @@ def test_fico_uses_query1_first_then_query4_per_individual(tmp_path, indexed):
     assert q4_values == {"700", "105.43"}, [i for i in view["source_evidence"] if i["field"] == "nFUSE__Credit_Score__c"]
 
 
+@pytest.mark.parametrize("g3_type,g3_report,g3_scores,expected", [
+    # Blank Query 1 Type: still a guarantor, scored from Query 4.
+    (None, None, [None, None], ("VALID_QUERY4_FICO", "729")),
+    # Query 1 report repeated with blank scores: falls back to Query 4.
+    ("Individual", "RQ1", [None, None], ("VALID_QUERY4_FICO", "729")),
+    # Query 1 report repeated with different scores: first non-blank wins.
+    ("Individual", "RQ1", [None, 700, 710], ("VALID_PERSONAL_FICO", "700")),
+])
+def test_client_loan_third_account_fico_from_query1_or_query4(tmp_path, g3_type, g3_report, g3_scores, expected):
+    from backend.tests.test_large_preflight import JUNCTION
+    from backend.underwriting_engine import evaluate_underwriting
+
+    loan_id, business, person, third = "a0iDm000000sKnelAE", "0014600001dkYTPAA2", "0014600001dkn6XAAQ", "001Dm00000caZA5IAM"
+    report = JUNCTION + "nFUSE__Credit_Report__r."
+    q1_headers = ["Id", JUNCTION + "LLC_BI__Loan__c", JUNCTION + "LLC_BI__Account__c",
+                  JUNCTION + "LLC_BI__Borrower_Type__c", JUNCTION + "LLC_BI__Account__r.Type",
+                  report + "Id", report + "nFUSE__Credit_Score__c",
+                  "SCOC__CharacteristicKey__c", "SCOC__CharacteristicValue__c"]
+    rows = [[f"CB{i}", loan_id, business, "Borrower", "Business", None, None, f"k{i}", "1"] for i in range(3)]
+    rows += [[f"CI{i}", loan_id, person, "Guarantor", "Individual", None, None, f"k{i}", "1"] for i in range(3)]
+    rows += [[f"C3{i}", loan_id, third, "Guarantor", g3_type, g3_report, score, f"k{i}", "1"]
+             for i, score in enumerate(g3_scores)]
+    query4_rows = [["a3uDm00000012ugIAE", third, 729, "OPEN"], ["a3uDm0000001hollAQ", third, 729, "OPEN"]]
+    documents = synthetic_documents(2)
+    files = []
+    for doc in documents:
+        path = tmp_path / doc.id
+        raw = (canonical_workbook([("Sheet1", q1_headers, rows)]) if doc is documents[0]
+               else canonical_workbook([("Sheet1", ["Id", "nFUSE__Account__c", "nFUSE__Credit_Score__c",
+                                                    "nFUSE__Status__c"], query4_rows)])
+               if doc is documents[-1] else workbook_bytes(doc))
+        path.write_bytes(raw)
+        files.append((doc.name, path))
+        doc.metadata = {}
+    dataset = LoanDataset(tmp_path / "data")
+    assert dataset.replace(files)
+    for doc, (_, path) in zip(documents, files):
+        doc.metadata["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert dataset.load_scoped(documents, loan_id)
+    view = evaluate_underwriting(documents, "TEST", selected_loan_id=loan_id).loan_results[0].normalized_data[
+        "demo_decision"]
+    audit = {item["account_id"]: item for item in view["fico_account_audit"]}
+    assert set(audit) == {business, person, third}
+    assert audit[business]["score_status"] == "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
+    assert (audit[third]["score_status"], audit[third]["score"]) == expected
+    assert view["normalized_facts"]["fico"] == expected[1]
+
+
 @pytest.mark.parametrize("canonical", [False, True])
 def test_indexed_loading_matches_streamed_loading(tmp_path, canonical):
     documents, files = write_set(tmp_path / "files", canonical_query_1=canonical)

@@ -361,7 +361,20 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
             typed = explicit or (category in {"personal", "consumer", "personal_fico"} and role in roles)
             relevant = {"account_id", field} | (set() if explicit else {"report_category", "report_role"})
             raw, _ = read(field, [selected])
-            if selected.poisoned & relevant:
+            if field in selected.poisoned and not (selected.poisoned & (relevant - {field})):
+                # The same Query 1 report repeated with different scores: use
+                # the first non-blank score in source order, as for Query 4.
+                by_id = {item.id: item for item in selected.evidence}
+                raw = next((by_id[ref].value for ref in selected.field_refs.get(field, [])
+                            if ref in by_id and by_id[ref].value is not None
+                            and str(by_id[ref].value).strip()), None)
+                first_ref = next((ref for ref in selected.field_refs.get(field, [])
+                                  if ref in by_id and by_id[ref].value == raw), None)
+                refs.difference_update(selected.field_refs.get(field, []))
+                if first_ref:
+                    refs.add(first_ref)
+            if selected.poisoned & relevant and not (
+                    field in selected.poisoned and not (selected.poisoned & (relevant - {field}))):
                 status = "CONFLICTING_REPORT"
             elif raw is None or (isinstance(raw, str) and not raw.strip()):
                 status = "MISSING_PERSONAL_FICO"

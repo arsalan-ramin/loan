@@ -99,8 +99,10 @@ def test_multiple_guarantor_only_loans_keep_roles_and_other_borrower_checks_unkn
     assert view["fico_aggregation"]["account_count"] == 2
     assert all(item["party_roles"] == ["guarantor"] for item in view["fico_account_audit"])
     assert criterion(view, "age_years")["status"] == "OBSERVED"
-    for key in ("public_record_code", "bankruptcy_clear", "ebitda_usd"):
+    for key in ("public_record_code", "ebitda_usd"):
         assert criterion(view, key)["status"] == "UNKNOWN"
+    assert criterion(view, "bankruptcy_clear")["status"] == "PASS"
+    assert view["bankruptcy_count_basis"] == "ASSUMED_ZERO_WHEN_NOT_PROVIDED"
     assert "explicit_unique_borrower_account_relationship" in view["missing_inputs"]
 
 
@@ -252,7 +254,8 @@ def test_query4_fico_fallback_missing_or_invalid(q4_score, status, fico):
 SBSS_HEADER = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__LCResponse__r.SCOC__SBSS7Score__c"
 
 
-def soql_client_shape(borrower_role, q2_parties, q1_sbss=None):
+def soql_client_shape(borrower_role, q2_parties, q1_sbss=None, *, guarantor_role="Guarantor",
+                      business_type="Business", guarantor_type="Individual"):
     """One Business account plus one Individual guarantor (FICO 696) on loan L1."""
     q1_sbss = q1_sbss or {}
 
@@ -265,8 +268,8 @@ def soql_client_shape(borrower_role, q2_parties, q1_sbss=None):
                 SOQL_JUNCTION + "nFUSE__Credit_Report__r.nFUSE__Credit_Score__c": score,
                 "SCOC__CharacteristicKey__c": "k", "SCOC__CharacteristicValue__c": "v"}
 
-    q1_rows = [q1_row("J0", "B1", borrower_role, "Business", None),
-               q1_row("J1", "G1", "Guarantor", "Individual", "696")]
+    q1_rows = [q1_row("J0", "B1", borrower_role, business_type, None),
+               q1_row("J1", "G1", guarantor_role, guarantor_type, "696")]
     q2_rows = [{"Id": f"I{index}", SOQL_JUNCTION + "LLC_BI__Loan__c": "L1",
                 SOQL_JUNCTION + "LLC_BI__Account__c": account_id,
                 SOQL_JUNCTION + "LLC_BI__Borrower_Type__c": role, SBSS_HEADER: sbss,
@@ -291,6 +294,33 @@ def test_business_account_linked_by_loan_id_is_borrower_without_borrower_role(ro
     assert view["label"] == "Approve"
     bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
     assert bounded["borrower_link_basis"] == "BUSINESS_ACCOUNT_LINKED_BY_LOAN_ID"
+
+
+@pytest.mark.parametrize("borrower_role,guarantor_role,business_type,basis", [
+    # Individual co-borrower shares the Borrower role with the business.
+    ("Borrower", "Borrower", "Business", "BUSINESS_ACCOUNT_AMONG_BORROWER_ROLES"),
+    ("Borrower", "Borrower", "Limited Liability Company", "BUSINESS_ACCOUNT_AMONG_BORROWER_ROLES"),
+    # Business entity Type other than the literal "Business".
+    ("Co-Borrower", "Guarantor", "Corporation", "BUSINESS_ACCOUNT_LINKED_BY_LOAN_ID"),
+])
+def test_business_entity_is_borrower_when_borrower_role_is_shared_or_type_differs(
+        borrower_role, guarantor_role, business_type, basis):
+    view = soql_client_shape(borrower_role, [("G1", "Guarantor", "198")], guarantor_role=guarantor_role,
+                             business_type=business_type)
+    assert view["borrower_link_basis"] == basis
+    assert "explicit_unique_borrower_account_relationship" not in view["missing_inputs"]
+    assert criterion(view, "bankruptcy_clear")["status"] == "PASS"
+    assert view["normalized_facts"]["fico"] == "696"
+    assert view["label"] == "Approve"
+    assert bounded_demo_context(view, mode="TEST", allowed_refs=set())["borrower_link_basis"] == basis
+
+
+def test_two_individual_borrowers_without_business_stay_unresolved():
+    view = soql_client_shape("Borrower", [("B1", "Borrower", "174")], guarantor_role="Borrower",
+                             business_type="Individual")
+    assert view["borrower_link_basis"] is None
+    assert "explicit_unique_borrower_account_relationship" in view["missing_inputs"]
+    assert view["label"] == "Refer"
 
 
 def test_explicit_borrower_role_still_wins():
@@ -612,7 +642,8 @@ def test_guarantor_only_completed_ages_are_minimum_not_fractional_average():
     assert all(item["party_roles"] == ["guarantor"] for item in view["age_account_audit"])
     assert view["label"] == "Refer"
     assert all(criterion(view, key)["status"] == "UNKNOWN"
-               for key in ("public_record_code", "bankruptcy_clear", "ebitda_usd"))
+               for key in ("public_record_code", "ebitda_usd"))
+    assert criterion(view, "bankruptcy_clear")["status"] == "PASS"
 
 
 @pytest.mark.parametrize("dob,expected", [
@@ -1359,7 +1390,8 @@ def test_ownership_fallback_never_substitutes_guarantor_or_clears_identity():
     assert criterion(view, "ownership_years")["evidence_refs"] == []
     assert view["label"] == "Refer" and view["candidate_route"] is None
     assert "explicit_unique_borrower_account_relationship" in view["missing_inputs"]
-    assert criterion(view, "bankruptcy_clear")["status"] == "UNKNOWN"
+    assert criterion(view, "bankruptcy_clear")["status"] == "PASS"
+    assert view["bankruptcy_count_basis"] == "ASSUMED_ZERO_WHEN_NOT_PROVIDED"
 
 
 @pytest.mark.parametrize("value", [None, "0", "1", "2", "bad", True, "-1"])

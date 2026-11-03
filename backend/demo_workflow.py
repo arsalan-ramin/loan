@@ -35,6 +35,7 @@ BANKRUPTCY_EXPLICIT_BASIS = "EXPLICIT_BANKRUPTCY_COUNT"
 BANKRUPTCY_UNKNOWN_BASIS = "INVALID_OR_CONFLICTING"
 BORROWER_ROLE_BASIS = "EXPLICIT_BORROWER_ROLE"
 BORROWER_BUSINESS_TYPE_BASIS = "BUSINESS_ACCOUNT_LINKED_BY_LOAN_ID"
+BORROWER_ROLE_BUSINESS_BASIS = "BUSINESS_ACCOUNT_AMONG_BORROWER_ROLES"
 SBSS_SINGLE_BASIS = "SINGLE_SUPPLIED_SBSS"
 SBSS_QUERY1_BASIS = "QUERY1_BORROWER_ROW_SBSS"
 SBSS_BORROWER_ROW_BASIS = "BORROWER_ROW_SBSS"
@@ -95,25 +96,41 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     borrower = next(iter(borrowers)) if len(borrowers) == 1 else None
     borrower_basis = BORROWER_ROLE_BASIS if borrower else None
     borrower_link_refs: set[str] = set()
-    if not borrowers:
-        # TEST rule: with no explicit Borrower role, the single Business account
-        # linked to this loan ID is the borrower, whatever its role label.
-        business: dict[str, set[str]] = {}
+    if borrower is None:
+        # TEST rule: the borrower is the business entity on the loan. When the
+        # Borrower role is absent or shared (e.g. an Individual co-borrower),
+        # pick the single business account, first among Borrower-role accounts
+        # and then among every account linked to this loan ID.
+        linked: dict[str, set[str]] = {}
         for involvement in graph.related("EntityInvolvement", "loan_id", loan.id):
             if involvement.poisoned & {"loan_id", "account_id"}:
                 continue
             account_id = scalar_id(involvement.fields.get("account_id"))
-            candidate = graph.table("Account").get(account_id) if account_id else None
-            if (candidate is None or "account_type" in candidate.poisoned
-                    or str(candidate.fields.get("account_type") or "").strip().casefold() != "business"):
-                continue
-            business.setdefault(account_id, set()).update(
-                ref for field in ("loan_id", "account_id", "role")
-                for ref in involvement.field_refs.get(field, []))
-            business[account_id].update(candidate.field_refs.get("account_type", []))
-        if len(business) == 1:
-            borrower, borrower_link_refs = next(iter(business.items()))
-            borrowers, borrower_basis = {borrower}, BORROWER_BUSINESS_TYPE_BASIS
+            if account_id and account_id in graph.table("Account"):
+                linked.setdefault(account_id, set()).update(
+                    ref for field in ("loan_id", "account_id", "role")
+                    for ref in involvement.field_refs.get(field, []))
+        for account_id in borrowers:
+            linked.setdefault(account_id, set())
+
+        def account_kind(account_id: str) -> str | None:
+            candidate = graph.table("Account")[account_id]
+            if "account_type" in candidate.poisoned:
+                return None
+            kind = str(candidate.fields.get("account_type") or "").strip().casefold()
+            return "business" if kind == "business" else None if kind in {"", "individual"} else "entity"
+
+        for pool, kinds, basis in ((borrowers, {"business"}, BORROWER_ROLE_BUSINESS_BASIS),
+                                   (borrowers, {"business", "entity"}, BORROWER_ROLE_BUSINESS_BASIS),
+                                   (set(linked), {"business"}, BORROWER_BUSINESS_TYPE_BASIS),
+                                   (set(linked), {"business", "entity"}, BORROWER_BUSINESS_TYPE_BASIS)):
+            matches = [account_id for account_id in pool if account_kind(account_id) in kinds]
+            if len(matches) == 1:
+                borrower, borrower_basis = matches[0], basis
+                borrower_link_refs = linked.get(borrower, set()) | set(
+                    graph.table("Account")[borrower].field_refs.get("account_type", []))
+                borrowers = {borrower}
+                break
     account = graph.table("Account").get(borrower or "")
     reports = graph.related("CreditReport", "account_id", borrower) if borrower else []
     report = reports[0] if reports else None
@@ -176,9 +193,10 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     count = _number(count_raw)
     count = count if count is not None and count >= 0 and count == count.to_integral_value() else None
     bankruptcy_basis = BANKRUPTCY_EXPLICIT_BASIS if count is not None else BANKRUPTCY_UNKNOWN_BASIS
-    # TEST default: an absent or blank bankruptcy count means 0. Supplied
-    # invalid text or conflicting values stay UNKNOWN.
-    if (identity and count is None and (count_raw is None or (isinstance(count_raw, str) and not count_raw.strip()))
+    # TEST default: an absent or blank bankruptcy count means 0 (no bankruptcy),
+    # even when no borrower report is found. Supplied invalid text or
+    # conflicting values stay UNKNOWN.
+    if (count is None and (count_raw is None or (isinstance(count_raw, str) and not count_raw.strip()))
             and not any("bankruptcy_count" in node.poisoned for node in report_nodes)):
         count, bankruptcy_basis = Decimal(0), BANKRUPTCY_FALLBACK_BASIS
     discharge_raw, discharge_refs = read("bankruptcy_discharge_date", report_nodes)
@@ -659,7 +677,8 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
     if (data.get("sbss_basis") in {SBSS_SINGLE_BASIS, SBSS_QUERY1_BASIS, SBSS_BORROWER_ROW_BASIS, SBSS_LOWEST_BASIS}
             and _number(facts.get("sbss")) is not None):
         ownership_context["sbss_basis"] = data["sbss_basis"]
-    if data.get("borrower_link_basis") in {BORROWER_ROLE_BASIS, BORROWER_BUSINESS_TYPE_BASIS}:
+    if data.get("borrower_link_basis") in {BORROWER_ROLE_BASIS, BORROWER_BUSINESS_TYPE_BASIS,
+                                           BORROWER_ROLE_BUSINESS_BASIS}:
         ownership_context["borrower_link_basis"] = data["borrower_link_basis"]
     if type(facts.get("age_years")) is int and 0 <= facts["age_years"] <= 150:
         normalized["age_years"] = facts["age_years"]

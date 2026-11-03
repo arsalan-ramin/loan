@@ -1,4 +1,4 @@
-"""Whole stored-dataset batch review.
+﻿"""Whole stored-dataset batch review.
 
 Each loan's Approved / Decline / Refer status comes from the deterministic TEST
 decision flow; its rationale comes from the same bounded Claude review used for a
@@ -40,7 +40,7 @@ FICO_OUTCOMES = {
     "NO_ACCOUNT_MATCH": "no FICO in Query 1 or Query 4",
     "CONFLICTING_ACCOUNT_TYPE": "conflicting account type",
     "CONFLICTING_REPORT": "conflicting FICO values",
-    "MISSING_OR_INVALID_PERSONAL_FICO": "invalid FICO value",
+    "MISSING_OR_INVALID_PERSONAL_FICO": "invalid FICO value, left out of the average",
     "UNTYPED_PERSONAL_FICO": "score not identified as a personal FICO",
 }
 

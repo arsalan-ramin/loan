@@ -132,6 +132,8 @@ def test_fico_uses_query1_first_then_query4_per_individual(tmp_path, indexed):
     ("Individual", "RQ1", [None, None], ("VALID_QUERY4_FICO", "729")),
     # Query 1 report repeated with different scores: first non-blank wins.
     ("Individual", "RQ1", [None, 700, 710], ("VALID_PERSONAL_FICO", "700")),
+    # Invalid Query 1 score: falls back to Query 4.
+    ("Individual", "RQ1", ["9001"], ("VALID_QUERY4_FICO", "729")),
 ])
 def test_client_loan_third_account_fico_from_query1_or_query4(tmp_path, g3_type, g3_report, g3_scores, expected):
     from backend.tests.test_large_preflight import JUNCTION
@@ -171,6 +173,47 @@ def test_client_loan_third_account_fico_from_query1_or_query4(tmp_path, g3_type,
     assert audit[business]["score_status"] == "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
     assert (audit[third]["score_status"], audit[third]["score"]) == expected
     assert view["normalized_facts"]["fico"] == expected[1]
+
+
+def test_client_loan_invalid_guarantor_fico_does_not_block_average(tmp_path):
+    from backend.tests.test_large_preflight import JUNCTION
+    from backend.underwriting_engine import evaluate_underwriting
+
+    loan_id, business = "a0iDm000000sKnelAE", "0014600001dkYTPAA2"
+    g1, g2, g3 = "0014600001dkn6XAAQ", "001Dm00000caZA5IAM", "001Dm00000caZBqIAM"
+    report = JUNCTION + "nFUSE__Credit_Report__r."
+    q1_headers = ["Id", JUNCTION + "LLC_BI__Loan__c", JUNCTION + "LLC_BI__Account__c",
+                  JUNCTION + "LLC_BI__Borrower_Type__c", JUNCTION + "LLC_BI__Account__r.Type",
+                  report + "Id", report + "nFUSE__Credit_Score__c",
+                  "SCOC__CharacteristicKey__c", "SCOC__CharacteristicValue__c"]
+    rows = [["CB", loan_id, business, "Borrower", "Business", None, None, "k", "1"],
+            ["C1", loan_id, g1, "Guarantor", "Individual", None, None, "k", "1"],
+            ["C2", loan_id, g2, "Guarantor", "Individual", None, None, "k", "1"],
+            ["C3", loan_id, g3, "Guarantor", "Individual", "RG3", "N/A", "k", "1"]]
+    query4_rows = [["Q4A", g1, 725, "OPEN"], ["Q4B", g2, 729, "OPEN"], ["Q4C", g3, "N/A", "OPEN"]]
+    documents = synthetic_documents(2)
+    files = []
+    for doc in documents:
+        path = tmp_path / doc.id
+        raw = (canonical_workbook([("Sheet1", q1_headers, rows)]) if doc is documents[0]
+               else canonical_workbook([("Sheet1", ["Id", "nFUSE__Account__c", "nFUSE__Credit_Score__c",
+                                                    "nFUSE__Status__c"], query4_rows)])
+               if doc is documents[-1] else workbook_bytes(doc))
+        path.write_bytes(raw)
+        files.append((doc.name, path))
+        doc.metadata = {}
+    dataset = LoanDataset(tmp_path / "data")
+    assert dataset.replace(files)
+    for doc, (_, path) in zip(documents, files):
+        doc.metadata["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert dataset.load_scoped(documents, loan_id)
+    view = evaluate_underwriting(documents, "TEST", selected_loan_id=loan_id).loan_results[0].normalized_data[
+        "demo_decision"]
+    audit = {item["account_id"]: item for item in view["fico_account_audit"]}
+    assert (audit[g1]["score"], audit[g2]["score"]) == ("725", "729")
+    assert audit[g3]["score_status"] == "MISSING_OR_INVALID_PERSONAL_FICO"
+    assert view["normalized_facts"]["fico"] == "727"
+    assert next(item for item in view["criteria"] if item["criterion"] == "fico")["status"] == "PASS"
 
 
 @pytest.mark.parametrize("canonical", [False, True])

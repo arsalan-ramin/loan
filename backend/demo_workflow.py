@@ -387,12 +387,12 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                     scores.append(number)
                 else:
                     status = "MISSING_OR_INVALID_PERSONAL_FICO"
-        if status in {"MISSING_PERSONAL_FICO", "NO_ACCOUNT_MATCH"}:
-            # Query 1 supplied no score for this Individual: fall back to the
-            # first non-blank Query 4 root credit score for the same account,
-            # row by row in source order. Repeated report IDs with different
-            # scores across rows are not a conflict; the first row wins.
-            fallback, fallback_ref, raw = None, None, None
+        if status in {"MISSING_PERSONAL_FICO", "NO_ACCOUNT_MATCH", "MISSING_OR_INVALID_PERSONAL_FICO"}:
+            # Query 1 supplied no usable score for this account (blank or
+            # invalid): fall back to the first valid Query 4 root credit score
+            # for the same account, row by row in source order. Repeated report
+            # IDs with different scores across rows are not a conflict.
+            fallback, fallback_ref, number = None, None, None
             for candidate in candidates:
                 if "account_id" in candidate.poisoned:
                     continue
@@ -404,7 +404,11 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                         value = candidate.fields.get("query4_fico")
                     if value is None or (isinstance(value, str) and not value.strip()):
                         continue
-                    fallback, fallback_ref, raw = candidate, ref, value
+                    parsed = _number(str(value) if isinstance(value, float) else value)
+                    if parsed is None or not 0 <= parsed <= 850:
+                        status = "MISSING_OR_INVALID_PERSONAL_FICO"
+                        continue
+                    fallback, fallback_ref, number = candidate, ref, parsed
                     break
                 if fallback is not None:
                     break
@@ -413,12 +417,8 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                 fico_nodes.append(fallback)
                 refs.update(fallback.field_refs.get("account_id", []))
                 refs.add(fallback_ref)
-                number = _number(str(raw) if isinstance(raw, float) else raw)
-                if number is not None and 0 <= number <= 850:
-                    score, status = number, "VALID_QUERY4_FICO"
-                    scores.append(number)
-                else:
-                    status = "MISSING_OR_INVALID_PERSONAL_FICO"
+                score, status = number, "VALID_QUERY4_FICO"
+                scores.append(number)
         fico_refs.update(refs)
         fico_audit.append({"account_id": account_id, "party_roles": sorted(roles),
                            "account_type": account_type,
@@ -432,7 +432,7 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                            "evidence_refs": sorted(refs)})
     invalid_scores = any(item["score_status"] not in {
         "VALID_PERSONAL_FICO", "VALID_QUERY4_FICO", "MISSING_PERSONAL_FICO", "NO_ACCOUNT_MATCH",
-        "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
+        "MISSING_OR_INVALID_PERSONAL_FICO", "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
     } for item in fico_audit)
     fico = (sum(scores, Decimal(0)) / Decimal(len(scores))
             if scores and not invalid_scores else None)
@@ -442,7 +442,8 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "credit report first; only when Query 1 has no score for that account is its Query 4 credit score used. "
         "Below 650 matches a knockout. Use the first nonblank score per account in source order. "
         "Supplied numeric scores from 0 to 850, including decimals, are used without rescaling. "
-        "Missing scores are excluded from both sum and count. No available scores, or any conflicting, invalid "
+        "Missing or invalid scores (not a number from 0 to 850) are excluded from both sum and count; an invalid "
+        "Query 1 score falls back to that account's Query 4 score. No available scores, or any conflicting "
         "or untyped supplied party score, makes the average UNKNOWN.")
 
     # Prefer the explicitly loan-scoped Query 2 scalar. A strict selected response

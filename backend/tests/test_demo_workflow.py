@@ -302,6 +302,22 @@ def test_query4_fico_uses_first_nonblank_of_multiple_rows(rows):
             if item["id"] in refs and item["field"] == "nFUSE__Credit_Score__c"} == {"700"}
 
 
+@pytest.mark.parametrize("q1_score,q4_rows,expected,fico", [
+    # Invalid Query 1 score falls back to the account's Query 4 score.
+    ("9001", [q4("G1", "729", "Q1")], ("VALID_QUERY4_FICO", "729", "QUERY_4"), "714.5"),
+    # Invalid Query 4 rows are skipped for the first valid one.
+    (None, [q4("G1", "N/A", "Q1"), q4("G1", "999", "Q2"), q4("G1", "725", "Q3")], ("VALID_QUERY4_FICO", "725", "QUERY_4"), "712.5"),
+    # Nothing valid anywhere: left out of the average, the others still count.
+    ("9001", [q4("G1", "N/A", "Q1")], ("MISSING_OR_INVALID_PERSONAL_FICO", None, None), "700"),
+])
+def test_invalid_fico_is_treated_as_missing(q1_score, q4_rows, expected, fico):
+    view = query4_rows_view([*q4_rows, q4("G2", "700", "Q9")], guarantors=(("G1", q1_score), ("G2", None)))
+    audit = {item["account_id"]: item for item in view["fico_account_audit"]}
+    assert (audit["G1"]["score_status"], audit["G1"]["score"], audit["G1"]["score_source"]) == expected
+    assert view["normalized_facts"]["fico"] == fico
+    assert criterion(view, "fico")["status"] == "PASS"
+
+
 def test_query4_multiple_rows_per_guarantor_mixed_with_query1_scores():
     view = query4_rows_view([q4("G1", "700", "Q1"), q4("G1", "720", "Q2"), q4("G2", "800", "Q3")],
                             guarantors=(("G1", None), ("G2", "650")))
@@ -499,13 +515,14 @@ def test_supplied_numeric_fico_scores_use_existing_threshold_without_conversion(
 
 
 @pytest.mark.parametrize("score", ["bad", "-1", "851", True, "NaN", "Infinity"])
-def test_invalid_linked_personal_score_blocks_partial_average_with_refs(score):
+def test_invalid_linked_personal_score_is_left_out_of_average_with_refs(score):
     view = demo(linked_party(rows(), score=score))
-    assert view["normalized_facts"]["fico"] is None
-    assert criterion(view, "fico")["status"] == "UNKNOWN"
+    assert view["normalized_facts"]["fico"] == "760"
+    assert criterion(view, "fico")["status"] == "PASS"
     assert view["fico_aggregation"]["account_count"] == 2
     audit = view["fico_account_audit"]
     assert audit[0]["score"] == "760" and audit[1]["score"] is None
+    assert audit[1]["score_status"] == "MISSING_OR_INVALID_PERSONAL_FICO"
     refs = set(criterion(view, "fico")["evidence_refs"])
     assert set(audit[0]["evidence_refs"]) | set(audit[1]["evidence_refs"]) == refs
     evidence = {item["id"]: item for item in view["source_evidence"]}

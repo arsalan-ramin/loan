@@ -336,6 +336,11 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                 # On flattened rows, a generic currency alone must not fabricate
                 # missing report/response entities. Entity-specific data must exist.
                 specific = set(fields) - {"currency", "amount_scale", "account_id", "loan_id", "response_id", "entity_id", "analysis_id", "report_id"}
+                if (storage_id is None and not canonical and table == "CreditReport"
+                        and root_table == "CreditReport" and fields.get("account_id") and specific):
+                    # Query 4 rows exported without the report Id: keep each
+                    # row as its own local report linked by nFUSE__Account__c.
+                    storage_id = "query4:" + prefix
                 if storage_id is None:
                     if not canonical and table == "EntityInvolvement" and root_table != "EntityInvolvement":
                         continue

@@ -251,6 +251,63 @@ def test_query4_fico_fallback_missing_or_invalid(q4_score, status, fico):
     assert view["normalized_facts"]["fico"] == fico
 
 
+def query4_rows_view(q4_rows, guarantors=(("G1", None),)):
+    report = SOQL_JUNCTION + "nFUSE__Credit_Report__r."
+
+    def q1_row(row_id, account_id, role, account_type, score):
+        return {"Id": row_id, SOQL_JUNCTION + "LLC_BI__Loan__c": "L1",
+                SOQL_JUNCTION + "LLC_BI__Account__c": account_id,
+                SOQL_JUNCTION + "LLC_BI__Borrower_Type__c": role,
+                SOQL_JUNCTION + "LLC_BI__Account__r.Type": account_type,
+                report + "Id": "R" + account_id, report + "nFUSE__Credit_Score__c": score,
+                "SCOC__CharacteristicKey__c": "k", "SCOC__CharacteristicValue__c": "v"}
+
+    q1_rows = [q1_row("J0", "B1", "Borrower", "Business", None)]
+    q1_rows += [q1_row(f"J{index}", account_id, "Guarantor", "Individual", score)
+                for index, (account_id, score) in enumerate(guarantors, 1)]
+    q1 = document([("Data", row) for row in q1_rows], "MTB_Query_1.xlsx", "q1")
+    q1.metadata["sheets"] = [{"name": "Data", "headers": list(q1_rows[0])}]
+    q4 = document([("Data", row) for row in q4_rows], "MTB_Query_4.xlsx", "q4")
+    q4.metadata["sheets"] = [{"name": "Data", "headers": list(q4_rows[0])}]
+    loan = next(item for item in evaluate_underwriting([q1, q4], mode="TEST").loan_results
+                if item.loan_id == "L1")
+    return loan.normalized_data["demo_decision"]
+
+
+def q4(account_id, score, report_id=None):
+    row = {"nFUSE__Account__c": account_id, "nFUSE__Credit_Score__c": score}
+    return {"Id": report_id, **row} if report_id is not None else row
+
+
+@pytest.mark.parametrize("rows", [
+    # Several reports per account with distinct IDs.
+    [q4("G1", None, "Q1"), q4("G1", "700", "Q2"), q4("G1", "720", "Q3")],
+    # The same report ID repeated on several rows with different scores.
+    [q4("G1", None, "Q1"), q4("G1", "700", "Q1"), q4("G1", "720", "Q1")],
+    # Query 4 exported without the report Id column.
+    [q4("G1", None), q4("G1", "700"), q4("G1", "720")],
+])
+def test_query4_fico_uses_first_nonblank_of_multiple_rows(rows):
+    view = query4_rows_view(rows)
+    audit = {item["account_id"]: item for item in view["fico_account_audit"]}
+    assert audit["G1"]["score_status"] == "VALID_QUERY4_FICO"
+    assert (audit["G1"]["score"], audit["G1"]["score_source"]) == ("700", "QUERY_4")
+    assert view["normalized_facts"]["fico"] == "700"
+    assert criterion(view, "fico")["status"] == "PASS"
+    refs = set(criterion(view, "fico")["evidence_refs"])
+    assert {item["value"] for item in view["source_evidence"]
+            if item["id"] in refs and item["field"] == "nFUSE__Credit_Score__c"} == {"700"}
+
+
+def test_query4_multiple_rows_per_guarantor_mixed_with_query1_scores():
+    view = query4_rows_view([q4("G1", "700", "Q1"), q4("G1", "720", "Q2"), q4("G2", "800", "Q3")],
+                            guarantors=(("G1", None), ("G2", "650")))
+    audit = {item["account_id"]: item for item in view["fico_account_audit"]}
+    assert (audit["G1"]["score"], audit["G1"]["score_source"]) == ("700", "QUERY_4")
+    assert (audit["G2"]["score"], audit["G2"]["score_source"]) == ("650", "QUERY_1")
+    assert view["normalized_facts"]["fico"] == "675"
+
+
 SBSS_HEADER = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__LCResponse__r.SCOC__SBSS7Score__c"
 
 

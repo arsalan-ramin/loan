@@ -370,22 +370,32 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                     status = "MISSING_OR_INVALID_PERSONAL_FICO"
         if status in {"MISSING_PERSONAL_FICO", "NO_ACCOUNT_MATCH"}:
             # Query 1 supplied no score for this Individual: fall back to the
-            # first populated Query 4 root credit score for the same account.
-            fallback = next((candidate for candidate in candidates
-                             if "query4_fico" in candidate.poisoned
-                             or not (candidate.fields.get("query4_fico") is None
-                                     or (isinstance(candidate.fields.get("query4_fico"), str)
-                                         and not candidate.fields["query4_fico"].strip()))), None)
+            # first non-blank Query 4 root credit score for the same account,
+            # row by row in source order. Repeated report IDs with different
+            # scores across rows are not a conflict; the first row wins.
+            fallback, fallback_ref, raw = None, None, None
+            for candidate in candidates:
+                if "account_id" in candidate.poisoned:
+                    continue
+                by_id = {item.id: item for item in candidate.evidence}
+                for ref in candidate.field_refs.get("query4_fico", []):
+                    item = by_id.get(ref)
+                    value = item.value if item is not None else None
+                    if value is None and "query4_fico" not in candidate.poisoned:
+                        value = candidate.fields.get("query4_fico")
+                    if value is None or (isinstance(value, str) and not value.strip()):
+                        continue
+                    fallback, fallback_ref, raw = candidate, ref, value
+                    break
+                if fallback is not None:
+                    break
             if fallback is not None:
                 selected = fallback
                 fico_nodes.append(fallback)
-                for field in ("account_id", "query4_fico"):
-                    refs.update(fallback.field_refs.get(field, []))
-                raw, _ = read("query4_fico", [fallback])
-                number = _number(raw)
-                if fallback.poisoned & {"account_id", "query4_fico"}:
-                    status = "CONFLICTING_REPORT"
-                elif number is not None and 0 <= number <= 850:
+                refs.update(fallback.field_refs.get("account_id", []))
+                refs.add(fallback_ref)
+                number = _number(str(raw) if isinstance(raw, float) else raw)
+                if number is not None and 0 <= number <= 850:
                     score, status = number, "VALID_QUERY4_FICO"
                     scores.append(number)
                 else:

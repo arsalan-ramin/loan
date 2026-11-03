@@ -120,7 +120,10 @@ def test_duplicate_associations_count_each_account_once_and_exclude_unknown_unre
     view = demo(source)
     assert view["normalized_facts"]["fico"] == "700"
     assert view["fico_aggregation"]["account_count"] == 2
-    assert {item["account_id"] for item in view["fico_account_audit"]} == {"A1", "G1"}
+    # Linked Business accounts are listed as excluded, never scored.
+    audit = {item["account_id"]: item["score_status"] for item in view["fico_account_audit"]}
+    assert audit == {"A1": "VALID_PERSONAL_FICO", "G1": "VALID_PERSONAL_FICO",
+                     "OWNER": "EXCLUDED_NON_INDIVIDUAL_ACCOUNT", "UNTYPED": "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"}, audit
     assert not {"UNRELATED-R", "ROWNER", "RUNTYPED"} & {item["record_id"] for item in view["source_evidence"]}
 
 
@@ -877,7 +880,9 @@ def test_duplicate_accounts_roles_and_unrelated_children_do_not_change_age_scope
     assert view["age_aggregation"]["account_count"] == 2
     assert [(item["account_id"], item["party_roles"]) for item in view["age_account_audit"]] == [
         ("A1", ["borrower", "guarantor"]), ("G1", ["guarantor"])]
-    assert not {"CHILD", "OWNER", "UNTYPED"} & {item["record_id"] for item in view["source_evidence"]}
+    assert "CHILD" not in {item["record_id"] for item in view["source_evidence"]}
+    assert not any(item["record_id"] in {"OWNER", "UNTYPED"} and item["field"] == "dob"
+                   for item in view["source_evidence"])
 
 
 @pytest.mark.parametrize("field,value", [("dob", "2000-01-01"), ("name", "Other")])

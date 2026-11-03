@@ -140,6 +140,9 @@ class LoanDataset:
                 CREATE INDEX IF NOT EXISTS batch_results_seq ON batch_results (seq);
                 CREATE INDEX IF NOT EXISTS batch_results_status ON batch_results (status, seq);
             """)
+            # Older stores predate the per-loan list of linked accounts.
+            if "accounts" not in {row[1] for row in conn.execute("PRAGMA table_info(batch_results)")}:
+                conn.execute("ALTER TABLE batch_results ADD COLUMN accounts TEXT")
 
     @classmethod
     def for_root(cls, root: Path) -> "LoanDataset":

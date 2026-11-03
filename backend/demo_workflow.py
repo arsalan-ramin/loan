@@ -2,8 +2,8 @@
 
 Graph insertion order is source order. The first account-linked report is used
 without checking report date/completion; poisoned fields remain unknown.
-FICO uses only Query 1 nested credit-report scores of linked Individual accounts
-(guarantors) and skips blank scores within each account. No raw
+FICO uses Query 1 nested credit-report scores (then Query 4) of every linked
+non-business account (guarantors) and skips blank scores within each account. No raw
 characteristics are pivoted, no EBIT/net income is substituted for EBITDA, and
 no graph is modified. Age, EBITDA and public records are non-gating diagnostics.
 """
@@ -293,9 +293,9 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         return (bool(candidate.poisoned & {"account_id", field})
                 or (raw is not None and not (isinstance(raw, str) and not raw.strip())))
 
-    # FICO parties: the role-validated links above, plus every Individual
+    # FICO parties: the role-validated links above, plus every non-business
     # account on an Entity Involvement row that explicitly carries this loan
-    # ID. Individuals are the guarantors, whatever Borrower_Type label they
+    # ID (Individual or untyped guarantors), whatever Borrower_Type label they
     # carry, so connect them to the business loan by loan ID alone.
     fico_roles = {account_id: set(roles) for account_id, roles in party_roles.items()}
     fico_party_refs = {account_id: set(refs) for account_id, refs in party_refs.items()}
@@ -303,13 +303,17 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         if involvement.poisoned & {"loan_id", "account_id"}:
             continue
         account_id = scalar_id(involvement.fields.get("account_id"))
-        person = graph.table("Account").get(account_id) if account_id else None
-        if person is None or account_id in fico_roles or "account_type" in person.poisoned:
+        if not account_id or account_id in fico_roles:
             continue
-        raw_type = person.fields.get("account_type")
-        if str(raw_type or "").strip().casefold() != "individual":
+        person = graph.table("Account").get(account_id)
+        if person is not None and "account_type" in person.poisoned:
             continue
-        fico_roles[account_id] = {"guarantor"}
+        raw_type = person.fields.get("account_type") if person is not None else None
+        kind = str(raw_type or "").strip().casefold()
+        # Business accounts are listed in the audit (as excluded) so every
+        # account linked to the loan is visible, but never scored.
+        business = kind == "business" or (account_id == borrower and kind != "individual")
+        fico_roles[account_id] = {"borrower" if account_id == borrower else "linked"} if business else {"guarantor"}
         fico_party_refs[account_id] = {
             ref for field in ("loan_id", "account_id", "role")
             for ref in involvement.field_refs.get(field, [])}
@@ -323,10 +327,12 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
             raw_type, type_refs = read("account_type", [person])
             refs.update(type_refs)
             account_type = str(raw_type).strip() if raw_type is not None and str(raw_type).strip() else None
-        if person is None or account_type is None or account_type.casefold() != "individual":
-            # FICO applies only to Individual accounts (guarantors). Business
-            # or untyped accounts are excluded from both sum and count.
-            conflicting = person is not None and "account_type" in person.poisoned
+        conflicting = person is not None and "account_type" in person.poisoned
+        kind = (account_type or "").casefold()
+        if conflicting or kind == "business" or (account_id == borrower and kind != "individual"):
+            # FICO applies to every linked account except the business
+            # borrower and Business-typed accounts, which are excluded from
+            # both sum and count.
             fico_refs.update(refs)
             fico_audit.append({"account_id": account_id, "party_roles": sorted(roles),
                                "account_type": account_type, "selected_report_id": None,
@@ -418,8 +424,8 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     fico = (sum(scores, Decimal(0)) / Decimal(len(scores))
             if scores and not invalid_scores else None)
     add("fico", fico, fico >= 650 if fico is not None else None, sorted(fico_refs),
-        "Average available personal FICO across Individual accounts (guarantors) connected to the loan by loan ID, once per account; "
-        "Business or untyped accounts are excluded. Each account's FICO comes from the Query 1 nested Entity Involvement "
+        "Average available personal FICO across every account connected to the loan by loan ID (Individual or untyped "
+        "guarantors), once per account; the business borrower and Business accounts are excluded. Each account's FICO comes from the Query 1 nested Entity Involvement "
         "credit report first; only when Query 1 has no score for that account is its Query 4 credit score used. "
         "Below 650 matches a knockout. Use the first nonblank score per account in source order. "
         "Supplied numeric scores from 0 to 850, including decimals, are used without rescaling. "

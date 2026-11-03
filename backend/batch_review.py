@@ -7,6 +7,7 @@ so replacing the stored workbooks also clears the batch results.
 """
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -32,7 +33,16 @@ from .underwriting_engine import evaluate_underwriting
 logger = logging.getLogger(__name__)
 
 STATUS_LABELS = {"Approve": "Approved", "Decline": "Decline", "Refer": "Refer"}
-EXPORT_COLUMNS = ("Loan ID", "Account ID", "Status", "Rationale / result")
+EXPORT_COLUMNS = ("Loan ID", "Accounts", "Status", "Rationale / result")
+FICO_OUTCOMES = {
+    "EXCLUDED_NON_INDIVIDUAL_ACCOUNT": "business account, not used for FICO",
+    "MISSING_PERSONAL_FICO": "no FICO in Query 1 or Query 4",
+    "NO_ACCOUNT_MATCH": "no FICO in Query 1 or Query 4",
+    "CONFLICTING_ACCOUNT_TYPE": "conflicting account type",
+    "CONFLICTING_REPORT": "conflicting FICO values",
+    "MISSING_OR_INVALID_PERSONAL_FICO": "invalid FICO value",
+    "UNTYPED_PERSONAL_FICO": "score not identified as a personal FICO",
+}
 
 
 class BatchError(RuntimeError):
@@ -53,6 +63,28 @@ def readable_rationale(text: str) -> str:
     """Put each labelled section of the Claude explanation on its own line."""
     text = re.sub(r"\s*\b(Why|What is unresolved|Next steps):", r"\n\1:", text.strip())
     return re.sub(r"\n{2,}", "\n", text).strip()
+
+
+def linked_accounts(demo: dict | None) -> list[dict]:
+    """Every account linked to the loan, with its type, role and FICO outcome."""
+    accounts = []
+    for item in (demo or {}).get("fico_account_audit") or []:
+        status = item.get("score_status")
+        source = {"VALID_PERSONAL_FICO": "Query 1", "VALID_QUERY4_FICO": "Query 4"}.get(status)
+        accounts.append({
+            "account_id": item.get("account_id"), "account_type": item.get("account_type"),
+            "roles": list(item.get("party_roles") or []), "fico": item.get("score") if source else None,
+            "fico_source": source,
+            "fico_outcome": (f"FICO {item.get('score')} from {source}" if source
+                             else FICO_OUTCOMES.get(status, str(status or "not evaluated"))),
+        })
+    return accounts
+
+
+def account_line(account: dict) -> str:
+    kind = account.get("account_type") or "Type not provided"
+    roles = ", ".join(role.title() for role in account.get("roles") or []) or "Linked"
+    return f"{account.get('account_id')} ({kind}, {roles}): {account.get('fico_outcome')}"
 
 
 def safe_cell(value: str | None) -> str:
@@ -133,12 +165,14 @@ class BatchReviewer:
         with self.dataset.connect() as conn:
             total = conn.execute(f"SELECT COUNT(*) FROM batch_results {where}", params).fetchone()[0]
             rows = conn.execute(
-                "SELECT loan_id, account_id, status, branch, rationale, engine_rationale, error, processed_at "
-                f"FROM batch_results {where} ORDER BY seq LIMIT ? OFFSET ?", [*params, limit, offset]).fetchall()
-        keys = ("loan_id", "account_id", "status", "branch", "rationale", "engine_rationale", "error", "processed_at")
+                "SELECT loan_id, account_id, status, branch, rationale, engine_rationale, error, processed_at, "
+                f"accounts FROM batch_results {where} ORDER BY seq LIMIT ? OFFSET ?", [*params, limit, offset]).fetchall()
+        keys = ("loan_id", "account_id", "status", "branch", "rationale", "engine_rationale", "error", "processed_at",
+                "accounts")
         results = [dict(zip(keys, row)) for row in rows]
         for row in results:
             row["processing"] = "failed" if row["error"] else "succeeded"
+            row["accounts"] = json.loads(row["accounts"]) if row["accounts"] else []
         return {"results": results, "total": total, "offset": offset, "limit": limit}
 
     # ---- control ----------------------------------------------------------------------
@@ -215,7 +249,9 @@ class BatchReviewer:
                                        "AND dataset_updated_at=(SELECT value FROM dataset_meta WHERE key='updated_at')",
                                        (snapshot,)).fetchone()
                 if current:
-                    conn.execute("INSERT OR REPLACE INTO batch_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
+                    conn.execute("INSERT OR REPLACE INTO batch_results (loan_id, seq, account_id, status, branch, "
+                                 "rationale, engine_rationale, error, model, processed_at, accounts) "
+                                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -282,10 +318,12 @@ class BatchReviewer:
         if not self.dataset.load_scoped(documents, loan_id):
             raise _Stop("The stored data changed during the batch review. Start a new run.")
         status = branch = rationale = engine_rationale = error = model = None
+        accounts: list[dict] = []
         try:
             batch = evaluate_underwriting(documents, "TEST", selected_loan_id=loan_id)
             loan = next((item for item in batch.loan_results if item.loan_id == loan_id), None)
             demo = loan.normalized_data.get("demo_decision") if loan is not None else None
+            accounts = linked_accounts(demo if isinstance(demo, dict) else None)
             if not isinstance(demo, dict) or demo.get("label") not in STATUS_LABELS:
                 error = "The decision flow could not evaluate this loan."
             else:
@@ -306,19 +344,20 @@ class BatchReviewer:
         except Exception:
             logger.exception("Batch review of a loan failed")
             error = "This loan could not be reviewed. Check the server logs."
-        return (loan_id, seq, account_id, status, branch, rationale, engine_rationale, error, model, _now())
+        return (loan_id, seq, account_id, status, branch, rationale, engine_rationale, error, model, _now(),
+                json.dumps(accounts) if accounts else None)
 
     # ---- export -----------------------------------------------------------------------
 
     def export_xlsx(self) -> bytes:
         with self.dataset.connect() as conn:
-            rows = conn.execute("SELECT loan_id, account_id, status, rationale, error FROM batch_results "
+            rows = conn.execute("SELECT loan_id, account_id, status, rationale, error, accounts FROM batch_results "
                                 "ORDER BY seq").fetchall()
         if not rows:
             raise BatchError("There are no batch results to export yet.")
         workbook = Workbook(write_only=True)
         sheet = workbook.create_sheet("Batch results")
-        for column, width in zip("ABCD", (20, 20, 12, 110)):
+        for column, width in zip("ABCD", (20, 60, 12, 110)):
             sheet.column_dimensions[column].width = width
         sheet.freeze_panes = "A2"
         bold, wrap = Font(bold=True), Alignment(wrap_text=True, vertical="top")
@@ -328,10 +367,11 @@ class BatchReviewer:
             cell.font = bold
             header.append(cell)
         sheet.append(header)
-        for loan_id, account_id, status, rationale, error in rows:
+        for loan_id, account_id, status, rationale, error, accounts in rows:
             text = rationale or error or ""
+            listed = "\n".join(account_line(item) for item in json.loads(accounts)) if accounts else account_id
             cells = [WriteOnlyCell(sheet, value=safe_cell(value))
-                     for value in (loan_id, account_id, status or "Error", text)]
+                     for value in (loan_id, listed, status or "Error", text)]
             for cell in cells:
                 cell.alignment = wrap
             sheet.append(cells)

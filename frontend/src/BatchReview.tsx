@@ -159,7 +159,7 @@ export default function BatchReview() {
               <th className="batch-select">{failedOnPage.length > 0
                 ? <input type="checkbox" aria-label="Select all failed loans on this page" title="Select all failed loans on this page" checked={allPageFailedSelected} disabled={running} onChange={togglePage} />
                 : <span className="sr-only">Select</span>}</th>
-              <th>Loan ID</th><th>Account ID</th><th>Status</th><th>Processing</th><th>Rationale / result</th><th><span className="sr-only">Actions</span></th>
+              <th>Loan ID</th><th>Accounts</th><th>Status</th><th>Processing</th><th>Rationale / result</th><th><span className="sr-only">Actions</span></th>
             </tr></thead>
             <tbody>
               {page.results.map((row) => {
@@ -168,7 +168,12 @@ export default function BatchReview() {
                 return <tr key={row.loan_id} className={failed ? 'failed-row' : undefined}>
                   <td className="batch-select">{failed && <input type="checkbox" aria-label={`Select ${row.loan_id}`} checked={selected.has(row.loan_id)} disabled={running} onChange={() => toggle(row.loan_id)} />}</td>
                   <td>{row.loan_id}</td>
-                  <td>{row.account_id ?? '—'}</td>
+                  <td className="batch-accounts">{row.accounts?.length
+                    ? <ul>{row.accounts.map((account) => <li key={account.account_id ?? ''}>
+                        <strong>{account.account_id}</strong> ({account.account_type ?? 'Type not provided'}, {account.roles.map((role) => role.charAt(0).toUpperCase() + role.slice(1)).join(', ') || 'Linked'})
+                        <small>{account.fico_outcome}</small>
+                      </li>)}</ul>
+                    : row.account_id ?? '—'}</td>
                   <td><span className={`batch-status ${row.status ?? 'Error'}`}>{row.status ?? 'Error'}</span></td>
                   <td><span className={`batch-processing ${isRetrying ? 'retrying' : row.processing}`}>{isRetrying ? <><LoaderCircle size={12} className="spin" />Retrying</> : failed ? 'Failed' : 'Succeeded'}</span></td>
                   <td className="batch-rationale">{row.rationale ?? row.error ?? ''}{row.rationale && row.error && <em>{row.error}</em>}{!row.rationale && row.error && row.engine_rationale && <small>Decision flow: {row.engine_rationale}</small>}</td>

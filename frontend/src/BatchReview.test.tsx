@@ -18,7 +18,12 @@ const page = (overrides: Partial<BatchResultPage> = {}): BatchResultPage => ({ r
 const completedPage = page({
   total: 3,
   results: [
-    { loan_id: 'L1', account_id: 'A1', status: 'Approved', branch: 'APPROVE', rationale: 'Result: L1 is Approve.\nWhy: all criteria pass.', engine_rationale: 'ok', error: null, processed_at: 'x', processing: 'succeeded' },
+    { loan_id: 'L1', account_id: 'A1', status: 'Approved', branch: 'APPROVE', rationale: 'Result: L1 is Approve.\nWhy: all criteria pass.', engine_rationale: 'ok', error: null, processed_at: 'x', processing: 'succeeded',
+      accounts: [
+        { account_id: 'A1', account_type: 'Business', roles: ['borrower'], fico: null, fico_source: null, fico_outcome: 'business account, not used for FICO' },
+        { account_id: 'G1', account_type: 'Individual', roles: ['guarantor'], fico: '720', fico_source: 'Query 1', fico_outcome: 'FICO 720 from Query 1' },
+        { account_id: 'G2', account_type: null, roles: ['guarantor'], fico: '690', fico_source: 'Query 4', fico_outcome: 'FICO 690 from Query 4' },
+      ] },
     { loan_id: 'L2', account_id: 'A2', status: 'Decline', branch: 'KNOWN_KNOCKOUT', rationale: 'Result: L2 is Decline.', engine_rationale: 'fico', error: null, processed_at: 'x', processing: 'succeeded' },
     { loan_id: 'L3', account_id: null, status: 'Refer', branch: 'REFER', rationale: null, engine_rationale: 'missing', error: 'Claude rationale unavailable: timeout', processed_at: 'x', processing: 'failed' },
     { loan_id: 'L4', account_id: 'A4', status: 'Refer', branch: 'REFER', rationale: null, engine_rationale: 'missing', error: 'Claude rationale unavailable: timeout', processed_at: 'x', processing: 'failed' },
@@ -53,7 +58,11 @@ describe('BatchReview', () => {
     await screen.findByText('4 of 4 loans processed');
     expect(screen.getByRole('progressbar', { name: 'Batch progress' })).toHaveAttribute('aria-valuenow', '4');
     const table = screen.getByRole('table');
-    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['', 'Loan ID', 'Account ID', 'Status', 'Processing', 'Rationale / result', 'Actions']);
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['', 'Loan ID', 'Accounts', 'Status', 'Processing', 'Rationale / result', 'Actions']);
+    expect(within(table).getByText('G1')).toBeInTheDocument();
+    expect(within(table).getByText('FICO 690 from Query 4')).toBeInTheDocument();
+    expect(within(table).getByText(/Type not provided, Guarantor/)).toBeInTheDocument();
+    expect(within(table).getByText('A2')).toBeInTheDocument();
     expect(within(table).getByText(/Why: all criteria pass/)).toBeInTheDocument();
     expect(within(table).getAllByText(/Claude rationale unavailable/)).toHaveLength(2);
     expect(within(table).getAllByText('Succeeded')).toHaveLength(2);

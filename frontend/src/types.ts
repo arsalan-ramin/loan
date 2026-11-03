@@ -351,9 +351,19 @@ export interface BatchState {
   concurrency: number;
 }
 
+export interface BatchAccount {
+  account_id: string | null;
+  account_type: string | null;
+  roles: string[];
+  fico: string | null;
+  fico_source: string | null;
+  fico_outcome: string;
+}
+
 export interface BatchResult {
   loan_id: string;
   account_id: string | null;
+  accounts?: BatchAccount[];
   status: BatchLoanStatus | null;
   branch: string | null;
   rationale: string | null;

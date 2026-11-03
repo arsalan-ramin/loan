@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
-from backend.batch_review import BatchReviewer, readable_rationale
+from backend.batch_review import BatchReviewer, account_line, linked_accounts, readable_rationale
 from backend.llm import AnthropicLLM, LLMError
 from backend.loan_dataset import LoanDataset
 from backend.main import create_app
@@ -69,9 +69,32 @@ def test_batch_reviews_every_loan_with_deterministic_status_and_claude_rationale
     assert page["total"] == 8 and [row["loan_id"] for row in page["results"]] == [f"L{i:05d}" for i in range(5)]
     row = page["results"][0]
     assert row["account_id"] == "A00000" and row["status"] in {"Approved", "Decline", "Refer"}
+    assert [item["account_id"] for item in row["accounts"]] == ["A00000"]
+    assert row["accounts"][0]["fico_outcome"] == "business account, not used for FICO"
     assert row["rationale"].startswith("Result: L00000") and "\nWhy:" in row["rationale"]
     assert row["engine_rationale"] and row["error"] is None
     assert reviewer.results(status=row["status"])["total"] >= 1
+
+
+def test_linked_accounts_list_every_account_with_type_role_and_fico_outcome():
+    audit = [
+        {"account_id": "A1", "account_type": "Business", "party_roles": ["borrower"],
+         "score_status": "EXCLUDED_NON_INDIVIDUAL_ACCOUNT", "score": None},
+        {"account_id": "G1", "account_type": "Individual", "party_roles": ["guarantor"],
+         "score_status": "VALID_PERSONAL_FICO", "score": "720"},
+        {"account_id": "G2", "account_type": None, "party_roles": ["guarantor"],
+         "score_status": "VALID_QUERY4_FICO", "score": "690"},
+        {"account_id": "G3", "account_type": "Individual", "party_roles": ["guarantor"],
+         "score_status": "MISSING_PERSONAL_FICO", "score": None},
+    ]
+    lines = [account_line(item) for item in linked_accounts({"fico_account_audit": audit})]
+    assert lines == [
+        "A1 (Business, Borrower): business account, not used for FICO",
+        "G1 (Individual, Guarantor): FICO 720 from Query 1",
+        "G2 (Type not provided, Guarantor): FICO 690 from Query 4",
+        "G3 (Individual, Guarantor): no FICO in Query 1 or Query 4",
+    ]
+    assert linked_accounts(None) == []
 
 
 def test_export_has_requested_columns_and_sanitizes_formulas(reviewer, claude, monkeypatch):
@@ -83,8 +106,8 @@ def test_export_has_requested_columns_and_sanitizes_formulas(reviewer, claude, m
     wait_done(reviewer)
     sheet = load_workbook(BytesIO(reviewer.export_xlsx())).active
     rows = list(sheet.iter_rows(values_only=True))
-    assert rows[0] == ("Loan ID", "Account ID", "Status", "Rationale / result")
-    assert len(rows) == 9 and rows[1][:2] == ("L00000", "A00000")
+    assert rows[0] == ("Loan ID", "Accounts", "Status", "Rationale / result")
+    assert len(rows) == 9 and rows[1][0] == "L00000" and rows[1][1].startswith("A00000 (")
     assert rows[1][2] in {"Approved", "Decline", "Refer"}
     assert rows[1][3].startswith("'=HYPERLINK")
 

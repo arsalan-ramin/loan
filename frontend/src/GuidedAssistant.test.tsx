@@ -470,13 +470,10 @@ describe('Guided assistant workflow', () => {
     expect(selector).toHaveValue('');
     expect(selector).toHaveAttribute('aria-describedby', 'loan-review-disclosure');
     await userEvent.selectOptions(selector, 'L2');
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.getByRole('region', { name: 'Choose credit-report evidence' })).toHaveTextContent('780');
-    expect(screen.getByRole('region', { name: 'Choose credit-report evidence' })).toHaveTextContent('710');
-    await userEvent.click(screen.getByRole('radio', { name: /Score 710/ }));
-    await userEvent.click(screen.getByRole('button', { name: 'Continue review with selected record' }));
+    // Multiple credit-score observations no longer ask for a record choice.
+    expect(screen.queryByRole('region', { name: 'Choose credit-report evidence' })).not.toBeInTheDocument();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(fetchMock).toHaveBeenLastCalledWith('/api/sessions/s1/assistant/loan-review', expect.objectContaining({ body: JSON.stringify({ loan_id: 'L2', report_id: 'report-auto', expected_updated_at: 'revision1', confirmed: true, preferred_evidence_ref: 'score-q4' }) }));
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/sessions/s1/assistant/loan-review', expect.objectContaining({ body: JSON.stringify({ loan_id: 'L2', report_id: 'report-auto', expected_updated_at: 'revision1', confirmed: true }) }));
     await screen.findByRole('button', { name: 'Retry Claude review' });
     view.rerender(<GuidedAssistant {...p} session={{ ...active, updated_at: 'revision2' }} />);
     await userEvent.selectOptions(selector, '');

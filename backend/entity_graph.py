@@ -276,7 +276,7 @@ def build_entity_graph(documents: Iterable[Any], config: dict[str, Any], *, sele
                         if alias not in values or values[alias] is None or values[alias] == "":
                             continue
                         raw = values[alias]
-                        if (table == "CreditReport" and target in {"fico", "personal_fico"}
+                        if (table == "CreditReport" and target in {"fico", "personal_fico", "query4_fico"}
                                 and isinstance(raw, float) and math.isfinite(raw)):
                             raw = str(raw)
                         evidence_id = "ev-" + hashlib.sha256(f"{prefix}:{alias}".encode()).hexdigest()[:24]

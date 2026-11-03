@@ -181,7 +181,7 @@ def test_fico_individual_type_is_case_insensitive_and_no_individual_keeps_unknow
 SOQL_JUNCTION = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
 
 
-def soql_business_with_individuals(individuals):
+def soql_business_with_individuals(individuals, q4_scores=None):
     """Query 1/2 SOQL rows: one Business borrower plus Individual rows by loan ID."""
     report = SOQL_JUNCTION + "nFUSE__Credit_Report__r."
 
@@ -205,18 +205,59 @@ def soql_business_with_individuals(individuals):
               "SCOC__IndicatorKey__c": "uninterpreted", "SCOC__IndicatorValue__c": "raw"}
     q2 = document([("Data", q2_row)], "MTB_Query_2_SOQL_Only.xlsx", "q2")
     q2.metadata["sheets"] = [{"name": "Data", "headers": list(q2_row)}]
-    loan = next(item for item in evaluate_underwriting([q1, q2], mode="TEST").loan_results
+    documents = [q1, q2]
+    if q4_scores:
+        q4_rows = [{"Id": f"Q4{account_id}", "nFUSE__Account__c": account_id, "nFUSE__Credit_Score__c": score}
+                   for account_id, score in q4_scores]
+        q4 = document([("Data", row) for row in q4_rows], "MTB_Query_4_SOQL_Only.xlsx", "q4")
+        q4.metadata["sheets"] = [{"name": "Data", "headers": list(q4_rows[0])}]
+        documents.append(q4)
+    loan = next(item for item in evaluate_underwriting(documents, mode="TEST").loan_results
                 if item.loan_id == "L1")
     return loan.normalized_data["demo_decision"]
+
+
+def test_query4_fico_is_fallback_only_when_query1_has_no_score():
+    view = soql_business_with_individuals(
+        [("L1", "G1", "Guarantor", "700"), ("L1", "G2", "Guarantor", None)],
+        q4_scores=[("G1", "300"), ("G2", "640"), ("B1", "100")])
+    audit = {item["account_id"]: item for item in view["fico_account_audit"]}
+    assert (audit["G1"]["score"], audit["G1"]["score_source"]) == ("700", "QUERY_1")
+    assert (audit["G2"]["score"], audit["G2"]["score_source"]) == ("640", "QUERY_4")
+    assert audit["G2"]["score_status"] == "VALID_QUERY4_FICO"
+    assert audit["G2"]["selected_report_id"] == "Q4G2"
+    assert audit["B1"]["score_status"] == "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
+    assert view["normalized_facts"]["fico"] == "670"
+    assert criterion(view, "fico")["status"] == "PASS"
+    refs = set(criterion(view, "fico")["evidence_refs"])
+    q4_values = {item["value"] for item in view["source_evidence"]
+                 if item["id"] in refs and item["field"] == "nFUSE__Credit_Score__c"}
+    assert q4_values == {"640"}
+
+
+@pytest.mark.parametrize("q4_score,status,fico", [
+    (None, "MISSING_PERSONAL_FICO", None),
+    ("abc", "MISSING_OR_INVALID_PERSONAL_FICO", None),
+    ("620", "VALID_QUERY4_FICO", "620"),
+])
+def test_query4_fico_fallback_missing_or_invalid(q4_score, status, fico):
+    view = soql_business_with_individuals(
+        [("L1", "G1", "Guarantor", None)],
+        q4_scores=[("G1", q4_score)] if q4_score is not None else None)
+    audit = {item["account_id"]: item for item in view["fico_account_audit"]}
+    assert audit["G1"]["score_status"] == status
+    assert view["normalized_facts"]["fico"] == fico
 
 
 SBSS_HEADER = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__LCResponse__r.SCOC__SBSS7Score__c"
 
 
-def soql_client_shape(borrower_role, q2_parties):
+def soql_client_shape(borrower_role, q2_parties, q1_sbss=None):
     """One Business account plus one Individual guarantor (FICO 696) on loan L1."""
+    q1_sbss = q1_sbss or {}
+
     def q1_row(row_id, account_id, role, account_type, score):
-        return {"Id": row_id, SOQL_JUNCTION + "LLC_BI__Loan__c": "L1",
+        return {"Id": row_id, SOQL_JUNCTION + "LLC_BI__Loan__c": "L1", SBSS_HEADER: q1_sbss.get(account_id),
                 SOQL_JUNCTION + "LLC_BI__Account__c": account_id,
                 SOQL_JUNCTION + "LLC_BI__Borrower_Type__c": role,
                 SOQL_JUNCTION + "LLC_BI__Account__r.Type": account_type,
@@ -256,6 +297,27 @@ def test_explicit_borrower_role_still_wins():
     view = soql_client_shape("Borrower", [("G1", "Guarantor", "198")])
     assert view["borrower_link_basis"] == "EXPLICIT_BORROWER_ROLE"
     assert view["sbss_basis"] == "SINGLE_SUPPLIED_SBSS"
+
+
+@pytest.mark.parametrize("q1_sbss,q2_parties,sbss,basis", [
+    # Query 1 borrower-row SBSS wins over Query 2.
+    ({"B1": "150"}, [("B1", "Borrower", "198")], "150", "QUERY1_BORROWER_ROW_SBSS"),
+    ({"B1": "205"}, [("G1", "Guarantor", "161")], "205", "QUERY1_BORROWER_ROW_SBSS"),
+    # No Query 1 SBSS on the borrower's row: Query 2 applies.
+    ({}, [("B1", "Borrower", "198")], "198", "SINGLE_SUPPLIED_SBSS"),
+    ({"B1": "abc"}, [("B1", "Borrower", "198")], "198", "SINGLE_SUPPLIED_SBSS"),
+    # An Individual's Query 1 SBSS is not the business borrower's score.
+    ({"G1": "120"}, [("B1", "Borrower", "198")], "198", "SINGLE_SUPPLIED_SBSS"),
+])
+def test_sbss_uses_query1_borrower_row_first_then_query2(q1_sbss, q2_parties, sbss, basis):
+    view = soql_client_shape("Borrower", q2_parties, q1_sbss=q1_sbss)
+    assert view["normalized_facts"]["sbss"] == sbss
+    assert view["sbss_basis"] == basis
+    refs = set(criterion(view, "sbss")["evidence_refs"])
+    evidence = {(item["workbook"], item["value"]) for item in view["source_evidence"] if item["id"] in refs}
+    workbook = "MTB_Query_1.xlsx" if basis == "QUERY1_BORROWER_ROW_SBSS" else "MTB_Query_2.xlsx"
+    assert evidence == {(workbook, sbss)}
+    assert bounded_demo_context(view, mode="TEST", allowed_refs=set())["sbss_basis"] == basis
 
 
 @pytest.mark.parametrize("parties,sbss,basis,label", [

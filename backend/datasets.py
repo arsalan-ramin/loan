@@ -86,6 +86,9 @@ SOQL_FIELD_SUFFIXES = {
     ("EntityInvolvement", "loan_id"): ("llcbiloanc",),
     ("EntityInvolvement", "account_id"): ("llcbiaccountc",),
     ("EntityInvolvement", "role"): ("llcbiborrowertypec",),
+    # Query 1 SBSS stays on its own Entity Involvement row (account-scoped);
+    # it is never merged into the loan-level Query 2 SBSS.
+    ("EntityInvolvement", "sbss"): ("scocsbss7scorec",),
     # Approval/creation timestamps are retained as raw source evidence; they
     # are not substituted for an explicit policy as-of or account-opened date.
     ("Account", "name"): ("llcbiaccountrname",),
@@ -104,7 +107,8 @@ SOQL_FIELD_SUFFIXES = {
     ("CreditReport", "account_id"): ("nfusecreditreportrnfuseaccountc", "nfuseaccountc"),
     ("CreditReport", "status"): ("nfusecreditreportrnfusestatusc", "nfusestatusc"),
     # FICO is sourced only from Query 1's nested Entity Involvement credit
-    # report. Query 4's root nFUSE__Credit_Score__c is intentionally unmapped.
+    # report. Query 4's root nFUSE__Credit_Score__c maps separately to
+    # CreditReport.query4_fico, a per-account fallback when Query 1 has no score.
     ("CreditReport", "fico"): ("nfusecreditreportrnfusecreditscorec",),
     ("CreditReport", "personal_fico"): ("nfusecreditreportrnfusecreditscorec",),
     ("CreditReport", "report_category"): ("nfusecreditreportrnfusereportcategoryc", "nfusereportcategoryc"),
@@ -223,6 +227,10 @@ def soql_field_headers(table: str, field: str, headers, *, root_table: str | Non
             # same-row parent scope when Query 4 is absent; do not broaden to
             # generic Account-looking columns.
             output.extend(soql_account_reference_headers(1, headers))
+    elif (table, field) == ("Loan", "sbss") and root_table == "EntityInvolvement":
+        pass
+    elif table == "EntityInvolvement" and field == "sbss" and root_table != "EntityInvolvement":
+        pass
     else:
         for header in headers:
             if not isinstance(header, str):

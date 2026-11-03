@@ -36,6 +36,7 @@ BANKRUPTCY_UNKNOWN_BASIS = "INVALID_OR_CONFLICTING"
 BORROWER_ROLE_BASIS = "EXPLICIT_BORROWER_ROLE"
 BORROWER_BUSINESS_TYPE_BASIS = "BUSINESS_ACCOUNT_LINKED_BY_LOAN_ID"
 SBSS_SINGLE_BASIS = "SINGLE_SUPPLIED_SBSS"
+SBSS_QUERY1_BASIS = "QUERY1_BORROWER_ROW_SBSS"
 SBSS_BORROWER_ROW_BASIS = "BORROWER_ROW_SBSS"
 SBSS_LOWEST_BASIS = "LOWEST_OF_MULTIPLE_SBSS"
 NAICS_MATCH_BASIS = "SUPPLIED_HIGH_RISK_PREFIX_LIST_ONLY"
@@ -349,22 +350,50 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                     scores.append(number)
                 else:
                     status = "MISSING_OR_INVALID_PERSONAL_FICO"
+        if status in {"MISSING_PERSONAL_FICO", "NO_ACCOUNT_MATCH"}:
+            # Query 1 supplied no score for this Individual: fall back to the
+            # first populated Query 4 root credit score for the same account.
+            fallback = next((candidate for candidate in candidates
+                             if "query4_fico" in candidate.poisoned
+                             or not (candidate.fields.get("query4_fico") is None
+                                     or (isinstance(candidate.fields.get("query4_fico"), str)
+                                         and not candidate.fields["query4_fico"].strip()))), None)
+            if fallback is not None:
+                selected = fallback
+                fico_nodes.append(fallback)
+                for field in ("account_id", "query4_fico"):
+                    refs.update(fallback.field_refs.get(field, []))
+                raw, _ = read("query4_fico", [fallback])
+                number = _number(raw)
+                if fallback.poisoned & {"account_id", "query4_fico"}:
+                    status = "CONFLICTING_REPORT"
+                elif number is not None and 0 <= number <= 850:
+                    score, status = number, "VALID_QUERY4_FICO"
+                    scores.append(number)
+                else:
+                    status = "MISSING_OR_INVALID_PERSONAL_FICO"
         fico_refs.update(refs)
         fico_audit.append({"account_id": account_id, "party_roles": sorted(roles),
                            "account_type": account_type,
                            "selected_report_id": selected.id if selected else None,
-                           "report_status": "FIRST_NONBLANK_FICO_ACCOUNT_MATCH" if selected else "NO_ACCOUNT_MATCH",
+                           "report_status": ("QUERY4_FALLBACK_ACCOUNT_MATCH" if status == "VALID_QUERY4_FICO"
+                                             else "FIRST_NONBLANK_FICO_ACCOUNT_MATCH" if selected
+                                             else "NO_ACCOUNT_MATCH"),
+                           "score_source": ("QUERY_4" if status == "VALID_QUERY4_FICO"
+                                            else "QUERY_1" if status == "VALID_PERSONAL_FICO" else None),
                            "score_status": status, "score": str(score) if score is not None else None,
                            "evidence_refs": sorted(refs)})
     invalid_scores = any(item["score_status"] not in {
-        "VALID_PERSONAL_FICO", "MISSING_PERSONAL_FICO", "NO_ACCOUNT_MATCH", "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
+        "VALID_PERSONAL_FICO", "VALID_QUERY4_FICO", "MISSING_PERSONAL_FICO", "NO_ACCOUNT_MATCH",
+        "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
     } for item in fico_audit)
     fico = (sum(scores, Decimal(0)) / Decimal(len(scores))
             if scores and not invalid_scores else None)
     add("fico", fico, fico >= 650 if fico is not None else None, sorted(fico_refs),
         "Average available personal FICO across Individual accounts (guarantors) connected to the loan by loan ID, once per account; "
-        "Business or untyped accounts are excluded. FICO comes only from the Query 1 nested Entity Involvement "
-        "credit report, never Query 4. Below 650 matches a knockout. Use the first nonblank score per account in source order. "
+        "Business or untyped accounts are excluded. Each account's FICO comes from the Query 1 nested Entity Involvement "
+        "credit report first; only when Query 1 has no score for that account is its Query 4 credit score used. "
+        "Below 650 matches a knockout. Use the first nonblank score per account in source order. "
         "Supplied numeric scores from 0 to 850, including decimals, are used without rescaling. "
         "Missing scores are excluded from both sum and count. No available scores, or any conflicting, invalid "
         "or untyped supplied party score, makes the average UNKNOWN.")
@@ -377,6 +406,19 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     sbss = _number(sbss_raw)
     sbss = sbss if sbss is not None and 0 <= sbss <= 300 and sbss == sbss.to_integral_value() else None
     sbss_basis = SBSS_SINGLE_BASIS if sbss is not None else None
+    # Query 1 first: the SBSS on the business borrower's own Entity Involvement
+    # row(s) for this loan. Only when none is found does Query 2 apply.
+    q1_sbss: list[tuple[Decimal, list[str]]] = []
+    for involvement in graph.related("EntityInvolvement", "loan_id", loan.id) if borrower else []:
+        if (involvement.poisoned & {"loan_id", "account_id", "sbss"}
+                or scalar_id(involvement.fields.get("account_id")) != borrower):
+            continue
+        value = _number(involvement.fields.get("sbss"))
+        if value is not None and 0 <= value <= 300 and value == value.to_integral_value():
+            q1_sbss.append((value, involvement.field_refs.get("sbss", [])))
+    if q1_sbss:
+        sbss, sbss_basis = min(value for value, _ in q1_sbss), SBSS_QUERY1_BASIS
+        sbss_refs = sorted({ref for value, refs in q1_sbss if value == sbss for ref in refs})
     if sbss is None and "sbss" in loan.poisoned:
         # TEST rule for a loan carrying different SBSS values: use the value on
         # the business borrower's own source row; otherwise the lowest value.
@@ -399,7 +441,11 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
             sbss_refs = sorted({item.id for value, item in pool if value == sbss})
     add("sbss", sbss, sbss >= 160 if sbss is not None else None, sbss_refs,
         "SBSS below 160 matches a knockout, independently of missing report dates or other inputs."
-        + (" The loan carries different SBSS values; the value on the business borrower's row is used."
+        + (" SBSS comes from Query 1 on the business borrower's row; Query 2 is not used."
+           if sbss_basis == SBSS_QUERY1_BASIS else
+           " No Query 1 SBSS on the borrower's row; Query 2 SBSS linked by loan ID is used."
+           if sbss_basis == SBSS_SINGLE_BASIS else
+           " The loan carries different SBSS values; the value on the business borrower's row is used."
            if sbss_basis == SBSS_BORROWER_ROW_BASIS else
            " The loan carries different SBSS values and none is uniquely on the borrower's row; the lowest is used."
            if sbss_basis == SBSS_LOWEST_BASIS else ""))
@@ -610,7 +656,7 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
             or (bankruptcy_basis == BANKRUPTCY_EXPLICIT_BASIS and type(facts.get("bankruptcy_clear")) is bool)
             or (bankruptcy_basis == BANKRUPTCY_UNKNOWN_BASIS and facts.get("bankruptcy_clear") is None)):
         ownership_context["bankruptcy_count_basis"] = bankruptcy_basis
-    if (data.get("sbss_basis") in {SBSS_SINGLE_BASIS, SBSS_BORROWER_ROW_BASIS, SBSS_LOWEST_BASIS}
+    if (data.get("sbss_basis") in {SBSS_SINGLE_BASIS, SBSS_QUERY1_BASIS, SBSS_BORROWER_ROW_BASIS, SBSS_LOWEST_BASIS}
             and _number(facts.get("sbss")) is not None):
         ownership_context["sbss_basis"] = data["sbss_basis"]
     if data.get("borrower_link_basis") in {BORROWER_ROLE_BASIS, BORROWER_BUSINESS_TYPE_BASIS}:

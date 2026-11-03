@@ -162,12 +162,14 @@ def test_full_three_workbook_graph_keeps_final_row_conflict_and_evidence():
     for table in ("Loan", "Account", "EntityInvolvement", "Indicator", "Characteristic", "CreditReport"):
         assert len(graph.table(table)) == 16_001
     report = graph.table("CreditReport")["R16000"]
-    # Query 4's nFUSE__Credit_Score__c is never a FICO source, so it cannot
-    # conflict with the final row's explicit generic score.
+    # Query 4's nFUSE__Credit_Score__c maps only to the separate query4_fico
+    # fallback, so it cannot conflict with the final row's explicit generic score.
     assert not any(issue.startswith("CONFLICTING_ALIASES:CreditReport:fico") for issue in graph.issues)
-    fico_evidence = [item for item in report.evidence if item.field in {"fico", "nFUSE__Credit_Score__c"}]
+    assert not any(issue.startswith("CONFLICTING_DUPLICATE:CreditReport:fico") for issue in graph.issues)
+    fico_evidence = [item for item in report.evidence if item.field == "fico"]
     assert [(item.field, item.value) for item in fico_evidence] == [("fico", "620")]
     assert report.fields["fico"] == "620"
+    assert report.fields["query4_fico"] == "740"
     assert len(graph.issues) == 16_001  # Every unlinked involvement is still validated.
     assert all(node.evidence for nodes in graph.nodes.values() for node in nodes.values())
     assert "UNMAPPED_RELATION:Indicator:analysis_id" in graph.mapping_warnings

@@ -54,7 +54,7 @@ def comparable(document: Document) -> tuple:
 
 
 @pytest.mark.parametrize("indexed", [False, True])
-def test_fico_uses_query1_individual_scores_and_ignores_query4(tmp_path, indexed):
+def test_fico_uses_query1_first_then_query4_per_individual(tmp_path, indexed):
     from backend.tests.test_large_preflight import JUNCTION
     from backend.underwriting_engine import evaluate_underwriting
 
@@ -72,10 +72,14 @@ def test_fico_uses_query1_individual_scores_and_ignores_query4(tmp_path, indexed
         # Individuals connect to the business loan by loan ID, whatever the role label.
         ["J2", "L00000", "G00000", "Personal Guarantor", "Individual", "CG", 94.57, "numCollection", "0"],
         ["J3", "L00001", "A00001", "Borrower", "Business", "CB1", 700, "numCollection", "0"],
+        # No Query 1 score for this guarantor, so its Query 4 score is the fallback.
+        ["J4", "L00000", "G00001", "Guarantor", "Individual", "CG1", None, "numCollection", "0"],
     ])])
     q4_headers = ["Id", "nFUSE__Account__c", "nFUSE__Credit_Score__c", "nFUSE__Status__c"]
     query4_bytes = canonical_workbook([("Sheet1", q4_headers, [
+        # Query 1 already scores G00000, so this Query 4 value is not used.
         ["Q4G", "G00000", 800, "Complete"],
+        ["Q4G1", "G00001", 700, "Complete"],
         ["Q4A", "A00000", 800, "Complete"],
     ])])
     files = []
@@ -96,17 +100,23 @@ def test_fico_uses_query1_individual_scores_and_ignores_query4(tmp_path, indexed
     loan = evaluate_underwriting(documents, "TEST", selected_loan_id="L00000").loan_results[0]
     view = loan.normalized_data["demo_decision"]
     audit = {item["account_id"]: item for item in view["fico_account_audit"]}
-    assert view["normalized_facts"]["fico"] == "94.57", audit
+    assert view["normalized_facts"]["fico"] == "397.285", audit
     assert view["label"] == "Decline"
     assert audit["A00000"]["account_type"] == "Business"
     assert audit["A00000"]["score_status"] == "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
     assert audit["G00000"]["account_type"] == "Individual"
     assert audit["G00000"]["selected_report_id"] == "CG"
     assert audit["G00000"]["score_status"] == "VALID_PERSONAL_FICO"
-    assert view["fico_aggregation"]["account_count"] == 1
+    assert audit["G00000"]["score_source"] == "QUERY_1"
+    assert audit["G00001"]["selected_report_id"] == "Q4G1"
+    assert audit["G00001"]["score_status"] == "VALID_QUERY4_FICO"
+    assert audit["G00001"]["score_source"] == "QUERY_4"
+    assert audit["G00001"]["score"] == "700"
+    assert view["fico_aggregation"]["account_count"] == 2
     assert loan.borrower_account_id == "A00000"
     assert any(item["value"] == "94.57" for item in view["source_evidence"])
-    assert not any(item["field"] == "nFUSE__Credit_Score__c" for item in view["source_evidence"])
+    q4_values = {item["value"] for item in view["source_evidence"] if item["field"] == "nFUSE__Credit_Score__c"}
+    assert q4_values == {"700"}
 
 
 @pytest.mark.parametrize("canonical", [False, True])

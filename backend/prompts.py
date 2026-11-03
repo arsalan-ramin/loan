@@ -54,8 +54,9 @@ loan; do not infer its outcome or anything about omitted loans.
 FIRST_ACCOUNT_MATCH_FOR_TEST_DEMO means first account-linked report in source
 order, not freshest or completed. Report dates are not a demo prerequisite.
 FICO separately skips blank reports and uses the first nonblank score per linked
-Individual account (guarantor); Business accounts are excluded and Query 4 is not a
-FICO source. The Query 1 nested nFUSE credit-score field is personal FICO; supplied decimal
+Individual account (guarantor); Business accounts are excluded. The Query 1 nested
+nFUSE credit-score field is personal FICO; only when Query 1 has no score for that
+account is its Query 4 credit score used. Supplied decimal
 scores are used without conversion against the existing 650/760 thresholds.
 Age and bankruptcy recency require their supplied companion inputs; zero
 bankruptcies needs no discharge date. Do not infer EBITDA from EBIT, personal

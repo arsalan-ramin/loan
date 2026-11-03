@@ -868,7 +868,6 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
     assert recommendation.normalized_data["fico"] is None
     assert q1doc.metadata["records"][0]["values"]["CreatedDate"] == "2026-10-20T12:00:00Z"
     assert any(item.field == q1_report + "nFUSE__Credit_Score__c" for item in recommendation.source_evidence)
-    assert not any(item.field == "nFUSE__Credit_Score__c" for item in recommendation.source_evidence)
     reconciliation = next(step for step in recommendation.normalized_data["decision_flow"]
                           if step["stage"] == "Query 1 / Query 2 / Query 4 source reconciliation")
     assert reconciliation["status"] == "UNKNOWN"
@@ -878,11 +877,12 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
     assert recommendation.recommendation_path == "SIMULATED_REVIEW"
     assert "Credit report date" in batch.unavailable_inputs
 
-    # Query 4's root score is never FICO, so changing it cannot conflict with
-    # or replace Query 1's nested score for the same CreditReport Id.
+    # Query 4's root score is only the separate query4_fico fallback, so changing
+    # it cannot conflict with or replace Query 1's nested score for the same Id.
     q4doc.metadata["records"][0]["values"]["nFUSE__Credit_Score__c"] = "705"
     changed = build_entity_graph([q1doc, q2doc, q4doc], load_underwriting_config())
     assert changed.table("CreditReport")["R1"].fields["fico"] == "620"
+    assert changed.table("CreditReport")["R1"].fields["query4_fico"] == "705"
     assert not any(issue.startswith("CONFLICTING_DUPLICATE:CreditReport:fico") for issue in changed.issues)
 
 

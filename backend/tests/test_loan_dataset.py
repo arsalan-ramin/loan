@@ -54,24 +54,35 @@ def comparable(document: Document) -> tuple:
 
 
 @pytest.mark.parametrize("indexed", [False, True])
-def test_query4_fico_uses_later_populated_row_and_preserves_decimal(tmp_path, indexed):
+def test_fico_uses_query1_individual_scores_and_ignores_query4(tmp_path, indexed):
+    from backend.tests.test_large_preflight import JUNCTION
     from backend.underwriting_engine import evaluate_underwriting
 
     documents = synthetic_documents(2)
-    query4 = documents[-1]
-    query4.metadata = {}
-    headers = ["Id", "nFUSE__Account__c", "nFUSE__Credit_Score__c", "nFUSE__Status__c"]
-    query4_bytes = canonical_workbook([("Sheet1", headers, [
-        ["EMPTY1", "A00000", None, "Complete"],
-        ["EMPTY2", "A00000", None, "OPEN"],
-        ["SCORED", "A00000", 94.57, "OPEN"],
-        ["LATER", "A00000", 800, "Complete"],
-        ["UNRELATED", "A00001", 740, "Complete"],
+    query1, query4 = documents[0], documents[-1]
+    report = JUNCTION + "nFUSE__Credit_Report__r."
+    q1_headers = ["Id", JUNCTION + "LLC_BI__Loan__c", JUNCTION + "LLC_BI__Account__c",
+                  JUNCTION + "LLC_BI__Borrower_Type__c", JUNCTION + "LLC_BI__Account__r.Type",
+                  report + "Id", report + "nFUSE__Credit_Score__c",
+                  "SCOC__CharacteristicKey__c", "SCOC__CharacteristicValue__c"]
+    query1_bytes = canonical_workbook([("Sheet1", q1_headers, [
+        # Business borrower scores are never FICO.
+        ["J0", "L00000", "A00000", "Borrower", "Business", "CB", 300, "numCollection", "0"],
+        ["J1", "L00000", "G00000", "Guarantor", "Individual", "CG-BLANK", None, "numCollection", "0"],
+        # Individuals connect to the business loan by loan ID, whatever the role label.
+        ["J2", "L00000", "G00000", "Personal Guarantor", "Individual", "CG", 94.57, "numCollection", "0"],
+        ["J3", "L00001", "A00001", "Borrower", "Business", "CB1", 700, "numCollection", "0"],
+    ])])
+    q4_headers = ["Id", "nFUSE__Account__c", "nFUSE__Credit_Score__c", "nFUSE__Status__c"]
+    query4_bytes = canonical_workbook([("Sheet1", q4_headers, [
+        ["Q4G", "G00000", 800, "Complete"],
+        ["Q4A", "A00000", 800, "Complete"],
     ])])
     files = []
     for doc in documents:
         path = tmp_path / doc.id
-        path.write_bytes(query4_bytes if doc is query4 else workbook_bytes(doc))
+        raw = query1_bytes if doc is query1 else query4_bytes if doc is query4 else workbook_bytes(doc)
+        path.write_bytes(raw)
         files.append((doc.name, path))
         doc.metadata = {}
     if indexed:
@@ -84,14 +95,18 @@ def test_query4_fico_uses_later_populated_row_and_preserves_decimal(tmp_path, in
         load_loan_documents(documents, tmp_path, "L00000")
     loan = evaluate_underwriting(documents, "TEST", selected_loan_id="L00000").loan_results[0]
     view = loan.normalized_data["demo_decision"]
-    assert view["normalized_facts"]["fico"] == "94.57", [
-        (item["selected_report_id"], item["score_status"]) for item in view["fico_account_audit"]]
+    audit = {item["account_id"]: item for item in view["fico_account_audit"]}
+    assert view["normalized_facts"]["fico"] == "94.57", audit
     assert view["label"] == "Decline"
-    audit = view["fico_account_audit"]
-    assert len(audit) == 1
-    assert audit[0]["selected_report_id"] == "SCORED"
-    assert audit[0]["score_status"] == "VALID_PERSONAL_FICO"
+    assert audit["A00000"]["account_type"] == "Business"
+    assert audit["A00000"]["score_status"] == "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
+    assert audit["G00000"]["account_type"] == "Individual"
+    assert audit["G00000"]["selected_report_id"] == "CG"
+    assert audit["G00000"]["score_status"] == "VALID_PERSONAL_FICO"
+    assert view["fico_aggregation"]["account_count"] == 1
+    assert loan.borrower_account_id == "A00000"
     assert any(item["value"] == "94.57" for item in view["source_evidence"])
+    assert not any(item["field"] == "nFUSE__Credit_Score__c" for item in view["source_evidence"])
 
 
 @pytest.mark.parametrize("canonical", [False, True])

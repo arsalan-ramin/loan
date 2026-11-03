@@ -12,7 +12,7 @@ from backend import commentary, llm, llm_context, loan_review, prompts
 # SHA-256 runtime snapshots: five structured prompts intentionally now include
 # their generated Pydantic JSON schemas; all reasoning/context text is unchanged.
 @pytest.mark.parametrize("name,digest", [
-    ("DEMO_SYSTEM", "2f673c72a13b417df093ed584fbf7dabc5374d7ccb3f6e612f717d1fe9ce5c3b"),
+    ("DEMO_SYSTEM", "e4742f0ae236544d631bc7f14dc2c6347ef06881708f9fdcc26ca891476774a6"),
     ("DEMO_AGGREGATE_INSTRUCTIONS", "2af57801015688a835132d258d62364f0535f0375f208e917bdcc52771aa3267"),
     ("DEMO_SELECTED_LOAN_INSTRUCTIONS", "7ab96a406f02e1e2839ac607dffdadc33be313a2e728f846458075862ef1fb7b"),
     ("DEMO_SELECTED_LOAN_CONTEXT_NOTE", "d34a861b02ad0ea91c2ac40ef878ec29eda611bcd844a9d93410cc0ed4be81e3"),

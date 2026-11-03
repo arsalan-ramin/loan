@@ -2,7 +2,8 @@
 
 Graph insertion order is source order. The first account-linked report is used
 without checking report date/completion; poisoned fields remain unknown.
-FICO lookup separately skips blank scores within each linked account. No raw
+FICO uses only Query 1 nested credit-report scores of linked Individual accounts
+(guarantors) and skips blank scores within each account. No raw
 characteristics are pivoted, no EBIT/net income is substituted for EBITDA, and
 no graph is modified. Age, EBITDA and public records are non-gating diagnostics.
 """
@@ -15,17 +16,23 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from .entity_graph import EntityGraph, EntityNode, iso_date
+from .entity_graph import EntityGraph, EntityNode, iso_date, scalar_id
 from .expanded_spec import REASONS
 from .underwriting_models import USD_100K, USD_100M, exact_decimal
 
 VERSION = "screenshot-test-demo-v1"
 SELECTION_BASIS = "FIRST_ACCOUNT_MATCH_FOR_TEST_DEMO"
-FICO_AGGREGATION_BASIS = "LINKED_BORROWER_GUARANTOR_ACCOUNT_AVERAGE"
+FICO_AGGREGATION_BASIS = "LINKED_INDIVIDUAL_ACCOUNT_AVERAGE"
 AGE_AGGREGATION_BASIS = "LINKED_BORROWER_GUARANTOR_MIN_COMPLETED_CALENDAR_AGE"
 OWNERSHIP_FALLBACK_BASIS = "ASSUMED_LT_ONE_YEAR_WHEN_NOT_PROVIDED"
 OWNERSHIP_EXPLICIT_BASIS = "EXPLICIT_NONNEGATIVE_OWNERSHIP_YEARS"
 OWNERSHIP_UNKNOWN_BASIS = "UNAVAILABLE_OR_INVALID"
+VEHICLE_FALLBACK_BASIS = "ASSUMED_FALSE_WHEN_NOT_PROVIDED"
+VEHICLE_EXPLICIT_BASIS = "EXPLICIT_VEHICLE_ONLY_FLAG"
+VEHICLE_UNKNOWN_BASIS = "INVALID_OR_CONFLICTING"
+BANKRUPTCY_FALLBACK_BASIS = "ASSUMED_ZERO_WHEN_NOT_PROVIDED"
+BANKRUPTCY_EXPLICIT_BASIS = "EXPLICIT_BANKRUPTCY_COUNT"
+BANKRUPTCY_UNKNOWN_BASIS = "INVALID_OR_CONFLICTING"
 NAICS_MATCH_BASIS = "SUPPLIED_HIGH_RISK_PREFIX_LIST_ONLY"
 NAICS_MAX_LENGTH = 128
 
@@ -141,6 +148,12 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     count_raw, count_refs = read("bankruptcy_count", report_nodes)
     count = _number(count_raw)
     count = count if count is not None and count >= 0 and count == count.to_integral_value() else None
+    bankruptcy_basis = BANKRUPTCY_EXPLICIT_BASIS if count is not None else BANKRUPTCY_UNKNOWN_BASIS
+    # TEST default: an absent or blank bankruptcy count means 0. Supplied
+    # invalid text or conflicting values stay UNKNOWN.
+    if (identity and count is None and (count_raw is None or (isinstance(count_raw, str) and not count_raw.strip()))
+            and not any("bankruptcy_count" in node.poisoned for node in report_nodes)):
+        count, bankruptcy_basis = Decimal(0), BANKRUPTCY_FALLBACK_BASIS
     discharge_raw, discharge_refs = read("bankruptcy_discharge_date", report_nodes)
     discharge = iso_date(discharge_raw)
     bankruptcy_clear = True if count == 0 else None
@@ -148,6 +161,8 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         bankruptcy_clear = as_of.year - discharge.year >= 5 and as_of >= _anniversary(discharge, 5)
     add("bankruptcy_clear", bankruptcy_clear, bankruptcy_clear,
         sorted(set(count_refs + discharge_refs + date_refs)),
+        "Bankruptcy count not provided; TEST default treats it as 0. No source evidence is invented."
+        if bankruptcy_basis == BANKRUPTCY_FALLBACK_BASIS else
         "Explicit zero count needs no discharge date. Positive count needs verified discharge and application as-of dates; less than five calendar years matches a knockout.")
     facts["bankruptcy_count"] = str(count) if count is not None else None
 
@@ -232,11 +247,51 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         return (bool(candidate.poisoned & {"account_id", field})
                 or (raw is not None and not (isinstance(raw, str) and not raw.strip())))
 
-    for account_id, roles in party_roles.items():
+    # FICO parties: the role-validated links above, plus every Individual
+    # account on an Entity Involvement row that explicitly carries this loan
+    # ID. Individuals are the guarantors, whatever Borrower_Type label they
+    # carry, so connect them to the business loan by loan ID alone.
+    fico_roles = {account_id: set(roles) for account_id, roles in party_roles.items()}
+    fico_party_refs = {account_id: set(refs) for account_id, refs in party_refs.items()}
+    for involvement in graph.related("EntityInvolvement", "loan_id", loan.id):
+        if involvement.poisoned & {"loan_id", "account_id"}:
+            continue
+        account_id = scalar_id(involvement.fields.get("account_id"))
+        person = graph.table("Account").get(account_id) if account_id else None
+        if person is None or account_id in fico_roles or "account_type" in person.poisoned:
+            continue
+        raw_type = person.fields.get("account_type")
+        if str(raw_type or "").strip().casefold() != "individual":
+            continue
+        fico_roles[account_id] = {"guarantor"}
+        fico_party_refs[account_id] = {
+            ref for field in ("loan_id", "account_id", "role")
+            for ref in involvement.field_refs.get(field, [])}
+
+    for account_id, roles in fico_roles.items():
+        refs = set(fico_party_refs[account_id])
+        person = graph.table("Account").get(account_id)
+        account_type = None
+        if person is not None:
+            fico_nodes.append(person)
+            raw_type, type_refs = read("account_type", [person])
+            refs.update(type_refs)
+            account_type = str(raw_type).strip() if raw_type is not None and str(raw_type).strip() else None
+        if person is None or account_type is None or account_type.casefold() != "individual":
+            # FICO applies only to Individual accounts (guarantors). Business
+            # or untyped accounts are excluded from both sum and count.
+            conflicting = person is not None and "account_type" in person.poisoned
+            fico_refs.update(refs)
+            fico_audit.append({"account_id": account_id, "party_roles": sorted(roles),
+                               "account_type": account_type, "selected_report_id": None,
+                               "report_status": "NOT_EVALUATED",
+                               "score_status": ("CONFLICTING_ACCOUNT_TYPE" if conflicting
+                                                else "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"),
+                               "score": None, "evidence_refs": sorted(refs)})
+            continue
         candidates = graph.related("CreditReport", "account_id", account_id)
         selected = next((candidate for candidate in candidates if has_fico_value(candidate)),
                         candidates[0] if candidates else None)
-        refs = set(party_refs[account_id])
         score = None
         status = "NO_ACCOUNT_MATCH"
         if selected is not None:
@@ -269,18 +324,20 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                     status = "MISSING_OR_INVALID_PERSONAL_FICO"
         fico_refs.update(refs)
         fico_audit.append({"account_id": account_id, "party_roles": sorted(roles),
+                           "account_type": account_type,
                            "selected_report_id": selected.id if selected else None,
                            "report_status": "FIRST_NONBLANK_FICO_ACCOUNT_MATCH" if selected else "NO_ACCOUNT_MATCH",
                            "score_status": status, "score": str(score) if score is not None else None,
                            "evidence_refs": sorted(refs)})
     invalid_scores = any(item["score_status"] not in {
-        "VALID_PERSONAL_FICO", "MISSING_PERSONAL_FICO", "NO_ACCOUNT_MATCH"
+        "VALID_PERSONAL_FICO", "MISSING_PERSONAL_FICO", "NO_ACCOUNT_MATCH", "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
     } for item in fico_audit)
     fico = (sum(scores, Decimal(0)) / Decimal(len(scores))
             if scores and not invalid_scores else None)
     add("fico", fico, fico >= 650 if fico is not None else None, sorted(fico_refs),
-        "Average available personal FICO across explicitly loan-linked borrower and guarantor accounts, once per account; "
-        "below 650 matches a knockout. Use the first nonblank score per account in source order. "
+        "Average available personal FICO across Individual accounts (guarantors) connected to the loan by loan ID, once per account; "
+        "Business or untyped accounts are excluded. FICO comes only from the Query 1 nested Entity Involvement "
+        "credit report, never Query 4. Below 650 matches a knockout. Use the first nonblank score per account in source order. "
         "Supplied numeric scores from 0 to 850, including decimals, are used without rescaling. "
         "Missing scores are excluded from both sum and count. No available scores, or any conflicting, invalid "
         "or untyped supplied party score, makes the average UNKNOWN.")
@@ -319,6 +376,12 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     vehicle = vehicle_raw if type(vehicle_raw) is bool else (
         {"true": True, "false": False, "yes": True, "no": False, "1": True, "0": False,
          "y": True, "n": False}.get(str(vehicle_raw).strip().casefold()))
+    vehicle_basis = VEHICLE_EXPLICIT_BASIS if vehicle is not None else VEHICLE_UNKNOWN_BASIS
+    # TEST default: an absent or blank vehicle-only flag means False. Supplied
+    # invalid text or conflicting values stay UNKNOWN.
+    if (vehicle is None and (vehicle_raw is None or (isinstance(vehicle_raw, str) and not vehicle_raw.strip()))
+            and not any("vehicle_only" in node.poisoned for node in profile_nodes)):
+        vehicle, vehicle_basis = False, VEHICLE_FALLBACK_BASIS
     facts.update(ownership_years=str(ownership) if ownership is not None else None,
                  requested_amount_usd=str(amount) if amount is not None else None,
                  naics=naics, high_risk_naics=high_risk, vehicle_only=vehicle)
@@ -395,6 +458,9 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                       "Current-owner years from loan, extension or borrower profile; explicit zero means less "
                       "than one year for this TEST demo. Invalid/conflicting supplied values stay UNKNOWN; "
                       "not DOB or corporation formation age.")
+        elif key == "vehicle_only" and vehicle_basis == VEHICLE_FALLBACK_BASIS:
+            detail = ("Vehicle-only flag not provided; TEST default treats it as false. "
+                      "No source evidence is invented.")
         elif key == "naics":
             detail = ("Supplied category compared only with configured high-risk prefixes using startswith; "
                       "no valid-code catalogue or syntax gate. Trimmed canonical text is capped at 128 "
@@ -430,9 +496,12 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "criteria": criteria, "normalized_facts": facts,
         "naics_match_basis": NAICS_MATCH_BASIS if high_risk is not None else None,
         "ownership_years_basis": ownership_basis,
+        "vehicle_only_basis": vehicle_basis,
+        "bankruptcy_count_basis": bankruptcy_basis,
         "age_aggregation": {"basis": AGE_AGGREGATION_BASIS, "account_count": len(party_roles)},
         "age_account_audit": age_audit,
-        "fico_aggregation": {"basis": FICO_AGGREGATION_BASIS, "account_count": len(party_roles)},
+        "fico_aggregation": {"basis": FICO_AGGREGATION_BASIS, "account_count": sum(
+            item["score_status"] != "EXCLUDED_NON_INDIVIDUAL_ACCOUNT" for item in fico_audit)},
         "fico_account_audit": fico_audit,
         "matched_reasons": _matched_reasons(criteria),
         # Retain DOB provenance, not another copy of sensitive source values.
@@ -477,6 +546,16 @@ def bounded_demo_context(data: Any, *, mode: str, allowed_refs: set[str]) -> dic
             or (ownership_basis == OWNERSHIP_EXPLICIT_BASIS and "ownership_years" in normalized)
             or (ownership_basis == OWNERSHIP_UNKNOWN_BASIS and "ownership_years" not in normalized)):
         ownership_context["ownership_years_basis"] = ownership_basis
+    vehicle_basis = data.get("vehicle_only_basis")
+    if ((vehicle_basis == VEHICLE_FALLBACK_BASIS and facts.get("vehicle_only") is False)
+            or (vehicle_basis == VEHICLE_EXPLICIT_BASIS and type(facts.get("vehicle_only")) is bool)
+            or (vehicle_basis == VEHICLE_UNKNOWN_BASIS and facts.get("vehicle_only") is None)):
+        ownership_context["vehicle_only_basis"] = vehicle_basis
+    bankruptcy_basis = data.get("bankruptcy_count_basis")
+    if ((bankruptcy_basis == BANKRUPTCY_FALLBACK_BASIS and facts.get("bankruptcy_clear") is True)
+            or (bankruptcy_basis == BANKRUPTCY_EXPLICIT_BASIS and type(facts.get("bankruptcy_clear")) is bool)
+            or (bankruptcy_basis == BANKRUPTCY_UNKNOWN_BASIS and facts.get("bankruptcy_clear") is None)):
+        ownership_context["bankruptcy_count_basis"] = bankruptcy_basis
     if type(facts.get("age_years")) is int and 0 <= facts["age_years"] <= 150:
         normalized["age_years"] = facts["age_years"]
     for key in ("bankruptcy_clear", "vehicle_only"):

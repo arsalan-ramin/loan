@@ -229,7 +229,7 @@ def test_large_three_workbook_loan_first_loading_preserves_sources(tmp_path, mon
         assert "Unsupported_Source_Field__c" in scoped["unmapped_attributes"]
         assert "Credit report date" in scoped["unavailable_inputs"]
         assert "UNMAPPED_RELATION:Indicator:analysis_id" in scoped["mapping_warnings"]
-        assert any(issue.startswith("CONFLICTING_ALIASES:CreditReport:fico") for issue in scoped["priority_issues"])
+        assert not any(issue.startswith("CONFLICTING_ALIASES:CreditReport:fico") for issue in scoped["priority_issues"])
         assert graph_builder.call_count == 1
         assert all(len(doc.metadata["records"]) == 1 for doc in graph_builder.call_args.args[0])
         found = client.get(f"/api/sessions/{sid}/loans", params={"q": "L16000"}).json()

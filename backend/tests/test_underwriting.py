@@ -402,8 +402,8 @@ def test_flattened_aliases_and_direct_id_not_guessed():
     fields = {"Loan_Request_Id": "L1", "LLC_BI__Account__c": "A1", "borrower_role": "Borrower",
               "nFUSE__Credit_Report__r.Id": "R1", "report_status": "completed", "report_date": "2026-10-19",
               "SCOC__LCResponse__r.Id": "S1", "SCOC__LCResponse__r.SCOC__SBSS7Score__c": "190",
-              "nFUSE__Credit_Score__c": "650", "report_category": "personal", "report_role": "borrower",
-              "as_of_date": "2026-10-20", "requested_amount": "100000"}
+              "nFUSE__Credit_Report__r.nFUSE__Credit_Score__c": "650", "report_category": "personal",
+              "report_role": "borrower", "as_of_date": "2026-10-20", "requested_amount": "100000"}
     doc = document([("Data", fields)], "MTB_Query_1_Sample_Data.xlsx")
     result = evaluate_underwriting([doc]).loan_results[0]
     assert result.borrower_account_id == "A1"
@@ -736,7 +736,7 @@ def test_selected_account_does_not_merge_different_zero_padded_ids():
     assert any("leading zeros" in warning for warning in graph.mapping_warnings)
 
 
-def test_proposal_ready_exact_aliases_link_with_confirmed_fico_field():
+def test_proposal_ready_exact_aliases_link_and_ignore_query4_fico():
     base = {"loan_id": "L1", "account_id": "A1", "LLC_BI__Account__c": "A1",
             "entity_involvement_id": "J1", "lcresponse_id": "S1", "lcrentity_id": "E1",
             "analysis_id": "D1", "LLC_BI__Borrower_Type__c": "Borrower"}
@@ -761,7 +761,8 @@ def test_proposal_ready_exact_aliases_link_with_confirmed_fico_field():
     assert graph.table("LCREntity")["E1"].fields["response_id"] == "S1"
     assert "ebitda" not in graph.table("Account")["A1"].fields
     assert "as_of_date" not in graph.table("Loan")["L1"].fields
-    assert graph.table("CreditReport")["R1"].fields["personal_fico"] == 790
+    report = graph.table("CreditReport")["R1"]
+    assert "personal_fico" not in report.fields and "fico" not in report.fields
 
 
 def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields():
@@ -841,8 +842,9 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
     assert graph.table("CreditReport")["R1"].fields["report_role"] == "Borrower"
     assert graph.table("CreditReport")["R1"].fields["account_id"] == "A1"
     assert graph.table("CreditReport")["R1"].fields["report_category"] == "Personal"
-    assert graph.table("CreditReport")["R1"].fields["fico"] is None
-    assert any(issue.startswith("CONFLICTING_DUPLICATE:CreditReport:fico") for issue in graph.issues)
+    # Only Query 1's nested score is FICO; Query 4's 740 is not mapped.
+    assert graph.table("CreditReport")["R1"].fields["fico"] == "620"
+    assert not any(issue.startswith("CONFLICTING_DUPLICATE:CreditReport:fico") for issue in graph.issues)
     assert not any(issue.startswith(("MISSING_OR_INVALID_ID", "ORPHAN_RELATION")) for issue in graph.issues)
     assert "UNMAPPED_RELATION:Indicator:analysis_id" in graph.mapping_warnings
     assert "UNMAPPED_RELATION:Characteristic:analysis_id" in graph.mapping_warnings
@@ -865,27 +867,23 @@ def test_validated_revision_soql_maps_query_root_ids_and_explicit_nested_fields(
     assert recommendation.normalized_data["selected_report_id"] is None
     assert recommendation.normalized_data["fico"] is None
     assert q1doc.metadata["records"][0]["values"]["CreatedDate"] == "2026-10-20T12:00:00Z"
-    assert any(item.field == "nFUSE__Credit_Score__c" for item in recommendation.source_evidence)
+    assert any(item.field == q1_report + "nFUSE__Credit_Score__c" for item in recommendation.source_evidence)
+    assert not any(item.field == "nFUSE__Credit_Score__c" for item in recommendation.source_evidence)
     reconciliation = next(step for step in recommendation.normalized_data["decision_flow"]
                           if step["stage"] == "Query 1 / Query 2 / Query 4 source reconciliation")
-    assert reconciliation["status"] == "CONFLICT"
-    assert "neither score is selected" in reconciliation["summary"]
-    fico_rule = rule(recommendation, "FICO_BAND_DIAGNOSTIC")
-    assert fico_rule.status == "UNKNOWN"
-    assert "same CreditReport ID has conflicting Query 1 nested and Query 4 root scores" in fico_rule.detail
-    assert len(fico_rule.evidence_refs) == 2
-    assert not any(item.endswith("_POLICY") for item in recommendation.missing_inputs)
+    assert reconciliation["status"] == "UNKNOWN"
+    assert "explicit ISO as-of date" in reconciliation["summary"]
     assert rule(recommendation, "FICO_BAND_DIAGNOSTIC").status == "UNKNOWN"
-    assert rule(recommendation, "FICO_BAND_DIAGNOSTIC").evidence_refs
+    assert not any(item.endswith("_POLICY") for item in recommendation.missing_inputs)
     assert recommendation.recommendation_path == "SIMULATED_REVIEW"
     assert "Credit report date" in batch.unavailable_inputs
 
-    # The same CreditReport Id in Query 1's nested relationship and Query 4's
-    # root export must agree. Conflicting source scores stay poisoned/held.
+    # Query 4's root score is never FICO, so changing it cannot conflict with
+    # or replace Query 1's nested score for the same CreditReport Id.
     q4doc.metadata["records"][0]["values"]["nFUSE__Credit_Score__c"] = "705"
-    conflicting = build_entity_graph([q1doc, q2doc, q4doc], load_underwriting_config())
-    assert conflicting.table("CreditReport")["R1"].fields["fico"] is None
-    assert any(issue.startswith("CONFLICTING_DUPLICATE:CreditReport:fico") for issue in conflicting.issues)
+    changed = build_entity_graph([q1doc, q2doc, q4doc], load_underwriting_config())
+    assert changed.table("CreditReport")["R1"].fields["fico"] == "620"
+    assert not any(issue.startswith("CONFLICTING_DUPLICATE:CreditReport:fico") for issue in changed.issues)
 
 
 def test_query1_nested_credit_report_uses_same_row_entity_involvement_account_fk():

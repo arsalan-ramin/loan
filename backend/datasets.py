@@ -89,6 +89,7 @@ SOQL_FIELD_SUFFIXES = {
     # Approval/creation timestamps are retained as raw source evidence; they
     # are not substituted for an explicit policy as-of or account-opened date.
     ("Account", "name"): ("llcbiaccountrname",),
+    ("Account", "account_type"): ("llcbiaccountrtype",),
     ("Account", "dob"): ("llcbiaccountrbirthdatec",),
     ("Account", "ownership_years"): ("llcbiaccountrnumberofyearsascurrentownerc",),
     ("Account", "naics"): ("llcbiaccountrnaicscodeformulac",),
@@ -102,8 +103,10 @@ SOQL_FIELD_SUFFIXES = {
     ("CreditReport", "report_date"): ("nfusecreditreportdatec", "nfusereportdatec"),
     ("CreditReport", "account_id"): ("nfusecreditreportrnfuseaccountc", "nfuseaccountc"),
     ("CreditReport", "status"): ("nfusecreditreportrnfusestatusc", "nfusestatusc"),
-    ("CreditReport", "fico"): ("nfusecreditreportrnfusecreditscorec", "nfusecreditscorec"),
-    ("CreditReport", "personal_fico"): ("nfusecreditreportrnfusecreditscorec", "nfusecreditscorec"),
+    # FICO is sourced only from Query 1's nested Entity Involvement credit
+    # report. Query 4's root nFUSE__Credit_Score__c is intentionally unmapped.
+    ("CreditReport", "fico"): ("nfusecreditreportrnfusecreditscorec",),
+    ("CreditReport", "personal_fico"): ("nfusecreditreportrnfusecreditscorec",),
     ("CreditReport", "report_category"): ("nfusecreditreportrnfusereportcategoryc", "nfusereportcategoryc"),
     ("CreditReport", "report_role"): ("llcbiborrowertypec",),
     ("CreditReport", "judgment_count"): ("nfusecreditreportrnfusenumberofjudgementsc", "nfusenumberofjudgementsc"),

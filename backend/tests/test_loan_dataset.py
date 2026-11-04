@@ -66,11 +66,11 @@ def test_fico_uses_query1_first_then_query4_per_individual(tmp_path, indexed):
                   report + "Id", report + "nFUSE__Credit_Score__c",
                   "SCOC__CharacteristicKey__c", "SCOC__CharacteristicValue__c"]
     query1_bytes = canonical_workbook([("Sheet1", q1_headers, [
-        # Business borrower scores are never FICO.
+        # The business borrower's score counts too (300-900).
         ["J0", "L00000", "A00000", "Borrower", "Business", "CB", 300, "numCollection", "0"],
         ["J1", "L00000", "G00000", "Guarantor", "Individual", "CG-BLANK", None, "numCollection", "0"],
         # Individuals connect to the business loan by loan ID, whatever the role label.
-        ["J2", "L00000", "G00000", "Personal Guarantor", "Individual", "CG", 94.57, "numCollection", "0"],
+        ["J2", "L00000", "G00000", "Personal Guarantor", "Individual", "CG", 594.57, "numCollection", "0"],
         ["J3", "L00001", "A00001", "Borrower", "Business", "CB1", 700, "numCollection", "0"],
         # No Query 1 score for this guarantor, so its Query 4 score is the fallback.
         ["J4", "L00000", "G00001", "Guarantor", "Individual", "CG1", None, "numCollection", "0"],
@@ -82,7 +82,7 @@ def test_fico_uses_query1_first_then_query4_per_individual(tmp_path, indexed):
         # Query 1 already scores G00000, so this Query 4 value is not used.
         ["Q4G", "G00000", 800, "Complete"],
         ["Q4G1", "G00001", 700, "Complete"],
-        ["Q4G2", "G00002", 105.43, "Complete"],
+        ["Q4G2", "G00002", 605.43, "Complete"],
         ["Q4A", "A00000", 800, "Complete"],
     ])])
     files = []
@@ -103,10 +103,10 @@ def test_fico_uses_query1_first_then_query4_per_individual(tmp_path, indexed):
     loan = evaluate_underwriting(documents, "TEST", selected_loan_id="L00000").loan_results[0]
     view = loan.normalized_data["demo_decision"]
     audit = {item["account_id"]: item for item in view["fico_account_audit"]}
-    assert view["normalized_facts"]["fico"] == "300.00", audit
+    assert view["normalized_facts"]["fico"] == "550.00", audit
     assert view["label"] == "Decline"
     assert audit["A00000"]["account_type"] == "Business"
-    assert audit["A00000"]["score_status"] == "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
+    assert (audit["A00000"]["score_status"], audit["A00000"]["score"]) == ("VALID_PERSONAL_FICO", "300")
     assert audit["G00000"]["account_type"] == "Individual"
     assert audit["G00000"]["selected_report_id"] == "CG"
     assert audit["G00000"]["score_status"] == "VALID_PERSONAL_FICO"
@@ -117,12 +117,12 @@ def test_fico_uses_query1_first_then_query4_per_individual(tmp_path, indexed):
     assert audit["G00001"]["score"] == "700"
     assert audit["G00002"]["account_type"] is None
     assert audit["G00002"]["score_status"] == "VALID_QUERY4_FICO"
-    assert audit["G00002"]["score"] == "105.43"
-    assert view["fico_aggregation"]["account_count"] == 3
+    assert audit["G00002"]["score"] == "605.43"
+    assert view["fico_aggregation"]["account_count"] == 4
     assert loan.borrower_account_id == "A00000"
-    assert any(item["value"] == "94.57" for item in view["source_evidence"])
+    assert any(item["value"] == "594.57" for item in view["source_evidence"])
     q4_values = {item["value"] for item in view["source_evidence"] if item["field"] == "nFUSE__Credit_Score__c"}
-    assert q4_values == {"700", "105.43"}, [i for i in view["source_evidence"] if i["field"] == "nFUSE__Credit_Score__c"]
+    assert q4_values == {"700", "605.43"}, [i for i in view["source_evidence"] if i["field"] == "nFUSE__Credit_Score__c"]
 
 
 @pytest.mark.parametrize("g3_type,g3_report,g3_scores,expected", [
@@ -170,7 +170,7 @@ def test_client_loan_third_account_fico_from_query1_or_query4(tmp_path, g3_type,
         "demo_decision"]
     audit = {item["account_id"]: item for item in view["fico_account_audit"]}
     assert set(audit) == {business, person, third}
-    assert audit[business]["score_status"] == "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
+    assert audit[business]["score_status"] == "NO_ACCOUNT_MATCH"
     assert (audit[third]["score_status"], audit[third]["score"]) == expected
     assert view["normalized_facts"]["fico"] == expected[1]
 

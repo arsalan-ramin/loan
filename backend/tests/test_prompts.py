@@ -9,10 +9,10 @@ import pytest
 from backend import commentary, llm, llm_context, loan_review, prompts
 
 
-# SHA-256 runtime snapshots: five structured prompts intentionally now include
-# their generated Pydantic JSON schemas; all reasoning/context text is unchanged.
+# SHA-256 runtime snapshots include generated Pydantic schemas and intentional
+# TEST guidance changes; unrelated prompt text remains unchanged.
 @pytest.mark.parametrize("name,digest", [
-    ("DEMO_SYSTEM", "f122e00078bff7260d127066d276ad3dc68832d7fc0c69cab62bff0a0510f84b"),
+    ("DEMO_SYSTEM", "13d7bc25b45a3f020feb54cfccf2909c40583876bdd5253648890ed9ea77d1e2"),
     ("DEMO_AGGREGATE_INSTRUCTIONS", "2af57801015688a835132d258d62364f0535f0375f208e917bdcc52771aa3267"),
     ("DEMO_SELECTED_LOAN_INSTRUCTIONS", "7ab96a406f02e1e2839ac607dffdadc33be313a2e728f846458075862ef1fb7b"),
     ("DEMO_SELECTED_LOAN_CONTEXT_NOTE", "d34a861b02ad0ea91c2ac40ef878ec29eda611bcd844a9d93410cc0ed4be81e3"),
@@ -66,6 +66,21 @@ def test_demo_rationale_covers_only_the_decision_flow():
     assert "For Refer only, add\nWhat is unresolved:" in system
     for instructions in (prompts.DEMO_SELECTED_LOAN_INSTRUCTIONS, prompts.DEMO_AGGREGATE_INSTRUCTIONS):
         assert "that caused a Refer" in instructions
+
+
+def test_demo_prompt_matches_score_defaults_and_actual_blockers():
+    system = prompts.DEMO_SYSTEM
+    assert "business and guarantor accounts" in system
+    assert "300 to 900" in system
+    assert "Business accounts are excluded" not in system
+    assert "Age below 18" not in system
+    assert "bankruptcy count defaults to 0" in system
+    assert "vehicle_only defaults to false" in system
+    assert "ownership_years defaults to 0" in system
+    assert "age_years, ebitda_usd and public_record_code are non-gating diagnostics" in system
+    assert "missing_inputs and conflicts are the only supplied unresolved blockers" in system
+    assert "explicit_unique_borrower_account_relationship" in system
+    assert "NAICS is not required for SBSS 160-199" in system
 
 
 def test_rationale_separates_observed_risk_from_blockers_and_stale_snapshots():

@@ -114,17 +114,16 @@ def test_duplicate_associations_count_each_account_once_and_exclude_unknown_unre
         ("Account", {"Id": "UNRELATED"}),
         ("CreditReport", {"Id": "UNRELATED-R", "account_id": "UNRELATED", "personal_fico": "300"}),
     ])
-    # Non-Individual accounts never supply FICO, whatever their role label.
+    # Business accounts linked by loan ID supply FICO too, whatever their role label.
     linked_party(source, "OWNER", "300", role="Owner", account_type="Business")
     linked_party(source, "UNTYPED", "300", role=None, account_type="Business")
     view = demo(source)
-    assert view["normalized_facts"]["fico"] == "700"
-    assert view["fico_aggregation"]["account_count"] == 2
-    # Linked Business accounts are listed as excluded, never scored.
+    assert view["normalized_facts"]["fico"] == "500"
+    assert view["fico_aggregation"]["account_count"] == 4
     audit = {item["account_id"]: item["score_status"] for item in view["fico_account_audit"]}
     assert audit == {"A1": "VALID_PERSONAL_FICO", "G1": "VALID_PERSONAL_FICO",
-                     "OWNER": "EXCLUDED_NON_INDIVIDUAL_ACCOUNT", "UNTYPED": "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"}, audit
-    assert not {"UNRELATED-R", "ROWNER", "RUNTYPED"} & {item["record_id"] for item in view["source_evidence"]}
+                     "OWNER": "VALID_PERSONAL_FICO", "UNTYPED": "VALID_PERSONAL_FICO"}, audit
+    assert "UNRELATED-R" not in {item["record_id"] for item in view["source_evidence"]}
 
 
 @pytest.mark.parametrize("score", [None, "", "   "])
@@ -155,38 +154,50 @@ def test_all_missing_personal_scores_keep_average_unknown():
 
 
 @pytest.mark.parametrize("account_type", ["Business", None, " "])
-def test_fico_averages_only_individual_accounts(account_type):
+def test_fico_averages_business_and_individual_accounts(account_type):
     source = rows()
     if account_type is None:
         source[0][1].pop("account_type")
     else:
         source[0][1]["account_type"] = account_type
     linked_party(source, "G1", "640")
-    linked_party(source, "G2", "300", account_type="Business")
+    linked_party(source, "G2", "700", account_type="Business")
     view = demo(source)
-    assert view["normalized_facts"]["fico"] == "640"
-    assert view["fico_aggregation"]["account_count"] == 1
+    assert view["normalized_facts"]["fico"] == "700"
+    assert view["fico_aggregation"]["account_count"] == 3
     audit = {item["account_id"]: item for item in view["fico_account_audit"]}
-    assert audit["A1"]["score_status"] == audit["G2"]["score_status"] == "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
-    assert audit["A1"]["selected_report_id"] is None and audit["A1"]["score"] is None
+    assert audit["A1"]["score"] == "760" and audit["G2"]["score"] == "700"
+    assert audit["A1"]["score_status"] == audit["G2"]["score_status"] == "VALID_PERSONAL_FICO"
     assert audit["G1"]["account_type"] == "Individual" and audit["G1"]["score"] == "640"
 
 
-def test_fico_individual_type_is_case_insensitive_and_no_individual_keeps_unknown():
+@pytest.mark.parametrize("score", ["0", "299", "900.01", "9001"])
+def test_business_score_outside_300_to_900_is_left_out(score):
+    source = rows()
+    source[0][1]["account_type"] = "Business"
+    source[2][1]["personal_fico"] = score
+    linked_party(source, "G1", "640")
+    view = demo(source)
+    assert view["normalized_facts"]["fico"] == "640"
+    audit = {item["account_id"]: item for item in view["fico_account_audit"]}
+    assert audit["A1"]["score_status"] == "MISSING_OR_INVALID_PERSONAL_FICO" and audit["A1"]["score"] is None
+
+
+def test_fico_uses_business_borrower_score_alone_when_no_individual():
     source = rows()
     source[0][1]["account_type"] = "INDIVIDUAL"
     assert demo(source)["normalized_facts"]["fico"] == "760"
     source[0][1]["account_type"] = "Business"
     view = demo(source)
-    assert view["normalized_facts"]["fico"] is None
-    assert criterion(view, "fico")["status"] == "UNKNOWN"
-    assert view["fico_aggregation"]["account_count"] == 0
+    assert view["normalized_facts"]["fico"] == "760"
+    assert criterion(view, "fico")["status"] == "PASS"
+    assert view["fico_aggregation"]["account_count"] == 1
 
 
 SOQL_JUNCTION = "SCOC__LCRDataSourceAnalysis__r.SCOC__LCREntity__r.SCOC__Entity_Involvement__r."
 
 
-def soql_business_with_individuals(individuals, q4_scores=None):
+def soql_business_with_individuals(individuals, q4_scores=None, business_score=None):
     """Query 1/2 SOQL rows: one Business borrower plus Individual rows by loan ID."""
     report = SOQL_JUNCTION + "nFUSE__Credit_Report__r."
 
@@ -198,7 +209,7 @@ def soql_business_with_individuals(individuals, q4_scores=None):
                 report + "Id": "R" + account_id, report + "nFUSE__Credit_Score__c": score,
                 "SCOC__CharacteristicKey__c": "uninterpreted", "SCOC__CharacteristicValue__c": "raw"}
 
-    q1_rows = [q1_row("J0", "L1", "B1", "Borrower", "Business", "800")]
+    q1_rows = [q1_row("J0", "L1", "B1", "Borrower", "Business", business_score)]
     q1_rows += [q1_row(f"J{index}", loan_id, account_id, role, "Individual", score)
                 for index, (loan_id, account_id, role, score) in enumerate(individuals, 1)]
     q1 = document([("Data", row) for row in q1_rows], "MTB_Query_1_SOQL_Only.xlsx", "q1")
@@ -231,7 +242,8 @@ def test_query4_fico_is_fallback_only_when_query1_has_no_score():
     assert (audit["G2"]["score"], audit["G2"]["score_source"]) == ("640", "QUERY_4")
     assert audit["G2"]["score_status"] == "VALID_QUERY4_FICO"
     assert audit["G2"]["selected_report_id"] == "Q4G2"
-    assert audit["B1"]["score_status"] == "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
+    # The business's Query 4 score of 100 is outside 300-900, so it is left out.
+    assert audit["B1"]["score_status"] == "MISSING_OR_INVALID_PERSONAL_FICO"
     assert view["normalized_facts"]["fico"] == "670"
     assert criterion(view, "fico")["status"] == "PASS"
     refs = set(criterion(view, "fico")["evidence_refs"])
@@ -445,17 +457,17 @@ def test_multiple_sbss_values_use_borrower_row_then_lowest(parties, sbss, basis,
 
 @pytest.mark.parametrize("role", ["Guarantor", "Personal Guarantor", "Co-Borrower", "Owner", None])
 def test_individual_guarantors_connect_to_business_loan_by_loan_id(role):
-    view = soql_business_with_individuals([("L1", "G1", role, "10.32")])
-    assert view["normalized_facts"]["fico"] == "10.32"
+    view = soql_business_with_individuals([("L1", "G1", role, "610.32")])
+    assert view["normalized_facts"]["fico"] == "610.32"
     assert criterion(view, "fico")["status"] == "FAIL"
     assert view["label"] == "Decline"
     audit = {item["account_id"]: item for item in view["fico_account_audit"]}
-    assert audit["B1"]["score_status"] == "EXCLUDED_NON_INDIVIDUAL_ACCOUNT"
+    assert audit["B1"]["score_status"] == "MISSING_PERSONAL_FICO"
     assert audit["G1"]["party_roles"] == ["guarantor"]
     assert audit["G1"]["account_type"] == "Individual"
     assert audit["G1"]["selected_report_id"] == "RG1"
     assert audit["G1"]["score_status"] == "VALID_PERSONAL_FICO"
-    assert view["fico_aggregation"]["account_count"] == 1
+    assert view["fico_aggregation"]["account_count"] == 2
     refs = set(criterion(view, "fico")["evidence_refs"])
     fields = {item["field"] for item in view["source_evidence"] if item["id"] in refs}
     assert SOQL_JUNCTION + "LLC_BI__Account__r.Type" in fields
@@ -472,9 +484,9 @@ def test_multiple_individual_guarantors_average_and_other_loans_are_ignored():
     assert view["normalized_facts"]["fico"] == "670"
     assert criterion(view, "fico")["status"] == "PASS"
     audit = {item["account_id"]: item["score_status"] for item in view["fico_account_audit"]}
-    assert audit == {"B1": "EXCLUDED_NON_INDIVIDUAL_ACCOUNT", "G1": "VALID_PERSONAL_FICO",
+    assert audit == {"B1": "MISSING_PERSONAL_FICO", "G1": "VALID_PERSONAL_FICO",
                      "G2": "VALID_PERSONAL_FICO", "G3": "MISSING_PERSONAL_FICO"}
-    assert view["fico_aggregation"]["account_count"] == 3
+    assert view["fico_aggregation"]["account_count"] == 4
 
 
 def test_individual_with_unrecognized_role_still_links_by_loan_id_in_canonical_rows():
@@ -482,8 +494,7 @@ def test_individual_with_unrecognized_role_still_links_by_loan_id_in_canonical_r
     source[0][1]["account_type"] = "Business"
     linked_party(source, "G1", "640", role="Personal Guarantor")
     view = demo(source)
-    assert view["normalized_facts"]["fico"] == "640"
-    assert view["label"] == "Decline"
+    assert view["normalized_facts"]["fico"] == "700"
     assert {item["account_id"]: item["party_roles"] for item in view["fico_account_audit"]} == {
         "A1": ["borrower"], "G1": ["guarantor"]}
 
@@ -493,19 +504,19 @@ def test_fico_skips_blank_reports_and_keeps_first_populated_report_per_account()
     source[2][1].pop("personal_fico")
     source.extend([
         ("CreditReport", {"Id": "BLANK", "account_id": "A1", "personal_fico": " "}),
-        ("CreditReport", {"Id": "SCORED", "account_id": "A1", "personal_fico": "94.57"}),
+        ("CreditReport", {"Id": "SCORED", "account_id": "A1", "personal_fico": "594.57"}),
         ("CreditReport", {"Id": "LATER", "account_id": "A1", "personal_fico": "800"}),
     ])
     view = demo(source)
-    assert view["normalized_facts"]["fico"] == "94.57"
+    assert view["normalized_facts"]["fico"] == "594.57"
     assert view["fico_account_audit"][0]["selected_report_id"] == "SCORED"
     assert criterion(view, "fico")["status"] == "FAIL"
     assert view["label"] == "Decline"
     bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
-    assert bounded["normalized_facts"]["fico"] == "94.57"
+    assert bounded["normalized_facts"]["fico"] == "594.57"
 
 
-@pytest.mark.parametrize("score", ["0", "94.57", "299", "650.5"])
+@pytest.mark.parametrize("score", ["300", "594.57", "649", "650.5", "900"])
 def test_supplied_numeric_fico_scores_use_existing_threshold_without_conversion(score):
     source = rows()
     source[2][1]["personal_fico"] = score
@@ -514,7 +525,7 @@ def test_supplied_numeric_fico_scores_use_existing_threshold_without_conversion(
     assert criterion(view, "fico")["status"] == ("FAIL" if Decimal(score) < 650 else "PASS")
 
 
-@pytest.mark.parametrize("score", ["bad", "-1", "851", True, "NaN", "Infinity"])
+@pytest.mark.parametrize("score", ["bad", "-1", "299", "901", True, "NaN", "Infinity"])
 def test_invalid_linked_personal_score_is_left_out_of_average_with_refs(score):
     view = demo(linked_party(rows(), score=score))
     assert view["normalized_facts"]["fico"] == "760"
@@ -1555,6 +1566,42 @@ def test_vehicle_flag_defaults_false_when_not_provided_and_no_outside_tree_gates
     bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
     assert bounded["normalized_facts"]["vehicle_only"] is False
     assert bounded["vehicle_only_basis"] == "ASSUMED_FALSE_WHEN_NOT_PROVIDED"
+
+
+@pytest.mark.parametrize("sbss,fico,amount", [
+    ("174", "748", "75000"),
+    ("199", "733", "75000"),
+    ("192", "717", "75000"),
+    ("195", "788", "75000"),
+])
+@pytest.mark.parametrize("has_borrower", [True, False])
+def test_client_missing_diagnostics_and_defaults_do_not_create_blockers(sbss, fico, amount, has_borrower):
+    source = rows()
+    for field in ("dob", "ebitda", "naics", "ownership_years"):
+        source[0][1].pop(field)
+    source[1][1].pop("vehicle_only")
+    source[1][1]["requested_amount"] = amount
+    source[2][1].pop("bankruptcy_count")
+    source[2][1].pop("max_delinquency_public_records")
+    source[2][1]["personal_fico"] = fico
+    source[3][1]["sbss"] = sbss
+    if not has_borrower:
+        source[1][1].pop("borrower_account_id")
+        source[2][1].pop("personal_fico")
+        linked_party(source, score=fico)
+        next(values for table, values in source if table == "Account" and values["Id"] == "G1").pop("dob")
+    view = demo(source)
+    assert view["normalized_facts"]["ownership_years"] == "0"
+    assert view["normalized_facts"]["vehicle_only"] is False
+    assert view["normalized_facts"]["bankruptcy_count"] == "0"
+    assert all(criterion(view, key)["status"] == "PASS" for key in ("bankruptcy_clear", "fico", "sbss"))
+    for key in ("age_years", "ebitda_usd", "public_record_code", "naics"):
+        assert criterion(view, key)["status"] == "UNKNOWN"
+        assert key not in view["missing_inputs"]
+    assert view["missing_inputs"] == ([] if has_borrower else ["explicit_unique_borrower_account_relationship"])
+    assert view["label"] == ("Approve" if has_borrower else "Refer")
+    bounded = bounded_demo_context(view, mode="TEST", allowed_refs=set())
+    assert bounded["missing_inputs"] == view["missing_inputs"]
 
 
 @pytest.mark.parametrize("value,label,branch,basis", [

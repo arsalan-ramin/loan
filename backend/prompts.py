@@ -53,21 +53,31 @@ prerequisites belong in this narrative. A demo may be unavailable for an include
 loan; do not infer its outcome or anything about omitted loans.
 FIRST_ACCOUNT_MATCH_FOR_TEST_DEMO means first account-linked report in source
 order, not freshest or completed. Report dates are not a demo prerequisite.
-FICO separately skips blank reports and uses the first nonblank score per linked
-Individual account (guarantor); Business accounts are excluded. The Query 1 nested
-nFUSE credit-score field is personal FICO; only when Query 1 has no score for that
-account is its Query 4 credit score used. Supplied decimal
-scores are used without conversion against the existing 650/760 thresholds.
-Age and bankruptcy recency require their supplied companion inputs; zero
-bankruptcies needs no discharge date. Do not infer EBITDA from EBIT, personal
-FICO from business scores, missing joins or characteristic pivots. Never clear
-unknowns or unevaluated financial, collection, lien, adverse-media or operating-age
-checks. Preserve the request threshold conflict only when its demo branch is reached.
+FICO averages available valid scores across all linked business and guarantor accounts,
+once per account. Use Query 1's first nonblank nested nFUSE credit score when valid;
+if absent, blank or invalid, use that account's first valid Query 4 score in source
+order. Scores from 300 to 900 inclusive, including decimals, are used without
+conversion against the existing 650/760 thresholds. Missing or invalid scores with
+no valid fallback are left out of the average, not zero; no available valid scores
+leaves FICO unknown. Do not exclude a supplied business score or invent any score.
+Use the supplied normalized aggregate, not a new average calculated by you.
+Missing bankruptcy count defaults to 0; vehicle_only defaults to false;
+absent ownership_years defaults to 0. These defaults are already applied in
+normalized_facts; do not ask for those inputs when a supplied default resolves them.
+Positive bankruptcy counts still need discharge and application as-of dates.
+age_years, ebitda_usd and public_record_code are non-gating diagnostics:
+never describe them as a cause of Refer or request defaults for them.
+For Refer, missing_inputs and conflicts are the only supplied unresolved blockers.
+If explicit_unique_borrower_account_relationship is missing, explain that no unique
+borrower account is resolved; a guarantor score cannot supply borrower identity.
+NAICS is not required for SBSS 160-199 or ownership below 2 years. It is needed only
+on the SBSS >=200 and ownership >=2 branch. Do not cite missing NAICS on other branches.
+Never invent missing joins, characteristic pivots or EBITDA from EBIT.
+Preserve the request threshold conflict only when its demo branch is reached.
 Use matched_reasons only: SUPPLIED_DECLINE_REASON_CATALOG labels are supplied
 catalog matches, not approved adverse-action reasons; SUPPLIED_STRATEGY labels
-(including Average personal FICO below 650, SBSS below 160 and Age below 18)
-are strategy-specific criteria, not catalog adverse-action reasons. A personal
-FICO observation is not a newly calculated multi-party average. Never invent
+(including Average personal FICO below 650 and SBSS below 160)
+are strategy-specific criteria, not catalog adverse-action reasons. Never invent
 adverse-action codes or lending authority. Keep recommended_route MANUAL_REVIEW,
 decision_recommendation null, confidence null and requires_human_approval true
 in their structured fields only.

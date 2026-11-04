@@ -40,7 +40,7 @@ FICO_OUTCOMES = {
     "NO_ACCOUNT_MATCH": "no FICO in Query 1 or Query 4",
     "CONFLICTING_ACCOUNT_TYPE": "conflicting account type",
     "CONFLICTING_REPORT": "conflicting FICO values",
-    "MISSING_OR_INVALID_PERSONAL_FICO": "invalid FICO value, left out of the average",
+    "MISSING_OR_INVALID_PERSONAL_FICO": "FICO not between 300 and 900, left out of the average",
     "UNTYPED_PERSONAL_FICO": "score not identified as a personal FICO",
 }
 

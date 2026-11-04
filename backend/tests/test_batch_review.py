@@ -70,7 +70,8 @@ def test_batch_reviews_every_loan_with_deterministic_status_and_claude_rationale
     row = page["results"][0]
     assert row["account_id"] == "A00000" and row["status"] in {"Approved", "Decline", "Refer"}
     assert [item["account_id"] for item in row["accounts"]] == ["A00000"]
-    assert row["accounts"][0]["fico_outcome"] == "business account, not used for FICO"
+    # The business account's own credit score now counts toward FICO.
+    assert row["accounts"][0]["fico_outcome"] == "FICO 740 from Query 4"
     assert row["rationale"].startswith("Result: L00000") and "\nWhy:" in row["rationale"]
     assert row["engine_rationale"] and row["error"] is None
     assert reviewer.results(status=row["status"])["total"] >= 1

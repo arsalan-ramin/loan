@@ -14,7 +14,7 @@ const session = (overrides: Partial<Session> = {}): Session => ({
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 describe('Agent', () => {
-  it('puts upload first in DOM and keyboard order with a full-width conversation', async () => {
+  it('keeps chat full-width and free of forms with manual tools collapsed outside it', async () => {
     // Load the actual styles: jsdom does not apply Vite's CSS imports by itself.
     // Match the explicit base-then-usability stylesheet order in main.tsx.
     const style = document.createElement('style');
@@ -24,19 +24,23 @@ describe('Agent', () => {
     try {
       const { container } = render(<App />);
       await screen.findByText(/Your sessions will live here/);
-      const upload = screen.getByRole('button', { name: 'Upload documents' });
-      const documents = screen.getByRole('heading', { name: 'Documents' }).closest('section')!;
       const conversation = screen.getByRole('heading', { name: 'Your document conversation' }).closest('section')!;
-      const rules = screen.getByRole('heading', { name: 'Review rules' }).closest('section')!;
       const layout = conversation.parentElement!;
-      expect(Array.from(layout.children)).toEqual([documents, conversation, rules.parentElement]);
-      expect(upload.compareDocumentPosition(screen.getByRole('textbox', { name: 'Message Agent' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      const files = screen.getByText('Files and stored data').closest('details')!;
+      const tools = screen.getByText('Manual review tools').closest('details')!;
+      expect(Array.from(layout.children)).toEqual([files, conversation, tools]);
+      expect(files).not.toHaveAttribute('open');
+      expect(tools).not.toHaveAttribute('open');
+      expect(conversation.querySelector('.conversation-body form, .conversation-body input, .conversation-body select, .guided-assistant')).toBeNull();
+      expect(conversation.querySelectorAll('form')).toHaveLength(1);
       expect(container.querySelector('.right-column, .studio-grid')).toBeNull();
       expect(getComputedStyle(layout).display).toBe('grid');
       expect(getComputedStyle(layout).gridTemplateColumns).toBe('minmax(0, 1fr)');
       expect(getComputedStyle(conversation.querySelector('.conversation-body')!).maxHeight).toBe('none');
       expect(getComputedStyle(conversation.querySelector('.conversation-body')!).overflow).toBe('visible');
       const user = userEvent.setup();
+      await user.click(screen.getByText('Files and stored data'));
+      const upload = screen.getByRole('button', { name: 'Upload documents' });
       screen.getByRole('button', { name: 'Add documents' }).focus();
       await user.tab();
       expect(upload).toHaveFocus();
@@ -112,18 +116,18 @@ describe('Agent', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/health') ? response({ status: 'ok' }) : response([])));
   });
 
-  it('provides upload-first guidance without inventing documents or sessions', async () => {
+  it('greets and asks for a loan number without inventing documents or sessions', async () => {
     render(<App />);
-    expect(await screen.findByText('Your documents are the starting point.')).toBeInTheDocument();
     expect(await screen.findByText(/Your sessions will live here/)).toBeInTheDocument();
-    expect(screen.getByText('Start by adding your first document above.')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Hello! What loan number would you like to review?' })).toBeInTheDocument();
+    expect(screen.getByText('Upload Query 1, 2 and 4 first if no stored data is ready.')).toBeInTheDocument();
     expect(screen.getByText(/Chat context and document evidence are sent to Anthropic/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /^agent\s*\.$/ })).toBeInTheDocument();
     expect(screen.getByText('Agent assistant')).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Message Agent' })).toBeEnabled();
-    expect(screen.getByRole('textbox', { name: 'Message Agent' })).toHaveAttribute('placeholder', 'Ask a question, or upload your documents to begin…');
+    expect(screen.getByRole('textbox', { name: 'Message Agent' })).toHaveAttribute('placeholder', 'Enter a loan number to review, or ask about a result…');
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Process documents' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Process documents', hidden: true }).closest('details')).not.toHaveAttribute('open');
     expect(screen.getByText('No documents added yet')).toBeInTheDocument();
     expect(screen.getByLabelText('Choose documents')).toHaveAttribute('accept', '.pdf,.docx,.xlsx,.txt,.md,.csv,.json');
     expect(screen.getByText('No application file-size or record limits · Large files may take longer')).toBeInTheDocument();
@@ -152,6 +156,8 @@ describe('Agent', () => {
     }));
     const user = userEvent.setup(); const { container } = render(<App />);
     await screen.findByText(/Your sessions will live here/);
+    await user.click(screen.getByText('Files and stored data'));
+    await user.click(screen.getByText('Manual review tools'));
     await user.upload(screen.getByLabelText('Choose documents'), new File(['excel'], 'schema.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
     const schema = within((await screen.findByText('schema.xlsx')).closest('li')!);
     expect(schema.getByText('Data rows (excluding README sheets): 0')).toBeInTheDocument();
@@ -183,6 +189,8 @@ describe('Agent', () => {
     vi.stubGlobal('fetch', fetchMock);
     const user = userEvent.setup(); render(<App />);
     await screen.findByText(/Your sessions will live here/);
+    await user.click(screen.getByText('Files and stored data'));
+    await user.click(screen.getByText('Manual review tools'));
     for (const name of ['MTB_Query_1.xlsx', 'MTB_Query_2.xlsx', 'MTB_Query_4.xlsx']) {
       if (active.documents.length) await user.click(screen.getByRole('button', { name: 'Add documents' }));
       await user.upload(screen.getByLabelText('Choose documents'), new File([name], name, {
@@ -220,6 +228,7 @@ describe('Agent', () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText(/Your sessions will live here/);
+    await user.click(screen.getByText('Manual review tools'));
     const input = screen.getByRole('textbox', { name: 'Message Agent' });
     const sendButton = screen.getByRole('button', { name: 'Send message' });
     const processButton = screen.getByRole('button', { name: 'Process documents' });
@@ -230,9 +239,8 @@ describe('Agent', () => {
     expect(sendButton).toBeEnabled();
     expect(processButton).toBeDisabled();
     await user.click(sendButton);
-    // The reply moves from history to the dedicated latest-reply panel;
-    // query the committed render rather than retaining the replaced node.
     await waitFor(() => expect(screen.getByText(reply)).toBeInTheDocument());
+    expect(screen.getByLabelText('Conversation')).toContainElement(screen.getByText(reply));
     expect(screen.getByText(content)).toBeInTheDocument();
     expect(input).toBeEnabled();
     expect(input).toHaveValue('');
@@ -250,7 +258,7 @@ describe('Agent', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Session service is unavailable.');
     await userEvent.click(screen.getByRole('button', { name: 'Dismiss error' }));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Upload documents' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Attach documents' })).toBeInTheDocument();
   });
 
   it('handles network failures gracefully and reconnects', async () => {
@@ -285,7 +293,7 @@ describe('Agent', () => {
     expect(uploadCall?.[1]?.body).toBeInstanceOf(FormData);
     expect((uploadCall?.[1]?.body as FormData).getAll('files')).toHaveLength(1);
     const input = screen.getByRole('textbox', { name: 'Message Agent' });
-    expect(input).toHaveAttribute('placeholder', 'Ask about documents, rules, or earlier messages…');
+    expect(input).toHaveAttribute('placeholder', 'Enter a loan number to review, or ask about a result…');
     await user.type(input, 'Check the terms{Enter}');
     expect(await screen.findByText('Check the terms')).toBeInTheDocument();
     expect(input).toHaveValue('');
@@ -342,7 +350,7 @@ describe('Agent', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
     await user.click(await screen.findByRole('button', { name: /Claude review/ }));
-    await screen.findByText('Your review is ready.');
+    await user.click(screen.getByText('Manual review tools'));
     await user.click(screen.getByRole('button', { name: 'View report' }));
     expect(screen.getByRole('heading', { name: /rejected/i })).toBeInTheDocument();
     expect(screen.getByText('Phrase not present.')).toBeInTheDocument();
@@ -391,6 +399,7 @@ describe('Agent', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
     await user.click(await screen.findByRole('button', { name: /Draft route review/ }));
+    await user.click(screen.getByText('Manual review tools'));
     await user.click(await screen.findByRole('button', { name: 'View report' }));
     const card = screen.getByRole('region', { name: 'Draft underwriting route' });
     expect(within(card).getByText(route, { exact: true })).toBeInTheDocument();
@@ -424,6 +433,7 @@ describe('Agent', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/health') ? response({ status: 'ok' }) : response(url.endsWith('/sessions') ? [active] : active)));
     const user = userEvent.setup(); render(<App />);
     await user.click(await screen.findByRole('button', { name: /Legacy review/ }));
+    await user.click(screen.getByText('Manual review tools'));
     await user.click(await screen.findByRole('button', { name: 'View report' }));
     expect(screen.getByRole('heading', { name: /rejected/i })).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Draft underwriting route' })).not.toBeInTheDocument();
@@ -439,6 +449,7 @@ describe('Agent', () => {
     vi.stubGlobal('fetch', fetchMock);
     const user = userEvent.setup(); render(<App />);
     await screen.findByRole('button', { name: /Rule review/ });
+    await user.click(screen.getByText('Manual review tools'));
     await user.click(screen.getByRole('button', { name: 'Configure rules' }));
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: 'Add a rule' }));
@@ -463,6 +474,7 @@ describe('Agent', () => {
     vi.stubGlobal('fetch', fetchMock);
     const user = userEvent.setup(); render(<App />);
     await user.click(await screen.findByRole('button', { name: /Remove review/ }));
+    await user.click(screen.getByText('Files and stored data'));
     await user.click(await screen.findByRole('button', { name: 'Remove remove.txt' }));
     await waitFor(() => expect(screen.queryByText('remove.txt')).not.toBeInTheDocument());
     expect(fetchMock).toHaveBeenCalledWith('/api/sessions/session-1/documents/doc-1', { method: 'DELETE' });
@@ -480,10 +492,11 @@ describe('Agent', () => {
     }));
     const user = userEvent.setup(); render(<App />);
     await user.click(await screen.findByRole('button', { name: /Pipeline review/ }));
+    await user.click(screen.getByText('Manual review tools'));
     await user.click(await screen.findByRole('button', { name: 'Process documents' }));
     expect(await screen.findByText('Checking terms')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Processing documents' })).toBeDisabled();
-    expect(await screen.findByText('Your review is ready.', {}, { timeout: 4000 })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Review complete', { exact: true })).toBeInTheDocument(), { timeout: 4000 });
     await user.click(screen.getByRole('button', { name: 'View report' }));
     expect(screen.getByText('Date not present.')).toBeInTheDocument();
     expect(screen.getByText('Agreement between parties')).toBeInTheDocument();
@@ -506,11 +519,63 @@ describe('Agent', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     const user = userEvent.setup(); render(<App />);
+    await screen.findByText(/Your sessions will live here/);
+    await user.click(screen.getByText('Files and stored data'));
     await user.click(await screen.findByRole('button', { name: 'Use stored loan data' }));
     expect(await screen.findByText('MTB_Query_4.xlsx')).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith('/api/sessions/fresh/stored-dataset', expect.objectContaining({ method: 'POST' }));
     expect(screen.getByText(/1,200 loans and 900 borrower accounts are stored and indexed/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Use stored loan data in a new session' })).toBeEnabled();
+  });
+
+  it('accepts a loan number and shows progress then its result in the same conversation', async () => {
+    const created = session({ messages: [{
+      id: 'greeting', role: 'assistant', content: 'Hello! What loan number would you like to review?',
+      created_at: '2026-10-20T12:00:00Z',
+    }] });
+    const started: Session = { ...created, status: 'processing', selected_loan_id: 'L1',
+      documents: [1, 2, 4].map((role) => ({ id: `d${role}`, name: `MTB_Query_${role}.xlsx`, size: 10, extension: '.xlsx', metadata: {} })),
+      messages: [...created.messages,
+        { id: 'question', role: 'user', content: 'loan # L1', created_at: created.created_at },
+        { id: 'progress', role: 'assistant', content: "I'm processing loan L1 now.", created_at: created.created_at },
+      ],
+    };
+    const completed: Session = { ...started, status: 'completed', report: {
+      id: 'r1', created_at: created.created_at, decision: 'needs_review', summary: 'Loan review complete.',
+      document_count: 3, findings: [],
+    }, messages: [...started.messages, {
+      id: 'result', role: 'assistant', content: 'Loan L1: Approve\n\nClaude explanation: All knockout checks passed.\n\nSend another loan number.',
+      created_at: created.created_at,
+    }] };
+    let processing = false;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/health')) return response({ status: 'ok' });
+      if (url === '/api/dataset') return response({ status: 'ready', loan_count: 2, account_count: 2, files: [] });
+      if (url === '/api/sessions' && init?.method === 'POST') return response(created, 201);
+      if (url === '/api/sessions') return response([]);
+      if (url.endsWith('/messages')) { processing = true; return response(started); }
+      if (url === '/api/sessions/session-1') return response(processing ? completed : created);
+      return response({ detail: 'Unexpected request' }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup(); render(<App />);
+    expect(await screen.findByText('Stored loan data is ready. No upload is needed.')).toBeInTheDocument();
+    await user.type(screen.getByRole('textbox', { name: 'Message Agent' }), 'loan # L1');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(await screen.findByRole('heading', { name: 'Reviewing loan L1' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message Agent' })).toBeDisabled();
+    const result = await screen.findByText('Loan L1: Approve', { exact: false }, { timeout: 4000 });
+    expect(screen.getByLabelText('Conversation')).toContainElement(result);
+    expect(within(screen.getByLabelText('Conversation')).getByText('Claude explanation: All knockout checks passed.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Conversation').querySelector('form, input, select, textarea, .guided-assistant')).toBeNull();
+    expect(screen.getByText('Manual review tools').closest('details')).not.toHaveAttribute('open');
+    expect(screen.getAllByText('Claude explanation: All knockout checks passed.')).toHaveLength(1);
+    expect(screen.getByRole('textbox', { name: 'Message Agent' })).toBeEnabled();
+    expect(screen.getByRole('textbox', { name: 'Message Agent' })).toHaveValue('');
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/session-1/messages', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ content: 'loan # L1' }),
+    }));
+    expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/process') || url.endsWith('/assistant/loan-review'))).toBe(false);
   });
 
   it('shows indexing progress instead of the stored data action', async () => {

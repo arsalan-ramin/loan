@@ -157,7 +157,9 @@ def test_loan_lookup_unknown_switching_and_scoped_processing(client, monkeypatch
     assert all(doc["metadata"] == {} for doc in switched.json()["documents"])
 
 
-def test_chat_requests_loan_number_before_loading_or_calling_provider(client):
+def test_chat_requests_loan_number_then_starts_scoped_processing(client, monkeypatch):
+    submit = Mock()
+    monkeypatch.setattr(client.app.state.executor, "submit", submit)
     sid, _ = upload(client)
     prompt = client.post(f"/api/sessions/{sid}/messages", json={"content": "Please review these files"})
     assert prompt.status_code == 200
@@ -166,5 +168,8 @@ def test_chat_requests_loan_number_before_loading_or_calling_provider(client):
     selected = client.post(f"/api/sessions/{sid}/messages", json={"content": "loan number L00002"})
     assert selected.status_code == 200, selected.text
     assert selected.json()["selected_loan_id"] == "L00002"
-    assert selected.json()["messages"][-2]["role"] == "user"
-    assert "Selected explicit loan number L00002" in selected.json()["messages"][-1]["content"]
+    assert selected.json()["status"] == "processing"
+    assert selected.json()["messages"][-3]["role"] == "user"
+    assert "Selected explicit loan number L00002" in selected.json()["messages"][-2]["content"]
+    assert "I'm processing loan L00002" in selected.json()["messages"][-1]["content"]
+    submit.assert_called_once_with(process_session, client.app.state.store, sid)

@@ -16,11 +16,11 @@ from backend import commentary, llm, llm_context, loan_review, prompts
     ("DEMO_AGGREGATE_INSTRUCTIONS", "2af57801015688a835132d258d62364f0535f0375f208e917bdcc52771aa3267"),
     ("DEMO_SELECTED_LOAN_INSTRUCTIONS", "7ab96a406f02e1e2839ac607dffdadc33be313a2e728f846458075862ef1fb7b"),
     ("DEMO_SELECTED_LOAN_CONTEXT_NOTE", "d34a861b02ad0ea91c2ac40ef878ec29eda611bcd844a9d93410cc0ed4be81e3"),
-    ("SYSTEM", "7a32923c79885a9a044f846870274c71beec603d6c9fcac53f87a487c9f7fc19"),
+    ("SYSTEM", "d897b6e34ac2a6db8ed809403be21786bedffb3d9113821a532c92ee164eb789"),
     ("V4_SYSTEM", "a357a49510aaff807e48008ecec9b33155119ff0ca6c5040ebf5d3ae16bec71e"),
     ("REVIEW_REASONING_GUIDANCE", "c39b743957d5ea91c469480085287e96ec86c71adac4c41257644be968164e8d"),
     ("CHAT_FOLLOW_UP_INSTRUCTIONS", "9702c259a4360dc628b46db39e6327a024adcc0233f871ad5c2edb91c3d8540b"),
-    ("CHAT_WORKFLOW_INSTRUCTIONS", "db37725ecda6d84a10e62ef6a5e9b685934a0bb673fb3f5b166840cd6096528a"),
+    ("CHAT_WORKFLOW_INSTRUCTIONS", "b31005fde4643281f32b8406f5a0da28daa0e4649d5d4004972c78f0fa91230a"),
     ("AGGREGATE_UNDERWRITING_INSTRUCTIONS", "106d02c71f93a0eaa0201f3626c1882fc08a49428cdc8d04408b698e335b0afb"),
     ("LEGACY_POLICY_EXPLANATION_INSTRUCTIONS", "93e27d76bba19b6cdbfd64732f9267d08f3762933c879d6fd95d384d388fcdb5"),
     ("GENERIC_EXPLANATION_INSTRUCTIONS", "353a02a23f4c4059fa88cd1741ec10b346803096712993a274675218075f41b1"),
@@ -42,6 +42,14 @@ def test_prompt_consumers_import_from_prompt_owner():
     assert commentary.DEMO_SYSTEM is loan_review.DEMO_SYSTEM is prompts.DEMO_SYSTEM
     assert commentary.DEMO_AGGREGATE_INSTRUCTIONS is prompts.DEMO_AGGREGATE_INSTRUCTIONS
     assert loan_review.DEMO_SELECTED_LOAN_INSTRUCTIONS is prompts.DEMO_SELECTED_LOAN_INSTRUCTIONS
+
+
+def test_chat_prompt_describes_application_owned_loan_processing():
+    assert "exact loan number sent in\nchat" in prompts.SYSTEM
+    assert "processing starts only with Process documents" not in prompts.SYSTEM
+    assert "Sending it starts a scoped review" in prompts.CHAT_WORKFLOW_INSTRUCTIONS
+    assert "billable Claude explanation" in prompts.CHAT_WORKFLOW_INSTRUCTIONS
+    assert "The model cannot execute actions itself" in prompts.CHAT_WORKFLOW_INSTRUCTIONS
 
 
 def test_explanations_name_requirements_instead_of_scope_jargon():

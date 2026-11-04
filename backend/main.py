@@ -26,7 +26,7 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from .agents import SUPPORTED, DecisionAgent, ExtractionAgent, IntakeAgent, MemoryAgent, RulesAgent
 from .assistant_workflow import (
     ACCOUNT_INDEX_VERSION, GuidedProcessRequest, InspectRequest, ReviewNoteRequest,
-    inspect_loan, is_loan_attribute_inventory_request, loan_attribute_inventory,
+    chat_loan_number, inspect_loan, is_loan_attribute_inventory_request, loan_attribute_inventory,
     preflight, require_loan,
 )
 from .llm import LLMError
@@ -91,6 +91,31 @@ def invalidate(session: Session, *, clear_selection: bool = True) -> None:
     session.steps = [Step(agent=agent) for agent in AGENTS]
 
 
+def review_completion_text(session: Session) -> str:
+    assert session.report is not None
+    report = session.report
+    if report.underwriting is None or not session.selected_loan_id:
+        return f"Your review is complete. {report.summary} Open the decision report to inspect the evidence or download a standalone HTML copy."
+    loan = next((item for item in report.underwriting.loan_results
+                 if item.loan_id == session.selected_loan_id), None)
+    if loan is None:
+        return (f"The review completed, but loan {session.selected_loan_id} could not be evaluated. "
+                "Check the report's data-quality issues and explicit loan relationships before retrying.")
+    demo = loan.normalized_data.get("demo_decision")
+    if loan.mode == "TEST" and isinstance(demo, dict) and demo.get("label") in {"Approve", "Decline", "Refer"}:
+        result = (f"Loan {loan.loan_id}: {demo['label']}\n\n"
+                  f"{demo['rationale']}\n\n"
+                  f"Route: {demo.get('candidate_route') or 'Unresolved'}. Branch: {demo['branch']}.\n\n"
+                  "TEST simulation only; no lending action has been taken.")
+    else:
+        result = f"Loan {loan.loan_id}: Human review required.\n\n{loan.explanation}"
+    if report.llm_analysis:
+        result += f"\n\nClaude explanation:\n{report.llm_analysis}"
+    if report.llm_error:
+        result += f"\n\nClaude explanation unavailable: {report.llm_error}\nThe deterministic result above is unchanged."
+    return result + "\n\nSend another loan number to review it using these files, or ask about this result."
+
+
 def process_session(store: Store, session_id: str) -> None:
     session = require_session(store, session_id)
     findings = []
@@ -144,7 +169,7 @@ def process_session(store: Store, session_id: str) -> None:
             session.messages = latest.messages
             session.status = "completed"
             assert session.report is not None
-            message = Message(role="assistant", content=f"Your review is complete. {session.report.summary} Open the decision report to inspect the evidence or download a standalone HTML copy.")
+            message = Message(role="assistant", content=review_completion_text(session))
             store.remember(session.id, message.id, message.content, "conversation", "assistant")
             session.messages.append(message)
             store.save(session)
@@ -270,25 +295,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         store: Store = request.app.state.store
         with store.lock:
             session = require_session(store, session_id)
-        awaiting_loan = any(doc.extension == ".xlsx" for doc in session.documents) and not session.selected_loan_id
-        if awaiting_loan:
-            loan_reply = re.fullmatch(r"(?:loan(?:\s+(?:number|id))?\s*[:#]?\s+)?([A-Za-z0-9][A-Za-z0-9_-]{0,127})",
-                                     body.content.strip(), re.IGNORECASE)
-            if loan_reply and (any(char.isdigit() for char in loan_reply[1])
-                               or body.content.strip() != loan_reply[1]):
-                selected = select_loan(request, session_id, LoanSelectionRequest(loan_id=loan_reply[1]))
-                with store.lock:
-                    latest = require_session(store, session_id)
-                    if latest.updated_at != selected.updated_at:
-                        raise HTTPException(409, "Session changed during loan lookup. Please retry.")
-                    latest.messages.insert(len(latest.messages) - 1, Message(role="user", content=body.content))
-                    store.save(latest)
-                return latest
         local_inventory = is_loan_attribute_inventory_request(body.content)
+        number = chat_loan_number(body.content)
+        loan_chat = not local_inventory and (not session.documents
+                                            or any(doc.extension == ".xlsx" for doc in session.documents))
+        if number is not None and loan_chat:
+            with store.lock:
+                latest = require_session(store, session_id)
+                editable(latest)
+                if latest.updated_at != session.updated_at:
+                    raise HTTPException(409, "Session changed before loan lookup. Please retry.")
+                if not latest.documents:
+                    use_stored_dataset(request, session_id)
+            selected = select_loan(request, session_id, LoanSelectionRequest(loan_id=number))
+            return begin_processing(request, session_id, selected.updated_at, chat_content=body.content)
+        awaiting_loan = any(doc.extension == ".xlsx" for doc in session.documents) and not session.selected_loan_id
         origin = "local_assistant" if local_inventory else "conversation"
-        if awaiting_loan:
+        if re.fullmatch(r"(?:hi|hello|hey)[!. ]*", body.content.strip(), re.IGNORECASE) and loan_chat:
             origin = "local_assistant"
-            answer = "What loan number would you like to review? Enter the exact loan number in the Loan number field or reply with 'loan number L1'. Workbook data will remain unloaded until you choose a loan."
+            answer = IntakeAgent().greeting()
+        elif awaiting_loan:
+            origin = "local_assistant"
+            answer = ("What loan number would you like to review? Send the exact number, for example "
+                      "'loan # L1', and I'll process it and post the result here. "
+                      "This includes a billable Claude explanation.")
         elif local_inventory:
             answer = loan_attribute_inventory(session, store.root, body.content, body.loan_id)
         else:
@@ -369,7 +399,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     session.title = new_documents[0].name[:120]
                 invalidate(session)
                 message = Message(role="assistant", content=f"Received {len(new_documents)} file(s). You now have {len(session.documents)} document(s). "
-                    + ("What loan number would you like to review? The uploaded workbooks have not been loaded. Enter the exact loan number to load only its related data."
+                    + (                    "What loan number would you like to review? Send it in this chat to load and process only that loan, including a billable Claude explanation. I'll post the result here."
                        if any(doc.extension == ".xlsx" for doc in session.documents) else
                        "Use Validate files locally to inspect the documents. Processing requires your explicit start."))
                 workbook_set = [doc for doc in session.documents if doc.extension == ".xlsx"]
@@ -495,7 +525,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             message = Message(role="assistant", content=(
                 f"Loaded the stored Query 1, 2 and 4 workbooks ({state['loan_count']} indexed loans, "
                 f"{state['account_count']} borrower accounts) without uploading. What loan number would you like to review? "
-                "Enter the exact loan number to load only its related data from the index."))
+                "Send the exact loan number in this chat to load and process it from the index, "
+                "including a billable Claude explanation. I'll post the result here."))
             store.remember(session.id, message.id, message.content, "conversation", "assistant")
             session.messages.append(message)
             store.save(session)
@@ -771,7 +802,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             store.save(session)
         return session
 
-    def begin_processing(request: Request, session_id: str, expected_updated_at: str | None = None):
+    def begin_processing(request: Request, session_id: str, expected_updated_at: str | None = None,
+                         *, chat_content: str | None = None):
         store: Store = request.app.state.store
         with store.lock:
             session = require_session(store, session_id)
@@ -815,6 +847,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             invalidate(session, clear_selection=False)
             session.preflight = validated_preflight
             session.status = "processing"
+            if chat_content is not None:
+                message = Message(role="user", content=chat_content)
+                session.messages.insert(len(session.messages) - 1, message)
+                store.remember(session.id, message.id, message.content, "conversation", "user")
+                session.messages.append(Message(
+                    role="assistant", origin="local_assistant",
+                    content=(f"I'm processing loan {session.selected_loan_id} now. "
+                             "The review includes a billable Claude explanation. "
+                             "I'll post the result here when it finishes."),
+                ))
             store.save(session)
             request.app.state.executor.submit(process_session, store, session.id)
         return session

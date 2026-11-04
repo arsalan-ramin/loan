@@ -94,14 +94,14 @@
     <div class="box"><strong>Review artifacts</strong> &mdash; session reports, per-loan audits and latest batch results</div>
   </div>
   <div class="callout"><strong>Three different outputs must not be confused.</strong> The TEST demo produces <code>Approve / Decline / Refer</code>; batch display maps <code>Approve</code> to <code>Approved</code>. The enclosing underwriting contract remains non-operational, with <code>authorization=NOT_ISSUED</code>. Claude produces commentary, not a lending authorization.</div>
-  <p class="muted">This document describes the checked-in implementation plus current local business-FICO changes. It is not an approved lending policy. Examples use fabricated IDs and values, not client data. No application behavior was changed to generate this document.</p>
+  <p class="muted">This document describes the implementation, including business FICO and interactive loan-number chat processing. It is not an approved lending policy. Examples use fabricated IDs and values, not client data.</p>
 </section>
 <section id="components">
   <h2>02 / Components &amp; boundaries</h2>
   <div class="table-wrap"><table>
     <thead><tr><th>Layer</th><th>Implementation</th><th>Responsibility</th></tr></thead>
     <tbody>
-      <tr><td>UI</td><td><a href="../frontend/src/GuidedAssistant.tsx">GuidedAssistant.tsx</a>, <a href="../frontend/src/BatchReview.tsx">BatchReview.tsx</a>, <a href="../frontend/src/api.ts">api.ts</a></td><td>Explicit upload, loan selection, confirmation, processing, polling, retry and downloads.</td></tr>
+      <tr><td>UI</td><td><a href="../frontend/src/GuidedAssistant.tsx">GuidedAssistant.tsx</a>, <a href="../frontend/src/BatchReview.tsx">BatchReview.tsx</a>, <a href="../frontend/src/api.ts">api.ts</a></td><td>Greeting, conversational loan-number submission, progress and saved chat results; optional manual tools, uploads, batch review and downloads.</td></tr>
       <tr><td>API &amp; orchestration</td><td><a href="../backend/main.py">main.py</a>, <a href="../backend/agents.py">agents.py</a></td><td>Session state, request validation and five processing stages. These agents are Python workflow components, not five independent autonomous LLMs.</td></tr>
       <tr><td>Parsing &amp; mapping</td><td><a href="../backend/excel.py">excel.py</a>, <a href="../backend/datasets.py">datasets.py</a>, <a href="../backend/loan_loading.py">loan_loading.py</a></td><td>Read-only XLSX extraction; role recognition; configured canonical/SOQL field mappings; explicit-ID scope.</td></tr>
       <tr><td>Shared dataset</td><td><a href="../backend/loan_dataset.py">loan_dataset.py</a></td><td>Replacement, workbook hashes, row persistence, indexed closure and searchable directories.</td></tr>
@@ -598,10 +598,20 @@ No strict checks are supplied to reconcile; do not invent any. Cite only selecte
 </section>
 <section id="api">
   <h2>10 / API and UI lifecycle</h2>
+  <h3>Interactive Agent conversation</h3>
+  <ol>
+    <li>Agent greets the user locally and asks for a loan number. The greeting and composer disclose that sending the number starts a review with a billable Claude explanation.</li>
+    <li><code>POST /api/sessions/{id}/messages</code> recognizes one exact number such as <code>L1</code>, <code>loan # L1</code>, <code>loan number L1</code> or <code>process loan L1</code>. Ordinary questions and attribute inventories are not processing commands.</li>
+    <li>An empty session attaches ready stored data automatically. A session with uploaded workbooks uses those files, not a silent replacement. Missing sources, incomplete sets and unknown loans return explicit errors before a review is queued.</li>
+    <li>Reuse the existing scoped selection and processing validation. Persist the user's message and progress reply, set <code>status=processing</code> and submit the existing worker. The message API returns HTTP 200; no separate process-button click is needed.</li>
+    <li>The UI polls the session. Completion appends the deterministic result, branch/route, simulation boundary and Claude explanation to the same saved chat. A provider failure is displayed alongside the retained deterministic result; a processing failure appends a clear failure message.</li>
+    <li>Another loan number starts a fresh scoped review using the same files, preserving prior chat messages. Concurrent starts while processing are rejected. The transcript contains only messages, progress and results, not forms or action cards. File management and manual review tools are collapsed outside the conversation; the composer paperclip remains available for attachments. This application-owned path does not give the language model tool-execution authority.</li>
+  </ol>
   <div class="table-wrap"><table>
     <thead><tr><th>Method / endpoint</th><th>Use</th></tr></thead>
     <tbody>
       <tr><td><code>POST /api/sessions</code></td><td>Create a saved session; default mode TEST.</td></tr>
+      <tr><td><code>POST /api/sessions/{id}/messages</code></td><td>Exact loan number: attach stored data if empty, select and start review; HTTP 200 with processing state. Other messages use local guidance or ordinary chat.</td></tr>
       <tr><td><code>POST /api/sessions/{id}/documents</code></td><td>Upload multipart files; trigger indexing when the complete set is assembled.</td></tr>
       <tr><td><code>POST /api/sessions/{id}/dataset</code></td><td>Import the three fixed workbook names from the backend data folder through the same upload path.</td></tr>
       <tr><td><code>POST /api/sessions/{id}/stored-dataset</code></td><td>Reuse ready stored workbooks in an empty session.</td></tr>
@@ -621,7 +631,7 @@ No strict checks are supplied to reconcile; do not invent any. Cite only selecte
     </tbody>
   </table></div>
   <h3>Single-session five-stage pipeline</h3>
-  <p><strong>Intake</strong> validates documents/checks &rarr; <strong>Extraction</strong> reloads scoped workbook rows &rarr; <strong>Rules</strong> evaluates optional document checks &rarr; <strong>Decision</strong> runs underwriting and one bounded aggregate explanation &rarr; <strong>Memory</strong> indexes extracted content and conversation locally. Session JSON is saved at checkpoints, while preserving concurrently saved chat messages.</p>
+  <p><strong>Intake</strong> validates documents/checks &rarr; <strong>Extraction</strong> reloads scoped workbook rows &rarr; <strong>Rules</strong> evaluates optional document checks &rarr; <strong>Decision</strong> runs underwriting and one bounded aggregate explanation &rarr; <strong>Memory</strong> indexes extracted content and conversation locally. Session JSON is saved at checkpoints, while preserving concurrently saved chat messages. The completion result is then persisted as an assistant message; this reuses the existing explanation, not a second paid selected-loan call.</p>
   <pre><code>Session: awaiting_upload -&gt; ready -&gt; processing -&gt; completed
                                                \-&gt; failed
 Dataset: empty -&gt; indexing -&gt; ready

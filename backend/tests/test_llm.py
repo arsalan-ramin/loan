@@ -271,7 +271,7 @@ def test_chat_error_does_not_persist_partial_messages(tmp_path, monkeypatch):
     app = create_app(tmp_path / "data")
     with TestClient(app) as client:
         sid = client.post("/api/sessions", json={}).json()["id"]
-        response = client.post(f"/api/sessions/{sid}/messages", json={"content": "Hello"})
+        response = client.post(f"/api/sessions/{sid}/messages", json={"content": "Explain the available review options."})
         assert response.status_code == 503
         assert len(client.get(f"/api/sessions/{sid}").json()["messages"]) == 1
 

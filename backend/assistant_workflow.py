@@ -43,6 +43,20 @@ class GuidedProcessRequest(BaseModel):
     expected_updated_at: str
 
 
+def chat_loan_number(content: str) -> str | None:
+    text = content.strip()
+    explicit = re.fullmatch(
+        r"(?:(?:review|process)\s+)?loan(?:\s+(?:number|id))?(?:\s*[:#]\s*|\s+)"
+        r"([A-Za-z0-9][A-Za-z0-9_-]{0,127})",
+        text, re.IGNORECASE,
+    )
+    if explicit and explicit[1].casefold() not in {"number", "id"}:
+        return explicit[1]
+    if scalar_id(text) is not None and any(char.isdigit() for char in text):
+        return text
+    return None
+
+
 class ReviewNoteRequest(BaseModel):
     model_config = {"extra": "forbid"}
     loan_id: str = Field(min_length=1, max_length=128)

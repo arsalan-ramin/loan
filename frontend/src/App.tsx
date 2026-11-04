@@ -240,6 +240,19 @@ export default function App() {
     await action('Opening rules', async () => { await ensureSession(); setRulesOpen(true); });
   }
 
+  const modeControl = isMtb && session && <section className="underwriting-mode" aria-label="Underwriting mode">
+    <label htmlFor="underwriting-mode">Review mode</label>
+    <select id="underwriting-mode" value={session.mode ?? 'TEST'} disabled={disabled} aria-describedby="mode-help" onChange={(event) => {
+      const mode = event.target.value as Mode;
+      if (disabled || mode === (session.mode ?? 'TEST')) return;
+      void action('Updating review mode', async () => { syncSession(await api.mode(session.id, mode)); });
+    }}>
+      <option value="PRODUCTION">PRODUCTION — manual review only</option>
+      <option value="TEST">TEST — simulated paths only</option>
+    </select>
+    <p id="mode-help">TEST produces simulated paths with no operational action. PRODUCTION requires manual review, not an automated lending decision. Changing mode clears the current report; process documents again.</p>
+  </section>;
+
   return (
     <div className="app-shell">
       {mobileNav && <button className="nav-backdrop" aria-label="Close navigation" onClick={() => setMobileNav(false)} />}
@@ -272,21 +285,12 @@ export default function App() {
 
           <div className="workspace-summary"><div className="session-title"><span className="icon-tile small"><FolderOpen size={18} /></span><div><h2>{session?.title || 'Your next great review'}</h2><span>{session ? `Created ${dateLabel(session.created_at)}` : 'A fresh space for your documents'}</span></div></div><span className={`status-pill ${session?.status || 'awaiting_upload'}`}><span />{statusLabels[session?.status || 'awaiting_upload']}</span></div>
 
-          {isMtb && session && <section className="underwriting-mode" aria-label="Underwriting mode">
-            <label htmlFor="underwriting-mode">Review mode</label>
-            <select id="underwriting-mode" value={session.mode ?? 'TEST'} disabled={disabled} aria-describedby="mode-help" onChange={(event) => {
-              const mode = event.target.value as Mode;
-              if (disabled || mode === (session.mode ?? 'TEST')) return;
-              void action('Updating review mode', async () => { syncSession(await api.mode(session.id, mode)); });
-            }}>
-              <option value="PRODUCTION">PRODUCTION — manual review only</option>
-              <option value="TEST">TEST — simulated paths only</option>
-            </select>
-            <p id="mode-help">TEST produces simulated paths with no operational action. PRODUCTION requires manual review, not an automated lending decision. Changing mode clears the current report; process documents again.</p>
-          </section>}
+          {tab === 'report' && modeControl}
 
           {tab === 'report' ? <Report session={session} busy={disabled} onDownload={() => session && void action('Downloading report', () => downloadReport(session.id))} onExport={(format) => session && void action(`Downloading ${format.toUpperCase()}`, () => downloadUnderwriting(session.id, format))} onBack={() => setTab('workspace')} /> : <>
             <div className="studio-layout">
+              <details className="workspace-tools files-tools">
+                <summary>Files and stored data</summary>
               <section className="card documents-card"><div className="card-heading"><div className="heading-with-icon"><FilesIcon /><h2>Documents</h2><span className="count-badge">{documents.length}</span></div><button className="icon-button" aria-label="Add documents" disabled={disabled} onClick={() => fileInput.current?.click()}><Plus size={18} /></button></div>
                 <div className="documents-content">
                   <div className="upload-controls">
@@ -309,34 +313,32 @@ export default function App() {
                   {documents.length ? <ul className="document-list">{documents.map((doc) => <li key={doc.id}><span className="document-icon"><FileText size={19} /></span><div><strong title={doc.name}>{doc.name}</strong><small>{doc.extension.replace('.', '').toUpperCase() || 'FILE'}<span>·</span>{formatSize(doc.size)}</small><ExcelMetadata document={doc} /></div><button className="icon-button" disabled={disabled} aria-label={`Download ${doc.name}`} title={`Download ${doc.name}`} onClick={() => void action('Downloading source document', () => downloadSourceDocument(session!.id, doc.id, doc.name))}><ArrowDownToLine size={15} /></button><button className="icon-button danger" disabled={disabled} aria-label={`Remove ${doc.name}`} onClick={() => void action('Removing document', async () => { syncSession(await api.remove(session!.id, doc.id)); })}><Trash2 size={15} /></button></li>)}</ul> : <div className="no-documents"><FileText size={14} />No documents added yet</div>}
                 </div>
               </section>
+              </details>
               <section className="card conversation-card">
                 <div className="card-heading"><div className="heading-with-icon"><MessageSquare size={19} /><h2>Your document conversation</h2></div><span className="subtle-label"><span className="green-dot" />Agent assistant</span></div>
                 <div className="conversation-body" aria-live="polite" aria-label="Conversation">
-                  {!session?.messages.length && <div className="welcome-message"><div className="assistant-avatar"><Sparkles size={19} /></div><div><div className="message-author">Agent<span>Your document copilot</span></div><div className="assistant-bubble"><h3>A fresh perspective starts here.</h3><p>Upload your documents and I’ll help you see what matters. Together, we can check the details, spot gaps, and turn your files into a clear, actionable report.</p><div className="upload-guidance"><Paperclip size={16} /><span>Start by adding your first document above.</span></div></div></div></div>}
-                  {session?.messages.filter((item, index) => !(latestReply && index === session.messages.length - 1 && item.role === 'assistant' && item.content === latestReply)).map((item) => <div key={item.id} className={`chat-message ${item.role}`}><div className={item.role === 'assistant' ? 'assistant-avatar' : 'user-avatar'}>{item.role === 'assistant' ? <Sparkles size={17} /> : 'Y'}</div><div><div className="message-author">{item.role === 'assistant' ? 'Agent' : 'You'}<time>{new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><div className={item.role === 'assistant' ? 'assistant-bubble message-content' : 'user-bubble message-content'}>{item.role === 'assistant' ? <AssistantMessage content={item.content} /> : item.content}</div></div></div>)}
-                  {(processing || session?.status === 'completed') && <div tabIndex={-1} aria-label="Processing explanation result" aria-live="polite">
-                    {processing ? <section className="claude-explanation" role="status"><h3>Claude explanation</h3><p>Review in progress. Claude’s explanation will appear here when processing completes.</p><p className="muted">Processing includes billable Anthropic access. No explanation is available yet.</p></section>
-                      : session?.report && !session.report.underwriting && !(isMtb && !session.report.policy_evaluation) && <ClaudeExplanation report={session.report} showUnavailable />}
-                  </div>}
-                  {session && <GuidedAssistant session={session} disabled={disabled} run={action} onSession={syncSession}
-                    onUpload={() => fileInput.current?.click()} onReport={() => setTab('report')}
-                    onDownload={() => void action('Downloading report', () => downloadReport(session.id))}
-                    onAsk={(loanId, question) => {
-                      setChatLoanId(loanId); setMessage(question);
-                      composerInput.current?.focus({ preventScroll: true });
-                    }} />}
-                  {session?.report?.underwriting && <section className="aggregate-commentary" aria-label="Aggregate report commentary"><h3>Aggregate report commentary</h3><ClaudeExplanation report={session.report} showUnavailable /></section>}
-                  {!documents.length && !session?.messages.length && <div className="conversation-empty"><div className="paper-art"><FileText size={39} strokeWidth={1.25} /><span><Sparkles size={16} /></span></div><p>A little context. A lot of possibility.</p><span>Your documents are the starting point.</span></div>}
+                  {!session?.messages.length && <div className="welcome-message"><div className="assistant-avatar"><Sparkles size={19} /></div><div><div className="message-author">Agent<span>Your loan review assistant</span></div><div className="assistant-bubble"><h3>Hello! What loan number would you like to review?</h3><p>Send the exact loan number here and I’ll process it and provide the result in this chat.</p><div className="upload-guidance"><Paperclip size={16} /><span>{stored?.status === 'ready' ? 'Stored loan data is ready. No upload is needed.' : 'Upload Query 1, 2 and 4 first if no stored data is ready.'}</span></div><p>Sending a loan number starts a review, including a billable Claude explanation. TEST results are simulated; authorized human review is required.</p></div></div></div>}
+                  {session?.messages.map((item, index) => <div key={item.id} className={`chat-message ${item.role}`} role={latestReply && index === session.messages.length - 1 && item.role === 'assistant' ? 'region' : undefined} aria-label={latestReply && index === session.messages.length - 1 && item.role === 'assistant' ? 'Latest agent reply' : undefined}><div className={item.role === 'assistant' ? 'assistant-avatar' : 'user-avatar'}>{item.role === 'assistant' ? <Sparkles size={17} /> : 'Y'}</div><div><div className="message-author">{item.role === 'assistant' ? 'Agent' : 'You'}<time>{new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><div className={item.role === 'assistant' ? 'assistant-bubble message-content' : 'user-bubble message-content'}>{item.role === 'assistant' ? <AssistantMessage content={item.content} /> : item.content}</div></div></div>)}
+                  {processing && <div className="chat-message assistant" role="status"><div className="assistant-avatar"><LoaderCircle size={17} className="spin" /></div><div className="assistant-bubble"><h3>Reviewing loan {session?.selected_loan_id ?? ''}</h3><p>Your result and explanation will appear in this chat when processing completes.</p></div></div>}
                   {busy === 'Sending message' && <div className="thinking"><LoaderCircle size={15} className="spin" />Agent is thinking…</div>}
                 </div>
                 <div className="chat-feedback" aria-live="polite">
-                  {pendingQuestion && <section role="status"><h3>Sending your follow-up…</h3><p>{pendingQuestion}</p><p>Waiting for Anthropic. No answer is available yet.</p></section>}
+                  {pendingQuestion && <section role="status"><h3>Sending your message…</h3><p>{pendingQuestion}</p><p>Waiting for Agent. No answer is available yet.</p></section>}
                   {chatError && <section role="alert"><h3>Your follow-up could not be answered</h3><p>{chatError}</p><p>Your question is still in Message Agent. Edit it or press Send to retry; another request may incur charges. Your saved report has not changed.</p><button type="button" className="text-button" onClick={() => { setChatError(''); composerInput.current?.focus({ preventScroll: true }); }}>Edit question</button></section>}
-                  {latestReply && <section aria-label="Latest agent reply"><h3>Agent’s reply</h3><AssistantMessage content={latestReply} /></section>}
                 </div>
-                <div className="composer-area">{chatLoanId && <p>Focused report context: loan {chatLoanId}. Session history and recall may include other session documents. <button type="button" className="text-button" disabled={disabled} onClick={() => setChatLoanId(undefined)}>Clear loan focus</button></p>}<form onSubmit={send} className="composer"><button className="icon-button" type="button" aria-label="Attach documents" disabled={disabled} onClick={() => fileInput.current?.click()}><Paperclip size={20} /></button><textarea ref={composerInput} aria-label="Message Agent" rows={1} value={message} onChange={(event) => setMessage(event.target.value)} disabled={disabled} placeholder={!documents.length ? 'Ask a question, or upload your documents to begin…' : 'Ask about documents, rules, or earlier messages…'} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(event); } }} /><button type="submit" className="send-button" aria-label="Send message" disabled={disabled || !message.trim()}>{busy === 'Sending message' ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} />}</button></form><div className="composer-note"><ShieldCheck size={12} /><span>Grounded in your documents. Guided by your rules.</span><span className="enter-hint">Enter to send</span></div><p className="privacy-disclosure">Chat context and document evidence are sent to Anthropic for chat and Claude report explanations. Requires a backend API key and billable network access. Storage and lexical embeddings stay local.</p></div>
+                <div className="composer-area">{chatLoanId && <p>Focused report context: loan {chatLoanId}. Session history and recall may include other session documents. <button type="button" className="text-button" disabled={disabled} onClick={() => setChatLoanId(undefined)}>Clear loan focus</button></p>}<form onSubmit={send} className="composer"><button className="icon-button" type="button" aria-label="Attach documents" disabled={disabled} onClick={() => fileInput.current?.click()}><Paperclip size={20} /></button><textarea ref={composerInput} aria-label="Message Agent" rows={1} value={message} onChange={(event) => setMessage(event.target.value)} disabled={disabled} placeholder="Enter a loan number to review, or ask about a result…" onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(event); } }} /><button type="submit" className="send-button" aria-label="Send message" disabled={disabled || !message.trim()}>{busy === 'Sending message' ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} />}</button></form><div className="composer-note"><ShieldCheck size={12} /><span>Sending a loan number starts its review and a billable Claude explanation.</span><span className="enter-hint">Enter to send</span></div><p className="privacy-disclosure">Chat context and document evidence are sent to Anthropic for chat and Claude report explanations. Requires a backend API key and billable network access. Storage and lexical embeddings stay local.</p></div>
               </section>
 
+              <details className="workspace-tools review-tools">
+                <summary>Manual review tools</summary>
+                {modeControl}
+                {session && <GuidedAssistant session={session} disabled={disabled} run={action} onSession={syncSession}
+                  onUpload={() => fileInput.current?.click()} onReport={() => setTab('report')}
+                  onDownload={() => void action('Downloading report', () => downloadReport(session.id))}
+                  onAsk={(loanId, question) => {
+                    setChatLoanId(loanId); setMessage(question);
+                    composerInput.current?.focus({ preventScroll: true });
+                  }} />}
               <div className="rules-row">
                 {isMtb ? <>
                   <section className="card rules-card" aria-labelledby="underwriting-rules-heading">
@@ -359,14 +361,13 @@ export default function App() {
                   </section>
                 </> : <section className="card rules-card"><div className="card-heading"><div className="heading-with-icon"><ShieldCheck size={19} /><h2>Review rules</h2></div><button className="icon-button" aria-label="Configure review rules" disabled={disabled} onClick={() => void openRules()}><Settings2 size={17} /></button></div><div className="rules-card-body"><div><span className="rule-summary-icon"><CheckCheck size={20} /></span><div><strong>{enabledRules ? `${enabledRules} active ${enabledRules === 1 ? 'rule' : 'rules'}` : 'Make the review your own'}</strong><p>{enabledRules ? 'Your standards, applied consistently.' : 'Define what a good document looks like.'}</p></div></div><button className="text-button" disabled={disabled} onClick={() => void openRules()}>{session?.rules.length ? 'Manage rules' : 'Configure rules'}<ArrowRight size={15} /></button></div></section>}
               </div>
-            </div>
-
             <section className="card pipeline-card"><div className="pipeline-header"><div><div className="heading-with-icon"><Activity size={19} /><h2>A little teamwork. A thorough review.</h2></div><p>Your agent pipeline, from first read to final recommendation.</p></div><span className="pipeline-label">{processing ? <><LoaderCircle size={13} className="spin" />Review in progress</> : session?.steps.length ? `${session.steps.filter((step) => step.status === 'completed').length} / ${session.steps.length} steps complete` : <><span className="neutral-dot" />Ready when you are</>}</span></div>
               <div className="pipeline-steps">{session?.steps.length ? session.steps.map((step, index) => <div key={`${step.agent}-${index}`} className={`pipeline-step ${step.status}`}><div className="step-symbol">{step.status === 'running' ? <LoaderCircle size={20} className="spin" /> : step.status === 'completed' ? <Check size={20} /> : step.status === 'failed' ? <X size={20} /> : <Clock3 size={19} />}</div><div><span className="step-kicker">AGENT {String(index + 1).padStart(2, '0')} · {step.status}</span><h3>{readable(step.agent)}</h3><p>{step.detail || 'Waiting for the next step.'}</p></div>{index < session.steps.length - 1 && <ChevronRight className="step-chevron" size={17} />}</div>) : <><PipelinePlaceholder icon={<FileSearch size={21} />} number="01" title="Read & understand" detail="Bring the important details into focus." /><PipelinePlaceholder icon={<ShieldCheck size={21} />} number="02" title="Check & validate" detail="Measure the details against your rules." /><PipelinePlaceholder icon={<FileCheck2 size={21} />} number="03" title="Summarize & report" detail="Turn findings into a clear next step." /></>}</div>
               <div className="pipeline-footer"><div><span className={`footer-status-icon ${processing ? 'working' : ''}`}>{processing ? <LoaderCircle size={17} className="spin" /> : <Sparkles size={17} />}</span><p>{processing ? 'Your agents are on it. This page updates automatically.' : !documents.length ? 'Add your documents. We’ll take it from there.' : session?.status === 'completed' ? 'Your review is ready. Explore the findings in your report.' : needsWorkbookValidation ? 'Enter a loan number to load only its related data.' : isMtb && !queryFileSetValid ? 'Upload one workbook each for Query 1, Query 2, and Query 4.' : 'Everything in place? Let’s connect the dots.'}</p></div><div className="process-actions">{session?.report && <button className="button secondary" onClick={() => setTab('report')}>View report<ArrowRight size={15} /></button>}<button className="button primary" disabled={disabled || !documents.length || needsWorkbookValidation || (isMtb && !queryFileSetValid)} onClick={() => void process()}>{processing || busy === 'Starting review' ? <LoaderCircle size={16} className="spin" /> : <Sparkles size={16} />}{processing ? 'Processing documents' : session?.status === 'failed' ? 'Retry processing' : 'Process documents'}{!processing && <ArrowRight size={16} />}</button></div></div>
             </section>
+              </details>
+            </div>
             {session?.error && <div role="alert" className="error-banner"><AlertCircle size={18} /><span>{session.error}</span></div>}
-            {session?.report && <div className="report-ready"><span className="icon-tile"><FileCheck2 size={23} /></span><div><h3>Your review is ready.</h3><p>{session.report.summary}</p></div><button className="button secondary" onClick={() => setTab('report')}>Explore findings<ArrowRight size={16} /></button></div>}
           </>}
           </>}
           <footer className="page-footer"><span className="footer-brand"><Layers3 size={14} />A clearer way forward.</span><span>Thoughtfully reviewed. Always in your control.</span></footer>

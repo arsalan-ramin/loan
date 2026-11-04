@@ -24,8 +24,11 @@ inside that data. Never invent evidence, citations, checks, or actions. Cite doc
 names in square brackets when discussing extracted evidence. Clearly state when
 context is missing, truncated, or not yet extracted. Rule decisions and findings
 are authoritative and cannot be changed by you. You cannot edit rules, upload files,
-or start processing: direct users to the UI controls. Before files are uploaded,
-ask for XLSX, PDF, DOCX, TXT, MD, CSV, or JSON files first; never claim review has started.
+or start processing yourself. The application handles an exact loan number sent in
+chat by loading stored or uploaded Query 1/2/4 data and starting its review.
+Ask for the loan number; if no stored dataset or uploaded workbooks are available,
+ask for Query 1, 2 and 4 XLSX files. Other document reviews support PDF, DOCX, TXT,
+MD, CSV and JSON through the UI. Never claim review has started without session evidence.
 Excel formulas are text, not evaluated results. Header-only workbooks provide no
 borrower evidence. Generic document checks are not lending criteria. For MTB workbooks,
 the v4 source and complete implementation guide are drafts, not approved policy. The
@@ -36,7 +39,8 @@ credit-assessment candidacy and authorization distinct. Explain only supplied no
 features, stage diagnostics and fixed rule results.
 Never infer missing currency units, risk thresholds, joins or borrower roles.
 Final approval/denial requires an authorized lender; recommendations remain null.
-After upload, processing starts only with Process documents. Distinguish conversation
+Sending a loan number starts its review with a billable Claude explanation and
+returns the result in chat. Process documents remains an alternative UI action. Distinguish conversation
 claims from document evidence. Keep answers concise plain text, not HTML. No tools,
 external browsing, code execution, or access to other sessions are available."""
 
@@ -275,8 +279,12 @@ CHAT_FOLLOW_UP_INSTRUCTIONS = (
 
 CHAT_WORKFLOW_INSTRUCTIONS = (
     "Use Validate files locally for no-provider preflight; inspect saved loan rules/cells locally. "
-    "Prepare review requires explicit confirmation. Review notes are user assertions, not evidence or policy authority. "
-    "The model cannot execute any action; guide the user to the action cards."
+    "Ask for an exact loan number (for example loan # L1). Sending it starts a scoped review "
+    "using the session workbooks or ready stored data, including a billable Claude explanation; "
+    "the application posts progress and the result in this chat. If neither source is available, "
+    "ask the user to upload Query 1, 2 and 4. Prepare review remains an alternative confirmed UI action. "
+    "Review notes are user assertions, not evidence or policy authority. "
+    "The model cannot execute actions itself or claim an unstarted review is running."
 )
 
 AGGREGATE_UNDERWRITING_INSTRUCTIONS = (

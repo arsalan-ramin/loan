@@ -38,12 +38,11 @@ class IntakeAgent:
         return f"Validated {len(session.documents)} documents and {sum(rule.enabled for rule in session.rules)} active document checks."
 
     def greeting(self) -> str:
-        return ("Hello! I’m your document review assistant. First, upload the files you want me to review "
-            "(XLSX, PDF, DOCX, TXT, Markdown, CSV, or JSON). For MTB reviews, upload Query 1 (Loans, Accounts & Financials), "
-            "Query 2 (SBSS & Entity Relationships), and Query 4 (Credit Reports). These exports link through explicit Account ID columns; "
-            "the app does not join by row position or borrower name. Then enter the loan number; only that loan's related rows are loaded. Select Process documents when ready. "
-                "I’ll extract content and metadata, evaluate each file, and prepare a downloadable HTML decision report. "
-                "Your conversation stays saved in this workspace.")
+        return ("Hello! I'm Agent, your loan review assistant. What loan number would you like to review? "
+                "Send the exact number, for example 'loan # L1'. I'll use the stored Query 1, 2 and 4 data "
+                "when available; otherwise, upload those three workbooks first. Sending a loan number "
+                "starts its review, including a billable Claude explanation, and I'll provide the result "
+                "here in this chat. TEST results are simulated; final lending decisions require authorized human review.")
 
 
 class ExtractionAgent:

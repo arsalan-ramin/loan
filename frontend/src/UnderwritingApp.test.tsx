@@ -30,6 +30,7 @@ async function open(active: Session, handler?: (url: string, init?: RequestInit)
   render(<App />);
   await user.click(await screen.findByRole('button', { name: /V4 review/ }));
   await waitFor(() => expect(screen.getByRole('heading', { name: 'V4 review' })).toBeInTheDocument());
+  await user.click(screen.getByText('Manual review tools'));
   return { user, fetchMock };
 }
 
@@ -43,6 +44,8 @@ describe('V4 app integration', () => {
     const completed = session({ documents: active.documents });
     completed.report!.llm_analysis = failed ? null : 'Review the supplied evidence; missing mappings remain unknown.';
     completed.report!.llm_error = failed ? 'Anthropic unavailable; deterministic report retained.' : null;
+    const text = failed ? completed.report!.llm_error! : completed.report!.llm_analysis!;
+    completed.messages = [{ id: 'result', role: 'assistant', content: `Human review required.\n\n${text}`, created_at: completed.updated_at }];
     let started = false;
     const { user, fetchMock } = await open(active, (url) => {
       if (url.endsWith('/process')) {
@@ -53,19 +56,13 @@ describe('V4 app integration', () => {
       return undefined;
     });
     await user.click(screen.getByRole('button', { name: 'Process documents' }));
-    expect(screen.getByText(/Claude’s explanation will appear here/)).toBeInTheDocument();
-    const text = failed ? completed.report!.llm_error! : completed.report!.llm_analysis!;
+    expect(screen.getByText(/Your result and explanation will appear in this chat/)).toBeInTheDocument();
     expect(await screen.findByText(text, {}, { timeout: 4000 })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Aggregate report commentary' })).toBeVisible();
-    expect(screen.getByText('Aggregate report commentary').closest('details')).toBeNull();
-    const documents = screen.getByRole('heading', { name: 'Documents' }).closest('section')!;
     const conversation = screen.getByRole('heading', { name: 'Your document conversation' }).closest('section')!;
-    const rules = screen.getByRole('heading', { name: 'Underwriting rules' }).closest('section')!;
-    expect(documents.nextElementSibling).toBe(conversation);
-    expect(conversation.nextElementSibling).toBe(rules.parentElement);
-    expect(rules.parentElement).toHaveClass('rules-row');
-    expect(screen.getByRole('region', { name: 'Aggregate report commentary' }).closest('.conversation-card')).toBe(conversation);
-    expect(screen.getByLabelText('Processing explanation result')).not.toHaveFocus();
+    expect(screen.getByLabelText('Conversation')).toContainElement(screen.getByText(text));
+    expect(screen.getByLabelText('Conversation').querySelector('form, input, select, textarea, .guided-assistant')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Aggregate report commentary' })).not.toBeInTheDocument();
+    expect(screen.getByText(text).closest('.conversation-card')).toBe(conversation);
     expect(scroll).not.toHaveBeenCalled();
     expect(screen.getByText(text)).toBeVisible();
     expect(screen.queryByRole('heading', { name: 'Per-loan underwriting report' })).not.toBeInTheDocument();

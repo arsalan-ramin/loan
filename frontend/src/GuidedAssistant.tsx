@@ -201,6 +201,7 @@ export default function GuidedAssistant({ session, disabled, run, onSession, onU
   </div>;
 
   return <section className="guided-assistant" aria-label="Guided assistant actions">
+    <p>Send a loan number in the chat to process it and receive the result here, including a billable Claude explanation. The tools below are optional alternatives.</p>
     {showDemo ? <section className="guided-demo-summary" aria-label={`TEST demo summary for ${selectedLoan!.loan_id}`}>
       <span className="demo-label">TEST demo • no lending action</span>
       <h3>{String(demo!.label)} · Loan {selectedLoan!.loan_id}</h3>

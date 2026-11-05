@@ -172,4 +172,6 @@ def test_chat_requests_loan_number_then_starts_scoped_processing(client, monkeyp
     assert selected.json()["messages"][-3]["role"] == "user"
     assert "Selected explicit loan number L00002" in selected.json()["messages"][-2]["content"]
     assert "I'm processing loan L00002" in selected.json()["messages"][-1]["content"]
-    submit.assert_called_once_with(process_session, client.app.state.store, sid)
+    submit.assert_called_once()
+    assert submit.call_args.args[1:] == (process_session, client.app.state.store, sid)
+    assert submit.call_args.args[0].__name__ == "run"

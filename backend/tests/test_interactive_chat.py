@@ -112,7 +112,9 @@ def test_stored_data_number_processes_and_posts_result_then_accepts_another(clie
         assert len(running["documents"]) == 3
         assert running["messages"][-3]["content"] == text
         assert f"I'm processing loan {loan_id}" in running["messages"][-1]["content"]
-        client.app.state.executor.submit.assert_called_with(process_session, client.app.state.store, sid)
+        submitted = client.app.state.executor.submit.call_args.args
+        assert submitted[1:] == (process_session, client.app.state.store, sid)
+        assert submitted[0].__name__ == "run"
         completed = finish(client, sid)
         assert completed["status"] == "completed", completed["error"]
         result = completed["messages"][-1]["content"]

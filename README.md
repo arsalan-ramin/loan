@@ -136,6 +136,30 @@ SQLite is the source of truth for sessions, chat, mode, documents, rules, pipeli
 
 Reports add nullable `llm_analysis`, `llm_model`, and `llm_error` fields (default `null`). The frontend tolerates absent fields in legacy reports and displays Claude explanation, model, and warnings separately from deterministic findings, as escaped plain text. If Anthropic is unavailable, the deterministic report is still saved and downloadable, with `llm_error` explaining the missing commentary. Chat instead returns actionable **503 / 429 / 504 / 502** errors for configuration, availability, rate-limit, timeout, or provider failures, without silent fallback. Provider requests use a **60-second network timeout per attempt**, **2 transport retries by default (3 total attempts)**, and **8,192 maximum output tokens** for chat and report commentary; larger outputs may increase provider charges and latency. SDK retries are disabled. Only connection failures (including timeouts), rate limits, and HTTP 408, 409, or 5xx (including 529) are retried; authentication, permission, not-found, and other request errors fail immediately. Backoff is deterministic exponential (0.5, 1, 2, then capped at 4 seconds); a finite nonnegative numeric `Retry-After` header overrides it, capped at 30 seconds. Retries can increase total elapsed time and provider charges. All attempts share one invocation ID; content-free logs record retry category/delay and terminal attempt count/exhaustion.
 
+## FICO what-if questions
+
+After a completed TEST loan review, ask **"What if the credit score/FICO was 820?"** or **"What if FICO was 820?"** in the same chat.
+
+- The application treats the supplied number as the loan's **aggregate FICO**, not one account's score. Valid hypothetical scores are 300–900 inclusive, including decimals.
+- It evaluates a copy of the saved normalized facts with the **same TEST decision tree** used by the original review. Only aggregate FICO changes; SBSS, bankruptcy, ownership, amount, NAICS, vehicle-only and borrower identity remain as saved.
+- The reply compares the original and hypothetical results, explains the recomputed branch, and identifies only decision-flow blockers. For example, FICO 820 clears the below-650 knockout, but unchanged SBSS 155 still produces Decline.
+- This is a local deterministic calculation: **no Claude request and zero provider tokens**. Only the conversation is saved; source workbooks, database scores, original report and batch results are not changed. Each scenario starts from the saved baseline, never a previous scenario.
+- One aggregate-FICO override at a time is supported. Account-specific, multi-field, chained or malformed requests receive explicit guidance rather than a partial or guessed evaluation. A completed supported TEST snapshot and one selected loan are required; PRODUCTION is not simulated.
+- Ordinary TEST follow-ups now use the same bounded demo context as result explanations, not strict-policy diagnostics. Old strict prerequisites in conversation history must not be reintroduced as TEST blockers. Ordinary questions still describe the saved baseline, not a hypothetical correction.
+
+## Token usage
+
+Open **Token usage** in the sidebar for a paginated list of Claude invocations and cumulative **Entire workspace** or **Current session** totals. The view refreshes every five seconds and makes no provider calls.
+
+- Each row includes the invocation ID, originating HTTP request ID when available, operation, session/loan or batch scope, model, transport outcome, attempts, duration, and provider-reported input/output/cache-write/cache-read tokens.
+- **Total tokens = input + output + cache writes + cache reads.** Input is the provider's uncached input count, so cache tokens are not counted twice. Totals cover all recorded requests, not just the visible page.
+- Chat, background report explanations, explicitly requested selected-loan reviews, and batch reviews are covered. Local greetings, lookups, and deterministic decisions use no provider tokens and create no invocation row.
+- Counts are saved in `usage.sqlite3` alongside (not inside) the replaceable loan dataset. They survive restarts, dataset replacement, and new/retried batches. Tracking starts with this release; earlier usage is not reconstructed.
+- Requests are recorded before contacting the provider. Failures with no usage response are **Unknown**, not zero; totals sum only reported counts and may therefore understate billable usage. Retry attempts share one invocation row; only returned usage can be measured. Truncated/discarded responses still count their reported tokens. Restart-interrupted invocations remain visible with unknown usage.
+- “Succeeded” is a transport outcome, not commentary-validation acceptance. Usage remains recorded even when later validation rejects the explanation or a session conflict prevents saving it. Token counts are not dollar-cost estimates or an invoice.
+- `GET /api/usage?offset=0&limit=25` returns `{totals, requests, total, offset, limit}`; add `session_id` for session-only totals. Maximum page size is 100. This is the existing shared local workspace, not a tenant-scoped accounting system.
+- No prompts, answers, source values, keys, or provider error bodies are stored in the ledger. Accounting failures are explicit; failure to create a usage record prevents a paid request, and failure to save final counts warns that charges may already have occurred. Include the usage database in backups.
+
 ## Troubleshooting Claude commentary
 
 Rejected commentary now includes a diagnostic ID. The backend logs the failing

@@ -16,6 +16,14 @@
 .workspace-tools > summary { cursor: pointer; min-height: 44px; padding: 14px 18px; font-size: 13px; font-weight: 600; color: #345c43; }
 .workspace-tools[open] > :not(summary) { margin: 16px; }
 .workspace-tools .pipeline-card { margin-bottom: 16px; }
+.usage-body { padding: 20px; font-size: 13px; line-height: 1.6; }
+.usage-totals { display: flex; flex-wrap: wrap; gap: 24px; }
+.usage-totals dd { margin: 0; font-size: 22px; font-weight: 600; }
+.usage-table { overflow-x: auto; }
+.usage-table table { width: 100%; border-collapse: collapse; text-align: left; }
+.usage-table th, .usage-table td { padding: 12px; border-bottom: 1px solid #dfe5dc; vertical-align: top; }
+.usage-table code { overflow-wrap: anywhere; }
+.usage-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 16px; }
 .conversation-card, .guided-assistant { min-width: 0; }
 .rules-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .rules-row > :only-child { grid-column: 1 / -1; }

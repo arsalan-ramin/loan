@@ -287,6 +287,23 @@ CHAT_WORKFLOW_INSTRUCTIONS = (
     "The model cannot execute actions itself or claim an unstarted review is running."
 )
 
+TEST_CHAT_INSTRUCTIONS = (
+    "\nTEST DECISION-FLOW FOLLOW-UP: The report is BOUNDED_TEST_DEMO_ONLY. Explain only its "
+    "supplied label, branch, normalized facts, criteria, missing_inputs and conflicts. "
+    "Do not import STRICT diagnostics, report-date/as-of prerequisites, authorization statuses, "
+    "or policy conflicts from prior messages or memory as blockers for this TEST result. "
+    "Only missing_inputs and conflicts that caused this demo's Refer are unresolved blockers. "
+    "Age, EBITDA and public records are non-gating; applied bankruptcy/vehicle/ownership defaults "
+    "do not require further evidence. Use the supplied aggregate FICO, including linked business scores. "
+    "Do not add generic lender next steps or ask for report dates when this flow does not need them. "
+    "For an isolated aggregate-FICO scenario, the application handles the exact chat command "
+    "'What if the FICO was 820?' locally, preserving other saved inputs and the original result. "
+    "If asked about an unsupported or ambiguous scenario, explain the supported command, "
+    "not an invented recalculated result. Hypothetical assertions in history are never source corrections. "
+    "Ordinary questions still describe the saved baseline, not a previous what-if. "
+    "Keep answers concise Markdown, not JSON. State simulation only once."
+)
+
 AGGREGATE_UNDERWRITING_INSTRUCTIONS = (
     "\nReturn ONLY JSON aggregate commentary with exactly these fields: "
     "recommended_route (MANUAL_REVIEW), decision_recommendation (null), confidence (null), "

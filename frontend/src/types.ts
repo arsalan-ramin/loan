@@ -379,3 +379,44 @@ export interface BatchResultPage {
   offset: number;
   limit: number;
 }
+export interface TokenCounts {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  total_tokens: number;
+}
+
+export interface UsageRequest {
+  id: string;
+  started_at: string;
+  http_request_id: string | null;
+  session_id: string | null;
+  loan_id: string | null;
+  batch_id: string | null;
+  operation: string;
+  model: string;
+  status: 'running' | 'succeeded' | 'failed' | 'interrupted';
+  category: string | null;
+  attempts: number;
+  duration_ms: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  total_tokens: number | null;
+}
+
+export interface UsagePage {
+  totals: TokenCounts & {
+    requests: number;
+    reported_requests: number;
+    unreported_requests: number;
+    running_requests: number;
+    failed_requests: number;
+  };
+  requests: UsageRequest[];
+  total: number;
+  offset: number;
+  limit: number;
+}

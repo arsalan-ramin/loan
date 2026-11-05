@@ -10,6 +10,7 @@ import GuidedAssistant from './GuidedAssistant';
 import ClaudeExplanationText from './ClaudeExplanationText';
 import AssistantMessage from './AssistantMessage';
 import BatchReview from './BatchReview';
+import TokenUsage from './TokenUsage';
 import type { Document, Mode, Session, StoredDataset } from './types';
 
 const statusLabels: Record<Session['status'], string> = { awaiting_upload: 'Awaiting documents', ready: 'Ready to review', processing: 'Processing', completed: 'Review complete', failed: 'Review failed' };
@@ -44,7 +45,7 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [policyRulesOpen, setPolicyRulesOpen] = useState(false);
-  const [tab, setTab] = useState<'workspace' | 'report' | 'batch'>('workspace');
+  const [tab, setTab] = useState<'workspace' | 'report' | 'batch' | 'usage'>('workspace');
   const [mobileNav, setMobileNav] = useState(false);
   const [stored, setStored] = useState<StoredDataset | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -66,6 +67,7 @@ export default function App() {
     conditional: policyRules.filter((rule) => rule.state === 'conditional').length,
     blocked: policyRules.filter((rule) => rule.state === 'blocked').length,
   };
+  const pageTitle = tab === 'usage' ? 'Token usage' : tab === 'batch' ? 'Batch review' : tab === 'report' ? 'Review report' : 'Document studio';
 
   const syncSession = useCallback((next: Session) => {
     if (!mounted.current) return;
@@ -263,6 +265,7 @@ export default function App() {
         <button className={`nav-item ${tab === 'workspace' ? 'active' : ''}`} onClick={() => { setTab('workspace'); setMobileNav(false); }}><FolderOpen size={19} />Document studio<span className="nav-active-dot" /></button>
         <button className={`nav-item ${tab === 'report' ? 'active' : ''}`} onClick={() => { setTab('report'); setMobileNav(false); }}><FileCheck2 size={19} />Review report{session?.report && <span className="tiny-count">1</span>}</button>
         <button className={`nav-item ${tab === 'batch' ? 'active' : ''}`} onClick={() => { setTab('batch'); setMobileNav(false); }}><ListChecks size={19} />Batch review</button>
+        <button className={`nav-item ${tab === 'usage' ? 'active' : ''}`} onClick={() => { setTab('usage'); setMobileNav(false); }}><Activity size={19} />Token usage</button>
         <div className="sessions-heading"><span className="nav-label">YOUR SESSIONS</span><button className="sidebar-icon" title="New session" aria-label="New session" disabled={disabled} onClick={() => void newSession()}><Plus size={17} /></button></div>
         <div className="session-list">
           {loading && <p className="sidebar-empty">Loading your sessions…</p>}
@@ -273,15 +276,15 @@ export default function App() {
       </aside>
 
       <div className="main-shell">
-        <header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMobileNav(true)}><Layers3 size={21} /></button><span>Workspace</span><ChevronRight size={14} /><strong>{tab === 'workspace' ? 'Document studio' : tab === 'batch' ? 'Batch review' : 'Review report'}</strong></div><div className="topbar-right"><span className="local-badge"><span className={`connection-dot ${connection}`} />{connection === 'online' ? 'Connected to your API' : connection === 'offline' ? 'API offline' : 'Connecting to API'}</span><span className="top-avatar">Y</span></div></header>
+        <header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMobileNav(true)}><Layers3 size={21} /></button><span>Workspace</span><ChevronRight size={14} /><strong>{pageTitle}</strong></div><div className="topbar-right"><span className="local-badge"><span className={`connection-dot ${connection}`} />{connection === 'online' ? 'Connected to your API' : connection === 'offline' ? 'API offline' : 'Connecting to API'}</span><span className="top-avatar">Y</span></div></header>
 
         <main>
-          <section className="page-heading"><div><div className="eyebrow"><span />DOCUMENT INTELLIGENCE, SIMPLIFIED</div><h1>{tab === 'workspace' ? 'Good documents. Clear decisions.' : tab === 'batch' ? 'Every loan. One run.' : 'The details. The bigger picture.'}</h1><p>{tab === 'workspace' ? 'From a stack of files to a clear next step. Let’s make sense of it.' : tab === 'batch' ? 'Review the whole stored loan set, track progress, and export the results.' : 'A transparent review, grounded in your documents and your rules.'}</p></div><button className="button secondary new-session" disabled={disabled} onClick={() => void newSession()}><Plus size={17} />New session</button></section>
+          <section className="page-heading"><div><div className="eyebrow"><span />DOCUMENT INTELLIGENCE, SIMPLIFIED</div><h1>{tab === 'usage' ? 'Every request. Tokens accounted for.' : tab === 'workspace' ? 'Good documents. Clear decisions.' : tab === 'batch' ? 'Every loan. One run.' : 'The details. The bigger picture.'}</h1><p>{tab === 'usage' ? 'Provider-reported usage by request, session, and across the workspace.' : tab === 'workspace' ? 'From a stack of files to a clear next step. Let’s make sense of it.' : tab === 'batch' ? 'Review the whole stored loan set, track progress, and export the results.' : 'A transparent review, grounded in your documents and your rules.'}</p></div><button className="button secondary new-session" disabled={disabled} onClick={() => void newSession()}><Plus size={17} />New session</button></section>
 
           {error && <div className="error-banner" role="alert"><AlertCircle size={19} /><span>{error}</span><button className="text-button" disabled={!!busy} onClick={() => void load()}><RefreshCw size={14} />Reconnect</button><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={17} /></button></div>}
           {pollError && <div className="error-banner" role="status"><RefreshCw size={17} /><span>{pollError}</span></div>}
 
-          {tab === 'batch' ? <BatchReview /> : <>
+          {tab === 'usage' ? <TokenUsage sessionId={session?.id} /> : tab === 'batch' ? <BatchReview /> : <>
 
           <div className="workspace-summary"><div className="session-title"><span className="icon-tile small"><FolderOpen size={18} /></span><div><h2>{session?.title || 'Your next great review'}</h2><span>{session ? `Created ${dateLabel(session.created_at)}` : 'A fresh space for your documents'}</span></div></div><span className={`status-pill ${session?.status || 'awaiting_upload'}`}><span />{statusLabels[session?.status || 'awaiting_upload']}</span></div>
 

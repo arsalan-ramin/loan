@@ -29,6 +29,7 @@ from .loan_dataset import LoanDataset
 from .loan_review import review_selected_loan
 from .models import Document, Report, Session
 from .underwriting_engine import evaluate_underwriting
+from .usage import UsageLedger, usage_scope
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,8 @@ def safe_cell(value: str | None) -> str:
 class BatchReviewer:
     def __init__(self, dataset: LoanDataset, concurrency: int | None = None):
         self.dataset = dataset
+        self.usage = UsageLedger(dataset.db_path.parent)
+        self._usage_batch_id: str | None = None
         self.workroot = dataset.db_path.parent / "batch_run"
         if concurrency is None:
             try:
@@ -259,6 +262,7 @@ class BatchReviewer:
         return bool(current)
 
     def _run(self, snapshot: str, targets: list[str] | None = None) -> None:
+        self._usage_batch_id = uuid4().hex
         workdir = self.workroot / uuid4().hex
         status, error = "completed", None
         try:
@@ -332,7 +336,9 @@ class BatchReviewer:
                 session = Session(status="completed", mode="TEST", documents=documents,
                                   report=Report(decision="needs_review", summary="Batch review", findings=[],
                                                 document_count=len(documents), underwriting=batch))
-                review = review_selected_loan(session, loan_id)
+                with usage_scope(ledger=self.usage, session_id=None, loan_id=loan_id,
+                                 batch_id=self._usage_batch_id, operation="batch_loan_review"):
+                    review = review_selected_loan(session, loan_id)
                 rationale, model = readable_rationale(review.analysis.explanation), review.model
         except LLMError as exc:
             if exc.status_code == 503:

@@ -53,6 +53,7 @@ def demo_explanation_context(report: Report) -> dict | None:
 
 
 def chat_context(store: Store, session: Session, query: str) -> dict:
+    demo_context = demo_explanation_context(session.report) if session.report else None
     safe_documents = []
     xlsx_sources = {doc.name for doc in session.documents if doc.extension.casefold() == ".xlsx"}
     for doc in session.documents:
@@ -81,12 +82,12 @@ def chat_context(store: Store, session: Session, query: str) -> dict:
     ]
     return {
         "status": session.status,
-        "local_preflight": session.preflight.model_dump() if session.preflight is not None else None,
+        "local_preflight": session.preflight.model_dump() if session.preflight is not None and demo_context is None else None,
         "workflow_actions": CHAT_WORKFLOW_INSTRUCTIONS,
         "documents": safe_documents,
-        "rules": [rule.model_dump() for rule in session.rules],
-        "underwriting_rule_catalog": session.policy_rules,
-        "report": report_context(session.report) if session.report else None,
+        "rules": [rule.model_dump() for rule in session.rules] if demo_context is None else [],
+        "underwriting_rule_catalog": session.policy_rules if demo_context is None else [],
+        "report": demo_context if demo_context is not None else report_context(session.report) if session.report else None,
         "recent_messages": [{"role": msg.role, "content": msg.content[:2000]}
                             for msg in session.messages if msg.origin == "conversation"][-12:],
         "recalled_conversation": recalled_conversation,

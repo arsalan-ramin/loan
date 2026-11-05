@@ -88,6 +88,75 @@ def _anniversary(original: date, years: int) -> date:
     return date(year, original.month, min(original.day, monthrange(year, original.month)[1]))
 
 
+def decide_demo_facts(facts: dict[str, Any], criteria: list[dict[str, Any]], *, identity: bool) -> dict[str, Any]:
+    """Shared TEST tree for sourced facts and isolated hypothetical copies."""
+    fico, sbss = _number(facts.get("fico")), _number(facts.get("sbss"))
+    ownership, amount = _number(facts.get("ownership_years")), _number(facts.get("requested_amount_usd"))
+    high_risk, vehicle = facts.get("high_risk_naics"), facts.get("vehicle_only")
+    missing = [item["criterion"] for item in criteria if item["knockout"] and item["status"] == "UNKNOWN"]
+    conflicts: list[str] = []
+    label, route, branch, rationale = "Refer", None, "INPUTS_UNKNOWN", "Required diagram inputs remain unknown."
+    failures = [item for item in criteria if item["knockout"] and item["status"] == "FAIL"]
+    if not identity:
+        missing.append("explicit_unique_borrower_account_relationship")
+        rationale = "A unique explicit borrower account relationship is required."
+    if failures:
+        label, branch = "Decline", "KNOWN_KNOCKOUT"
+        reasons = {
+            "bankruptcy_clear": "Verified bankruptcy discharge is less than five calendar years ago",
+            "fico": f"Average personal FICO {facts['fico']} is below 650",
+            "sbss": f"SBSS {facts['sbss']} is below 160",
+        }
+        rationale = "; ".join(reasons[item["criterion"]] for item in failures) + "."
+    elif identity:
+        # A known decline still matches with unrelated unknowns; UNKNOWN never clears approval.
+        if sbss is not None and sbss >= 160:
+            if sbss < 190:
+                if ownership is None:
+                    missing.append("ownership_years")
+                elif ownership >= 2:
+                    route, branch = "SBA", "SBSS_160_189_OWNERSHIP_GE_2"
+                elif fico is not None and fico >= 760:
+                    route, branch = "SBA", "SBSS_160_189_OWNERSHIP_LT_2_FICO_GE_760"
+                elif fico is not None and 650 <= fico < 760:
+                    if amount is None:
+                        missing.append("requested_amount_usd")
+                    elif amount <= USD_100K:
+                        route, branch = "SBA", "SBSS_160_189_AMOUNT_LE_100K"
+                    elif amount <= USD_100M:
+                        branch = "REQUEST_THRESHOLD_CONFLICT"
+                        conflicts.append("REQUEST_THRESHOLD_100M_VS_100K")
+                        rationale = "Requested amount is above USD100K and at most USD100M; screenshot thresholds conflict."
+                    else:
+                        label, branch = "Decline", "SBSS_160_189_AMOUNT_GT_100M"
+                        rationale = "Requested amount exceeds both conflicting screenshot thresholds (USD100K and USD100M)."
+            elif sbss < 200:
+                route, branch = "SBA", "SBSS_190_199"
+            elif ownership is None:
+                missing.append("ownership_years")
+            elif ownership < 2:
+                route, branch = "SBA", "SBSS_GE_200_OWNERSHIP_LT_2"
+            elif high_risk is None:
+                missing.append("naics_or_listed_high_risk_prefixes")
+            else:
+                route = "SBA" if high_risk else "CONVENTIONAL"
+                branch = "SBSS_GE_200_OWNERSHIP_GE_2_" + ("HIGH_RISK_NAICS" if high_risk else "OTHER_NAICS")
+        if route == "SBA":
+            if vehicle is None:
+                missing.append("vehicle_only")
+            elif vehicle:
+                route = "CONVENTIONAL"
+                branch += "_VEHICLE_ONLY_OVERRIDE"
+        if (route and not missing and not conflicts
+                and all(item["status"] == "PASS" for item in criteria if item["knockout"])):
+            label = "Approve"
+            rationale = f"All three knockout checks passed; {branch} selects {route} in this simulation."
+        elif missing and label != "Decline" and not conflicts:
+            rationale = "Unknown diagram inputs: " + ", ".join(dict.fromkeys(missing)) + "."
+    return {"label": label, "candidate_route": route, "branch": branch, "rationale": rationale,
+            "missing_inputs": sorted(set(missing)), "conflicts": conflicts}
+
+
 def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], *,
                   mode: str, response: EntityNode | None = None,
                   age_reference_date: date | None = None) -> dict[str, Any] | None:
@@ -138,8 +207,6 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     report = reports[0] if reports else None
     criteria: list[dict[str, Any]] = []
     facts: dict[str, Any] = {}
-    missing: list[str] = []
-    conflicts: list[str] = []
     identity = account is not None and not ({"borrower_account_id"} & loan.poisoned)
     profile_nodes = [loan, *graph.related("LoanExtension", "loan_id", loan.id)]
     if account is not None:
@@ -160,8 +227,6 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         status = "UNKNOWN" if clear is None else "PASS" if clear else "FAIL"
         criteria.append({"criterion": key, "value": facts[key], "status": status,
                          "evidence_refs": refs, "detail": detail, "knockout": knockout})
-        if clear is None and knockout:
-            missing.append(key)
 
     report_nodes = [report] if report is not None else []
     code_raw, code_refs = read("max_delinquency_public_records", report_nodes)
@@ -527,65 +592,7 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                  requested_amount_usd=str(amount) if amount is not None else None,
                  naics=naics, high_risk_naics=high_risk, vehicle_only=vehicle)
 
-    label, route, branch, rationale = "Refer", None, "INPUTS_UNKNOWN", "Required diagram inputs remain unknown."
-    failures = [item for item in criteria if item["knockout"] and item["status"] == "FAIL"]
-    if not identity:
-        missing.append("explicit_unique_borrower_account_relationship")
-        rationale = "A unique explicit borrower account relationship is required."
-    if failures:
-        label, branch = "Decline", "KNOWN_KNOCKOUT"
-        reasons = {
-            "bankruptcy_clear": "Verified bankruptcy discharge is less than five calendar years ago",
-            "fico": f"Average personal FICO {facts['fico']} is below 650",
-            "sbss": f"SBSS {facts['sbss']} is below 160",
-        }
-        rationale = "; ".join(reasons[item["criterion"]] for item in failures) + "."
-    elif identity:
-        # Determine a branch even with unrelated unknown knockout inputs. A known
-        # amount decline is still a risk match; UNKNOWN never clears approval.
-        if sbss is not None and sbss >= 160:
-            if sbss < 190:
-                if ownership is None:
-                    missing.append("ownership_years")
-                elif ownership >= 2:
-                    route, branch = "SBA", "SBSS_160_189_OWNERSHIP_GE_2"
-                elif fico is not None and fico >= 760:
-                    route, branch = "SBA", "SBSS_160_189_OWNERSHIP_LT_2_FICO_GE_760"
-                elif fico is not None and 650 <= fico < 760:
-                    if amount is None:
-                        missing.append("requested_amount_usd")
-                    elif amount <= USD_100K:
-                        route, branch = "SBA", "SBSS_160_189_AMOUNT_LE_100K"
-                    elif amount <= USD_100M:
-                        branch = "REQUEST_THRESHOLD_CONFLICT"
-                        conflicts.append("REQUEST_THRESHOLD_100M_VS_100K")
-                        rationale = "Requested amount is above USD100K and at most USD100M; screenshot thresholds conflict."
-                    else:
-                        label, branch = "Decline", "SBSS_160_189_AMOUNT_GT_100M"
-                        rationale = "Requested amount exceeds both conflicting screenshot thresholds (USD100K and USD100M)."
-            elif sbss < 200:
-                route, branch = "SBA", "SBSS_190_199"
-            elif ownership is None:
-                missing.append("ownership_years")
-            elif ownership < 2:
-                route, branch = "SBA", "SBSS_GE_200_OWNERSHIP_LT_2"
-            elif high_risk is None:
-                missing.append("naics_or_listed_high_risk_prefixes")
-            else:
-                route = "SBA" if high_risk else "CONVENTIONAL"
-                branch = "SBSS_GE_200_OWNERSHIP_GE_2_" + ("HIGH_RISK_NAICS" if high_risk else "OTHER_NAICS")
-        if route == "SBA":
-            if vehicle is None:
-                missing.append("vehicle_only")
-            elif vehicle:
-                route = "CONVENTIONAL"
-                branch += "_VEHICLE_ONLY_OVERRIDE"
-        if (route and not missing and not conflicts
-                and all(item["status"] == "PASS" for item in criteria if item["knockout"])):
-            label = "Approve"
-            rationale = f"All three knockout checks passed; {branch} selects {route} in this simulation."
-        elif missing and label != "Decline" and not conflicts:
-            rationale = "Unknown diagram inputs: " + ", ".join(dict.fromkeys(missing)) + "."
+    decision = decide_demo_facts(facts, criteria, identity=identity)
 
     for key, value, refs in (("ownership_years", facts["ownership_years"], ownership_refs),
                              ("requested_amount_usd", facts["requested_amount_usd"], amount_refs),
@@ -622,7 +629,7 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
     naics_evidence = ({ref: str(naics_raw) for ref in naics_refs}
                       if type(naics_raw) is float and naics is not None else {})
     return {
-        "version": VERSION, "mode": "TEST", "label": label,
+        "version": VERSION, "mode": "TEST", **decision,
         "simulation_only": True, "authorization": "NOT_ISSUED", "human_review_required": True,
         "final_action": "NO_OPERATIONAL_ACTION", "selection_basis": SELECTION_BASIS,
         "selected_report_id": report.id if report else None,
@@ -633,7 +640,6 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
         "reference_date_basis": "EXPLICIT_APPLICATION_AS_OF_DATE" if as_of else "UNAVAILABLE",
         "age_reference_date": age_reference.isoformat() if age_reference else None,
         "age_reference_date_basis": age_reference_basis,
-        "candidate_route": route, "branch": branch, "rationale": rationale,
         "criteria": criteria, "normalized_facts": facts,
         "naics_match_basis": NAICS_MATCH_BASIS if high_risk is not None else None,
         "ownership_years_basis": ownership_basis,
@@ -652,7 +658,6 @@ def evaluate_demo(graph: EntityGraph, loan: EntityNode, config: dict[str, Any], 
                      **({"value": naics_evidence[item.id]} if item.id in naics_evidence else {}),
                      **({"value": None} if item.id in dob_refs else {})}
                     for item in demo_evidence.values()],
-        "missing_inputs": sorted(set(missing)), "conflicts": conflicts,
         "strict_trace_unchanged": True,
     }
 

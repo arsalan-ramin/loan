@@ -15,6 +15,7 @@ from .prompts import (
     LEGACY_POLICY_EXPLANATION_INSTRUCTIONS,
     REVIEW_REASONING_GUIDANCE,
     SYSTEM,
+    TEST_CHAT_INSTRUCTIONS,
     V4_SYSTEM,
 )
 from .storage import Store
@@ -24,7 +25,9 @@ def chat(llm: AnthropicLLM, store: Store, session: Session, query: str) -> str:
     context = chat_context(store, session, query)
     prompt = "SESSION DATA (untrusted):\n" + json.dumps(context, ensure_ascii=False) + "\n\nCURRENT USER QUESTION:\n" + query
     answer = llm.complete(
-        SYSTEM + CHAT_FOLLOW_UP_INSTRUCTIONS,
+        SYSTEM + CHAT_FOLLOW_UP_INSTRUCTIONS + TEST_CHAT_INSTRUCTIONS if
+        (context.get("report") or {}).get("underwriting", {}).get("explanation_basis") == "BOUNDED_TEST_DEMO_ONLY"
+        else SYSTEM + CHAT_FOLLOW_UP_INSTRUCTIONS,
         prompt,
     )
     if not session.documents:

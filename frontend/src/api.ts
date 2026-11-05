@@ -1,4 +1,4 @@
-import type { AccountCandidatePage, BatchResultPage, BatchState, LoanCandidatePage, Mode, Rule, Session, StoredDataset } from './types';
+import type { AccountCandidatePage, BatchResultPage, BatchState, LoanCandidatePage, Mode, Rule, Session, StoredDataset, UsagePage } from './types';
 
 const BASE = '/api';
 const segment = encodeURIComponent;
@@ -26,6 +26,9 @@ const json = (method: string, body?: unknown): RequestInit => ({
 
 export const api = {
   health: () => request<{ status: string }>('/health'),
+  usage: (sessionId?: string, offset = 0, signal?: AbortSignal) => request<UsagePage>(
+    `/usage?offset=${offset}&limit=25${sessionId ? `&session_id=${segment(sessionId)}` : ''}`, { signal },
+  ),
   sessions: () => request<Session[]>('/sessions'),
   create: () => request<Session>('/sessions', json('POST', {})),
   session: (id: string, signal?: AbortSignal) => request<Session>(`/sessions/${segment(id)}`, { signal }),

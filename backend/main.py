@@ -12,6 +12,7 @@ from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from contextvars import copy_context
 from pathlib import Path
 from typing import Literal
 
@@ -43,6 +44,8 @@ from .reports import render_report
 from .storage import Store
 from .application_logging import configure_application_logging
 from .underwriting_models import UnderwritingBatch
+from .usage import UsageLedger, usage_scope
+from .what_if import fico_what_if, is_fico_what_if
 
 load_dotenv(Path(__file__).with_name(".env"))
 logger = logging.getLogger(__name__)
@@ -152,7 +155,9 @@ def process_session(store: Store, session_id: str) -> None:
                 findings = RulesAgent().evaluate(session)
                 step.detail = f"Evaluated {len(findings)} evidence-backed checks."
             elif index == 3:
-                session.report = DecisionAgent().decide(session, findings)
+                with usage_scope(ledger=UsageLedger(store.root), session_id=session.id,
+                                 loan_id=session.selected_loan_id, operation="report_explanation"):
+                    session.report = DecisionAgent().decide(session, findings)
                 step.detail = f"Prepared a {session.report.decision.replace('_', ' ')} decision and HTML report."
                 if session.report.underwriting is not None:
                     batch = session.report.underwriting
@@ -206,6 +211,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         logger.info('Application started; diagnostic logs enabled (5 MB x 4 files).')
         store = Store(root)
         application.state.store = store
+        application.state.usage = UsageLedger(root)
+        application.state.usage.recover_interrupted()
         application.state.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="folio")
         dataset = LoanDataset.for_root(root)
         dataset.recover_interrupted()
@@ -252,7 +259,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         started = perf_counter()
         status = 500
         try:
-            response = await call_next(request)
+            with usage_scope(ledger=request.app.state.usage, http_request_id=request_id):
+                response = await call_next(request)
             status = response.status_code
             response.headers["X-Request-ID"] = request_id
             return response
@@ -270,6 +278,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @application.get("/api/health")
     def health():
         return {"status": "ok"}
+
+    @application.get("/api/usage")
+    def token_usage(request: Request, session_id: str | None = Query(None, min_length=1, max_length=128),
+                    offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100)):
+        return request.app.state.usage.page(session_id, offset, limit)
 
     @application.get("/api/sessions", response_model=list[Session])
     def list_sessions(request: Request):
@@ -296,6 +309,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         with store.lock:
             session = require_session(store, session_id)
         local_inventory = is_loan_attribute_inventory_request(body.content)
+        local_what_if = is_fico_what_if(body.content)
         number = chat_loan_number(body.content)
         loan_chat = not local_inventory and (not session.documents
                                             or any(doc.extension == ".xlsx" for doc in session.documents))
@@ -310,8 +324,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             selected = select_loan(request, session_id, LoanSelectionRequest(loan_id=number))
             return begin_processing(request, session_id, selected.updated_at, chat_content=body.content)
         awaiting_loan = any(doc.extension == ".xlsx" for doc in session.documents) and not session.selected_loan_id
-        origin = "local_assistant" if local_inventory else "conversation"
-        if re.fullmatch(r"(?:hi|hello|hey)[!. ]*", body.content.strip(), re.IGNORECASE) and loan_chat:
+        origin = "local_assistant" if local_inventory or local_what_if else "conversation"
+        if local_what_if:
+            answer = fico_what_if(session, body.content, body.loan_id)
+        elif re.fullmatch(r"(?:hi|hello|hey)[!. ]*", body.content.strip(), re.IGNORECASE) and loan_chat:
             origin = "local_assistant"
             answer = IntakeAgent().greeting()
         elif awaiting_loan:
@@ -331,7 +347,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             memory = MemoryAgent(store)
             # Network calls must never hold the global persistence lock.
             try:
-                answer = memory.respond(chat_session, body.content)
+                with usage_scope(session_id=session.id, loan_id=body.loan_id or session.selected_loan_id,
+                                 operation="chat"):
+                    answer = memory.respond(chat_session, body.content)
             except LLMError as exc:
                 raise HTTPException(exc.status_code, str(exc)) from None
         with store.lock:
@@ -769,7 +787,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if len(snapshot.loan_ai_reviews) >= 20:
                 raise HTTPException(409, "This session has reached its 20 selected-loan AI review limit.")
         try:
-            review = review_selected_loan(snapshot, body.loan_id, body.preferred_evidence_ref)
+            with usage_scope(session_id=session_id, loan_id=body.loan_id, operation="selected_loan_review"):
+                review = review_selected_loan(snapshot, body.loan_id, body.preferred_evidence_ref)
         except LLMError as exc:
             raise HTTPException(exc.status_code, str(exc)) from None
         with store.lock:
@@ -858,7 +877,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                              "I'll post the result here when it finishes."),
                 ))
             store.save(session)
-            request.app.state.executor.submit(process_session, store, session.id)
+            request.app.state.executor.submit(copy_context().run, process_session, store, session.id)
         return session
 
     @application.post("/api/sessions/{session_id}/process", response_model=Session, status_code=202)

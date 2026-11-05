@@ -2,10 +2,12 @@
 
 import logging
 import os
+import sqlite3
 import time
-import uuid
 
 import anthropic
+
+from .usage import CURRENT_USAGE, Invocation
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
 DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -31,8 +33,28 @@ class AnthropicLLM:
             self.max_retries = 2
 
     def complete(self, system: str, prompt: str) -> str:
-        request_id = str(uuid.uuid4())
-        started = time.perf_counter()
+        invocation = Invocation(time.perf_counter())
+        ledger = CURRENT_USAGE.get().ledger
+        if ledger is not None:
+            try:
+                ledger.start(invocation.id, self.model, CURRENT_USAGE.get())
+            except (OSError, sqlite3.Error):
+                LOGGER.exception("llm_usage_start_failed request_id=%s", invocation.id)
+                raise LLMError("Token usage could not be recorded. No provider request was made.", 503) from None
+        try:
+            return self._invoke(system, prompt, invocation)
+        finally:
+            if ledger is not None:
+                try:
+                    ledger.finish(invocation)
+                except (OSError, sqlite3.Error):
+                    LOGGER.exception("llm_usage_finish_failed request_id=%s", invocation.id)
+                    raise LLMError("Token usage could not be saved after the provider request. "
+                                   "Check server logs before retrying; the request may have incurred charges.", 503) from None
+
+    def _invoke(self, system: str, prompt: str, invocation: Invocation) -> str:
+        request_id = invocation.id
+        started = invocation.started
         attempts = 0
         retry_exhausted = False
         response_chars = 0
@@ -41,6 +63,9 @@ class AnthropicLLM:
         LOGGER.info("llm_invocation_started request_id=%s", request_id)
 
         def log_terminal(event: str, category: str, http_status: int | None = None) -> None:
+            invocation.status = "succeeded" if event == "completed" else "failed"
+            invocation.category = category
+            invocation.attempts = attempts
             # Callers supply only fixed categories/statuses, never provider details.
             LOGGER.log(
                 logging.WARNING if event == "failed" else logging.INFO,
@@ -63,6 +88,7 @@ class AnthropicLLM:
             with anthropic.Anthropic(api_key=key, base_url=self.base_url, timeout=60.0, max_retries=0) as client:
                 while True:
                     attempts += 1
+                    invocation.attempts = attempts
                     try:
                         response = client.messages.create(
                             model=self.model, max_tokens=MAX_OUTPUT_TOKENS, system=system,
@@ -124,6 +150,12 @@ class AnthropicLLM:
         stop_category = (response.stop_reason if response.stop_reason in
                          ("end_turn", "stop_sequence", "max_tokens") else "other")
         usage = getattr(response, "usage", None)
+        for name in invocation.tokens:
+            value = getattr(usage, name, None)
+            if type(value) is int and value >= 0:
+                invocation.tokens[name] = value
+            elif name.startswith("cache_") and value is None:
+                invocation.tokens[name] = 0
         for name in token_counts:
             value = getattr(usage, name, None)
             # bools, strings, mocks and other provider values are not token counts.

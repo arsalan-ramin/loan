@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from unittest.mock import Mock
 
-from backend import commentary, llm, llm_context, prompts
+from backend import commentary, llm, llm_context, prompts, usage
 from backend.agents import DecisionAgent, MemoryAgent
 from backend.models import Document, Report, Session
 
@@ -19,8 +19,13 @@ def test_transport_has_no_business_or_prompt_dependencies():
     # An allowlist prevents new direct or transitive application dependencies,
     # including models (Report/Session), storage, demo logic and prompt ownership.
     imports = [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
-    assert all(isinstance(node, ast.Import) for node in imports)
-    assert {alias.name for node in imports for alias in node.names} == {"os", "anthropic", "logging", "time", "uuid"}
+    assert {alias.name for node in imports if isinstance(node, ast.Import) for alias in node.names} == {
+        "os", "anthropic", "logging", "time", "sqlite3",
+    }
+    assert {node.module for node in imports if isinstance(node, ast.ImportFrom)} == {"usage"}
+    # Metering is transport infrastructure, with no report/workflow dependencies.
+    assert not any(isinstance(node, ast.ImportFrom) and node.level
+                   for node in ast.walk(module_tree(usage)))
     assert not any(isinstance(node, ast.FunctionDef) for node in tree.body)
     assert {node.name for node in tree.body if isinstance(node, ast.ClassDef)} == {"AnthropicLLM", "LLMError"}
     assert not ({"Report", "Session", "Store", "report_context", "chat_context",
@@ -32,7 +37,7 @@ def test_transport_exposes_only_completion_and_configuration():
     tree = module_tree(llm)
     adapter = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "AnthropicLLM")
     assert {node.name for node in adapter.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))} == {
-        "__init__", "complete",
+        "__init__", "complete", "_invoke",
     }
     assert not any(isinstance(node, ast.ClassDef) for node in adapter.body)
     assert llm.MAX_OUTPUT_TOKENS == 8192

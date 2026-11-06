@@ -74,7 +74,8 @@
   <a href="#batch">09 / Batch execution</a>
   <a href="#api">10 / API &amp; UI lifecycle</a>
   <a href="#operations">11 / Operations &amp; caveats</a>
-  <a href="#sources">12 / Source map</a>
+  <a href="#installation">12 / Install &amp; run</a>
+  <a href="#sources">13 / Source map</a>
 </nav>
 <main>
 <section id="overview">
@@ -670,8 +671,51 @@ Batch:   none -&gt; running -&gt; completed / cancelled / failed
   <p>The ledger stores no prompts, responses, raw source values or credentials. Accounting write failures are explicit: an initial failure prevents the provider call; a final failure warns that charges may already have occurred. Local greetings, deterministic lookups and decisions create no Claude invocation. These are shared-workspace counters, not tenant-isolated accounting.</p>
   <p><strong>Implementation checks already reported before this document:</strong> 505 demo workflow tests and 29 dataset/batch tests passed; the broader selected backend suite reported 1,350 passed and the same 51 pre-existing failures. This document is an architecture snapshot, not a fresh certification of the entire test suite.</p>
 </section>
+<section id="installation">
+  <h2>12 / Install and run locally</h2>
+  <p>These commands use <strong>Windows PowerShell</strong>. Start in the cloned repository root (the folder containing <code>backend</code> and <code>frontend</code>). Use separate terminals for the API and UI. An existing working environment does not need to be recreated.</p>
+  <h3>Prerequisites</h3>
+  <ul>
+    <li>Python <strong>3.11&ndash;3.13</strong>. The virtual-environment example selects an installed Python 3.13 via the Windows Python launcher; substitute 3.11 or 3.12 if appropriate.</li>
+    <li>Node.js supported by <a href="../frontend/package.json">frontend/package.json</a>: <strong>22.12+ within 22.x, 24.x, or 26+</strong>, with npm.</li>
+    <li>Internet access for dependency installation and Anthropic requests. Claude explanations require a backend-only API key, model access and billing.</li>
+  </ul>
+  <div class="callout warning"><strong>Current fresh-install blocker:</strong> <a href="../backend/requirements.txt">backend/requirements.txt</a> contains unresolved Git merge markers. Resolve that conflict before installing backend dependencies. The file was intentionally left unchanged; the commands below describe the intended installation once it is resolved.</div>
+  <h3>Backend &mdash; install</h3>
+  <p>From the repository root, create a Python environment, then install dependencies only after creation succeeds:</p>
+  <pre><code>py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r .\backend\requirements.txt</code></pre>
+  <p>No activation is required: all backend commands explicitly use the environment's interpreter. Create the local configuration without overwriting an existing file:</p>
+  <pre><code>if (-not (Test-Path .\backend\.env)) {
+    Copy-Item .\backend\.env.example .\backend\.env
+}</code></pre>
+  <p>Edit <code>backend\.env</code> locally. Set <code>ANTHROPIC_API_KEY</code> to your own key and <code>ANTHROPIC_MODEL</code> to a model accessible to your account. Never paste credentials into chat, commit them or put them in frontend code. The API loads this backend file on startup.</p>
+  <h3>Backend &mdash; run</h3>
+  <p>In the first terminal, still at the repository root:</p>
+  <pre><code>.\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8010</code></pre>
+  <p>Keep the terminal open. The API uses local persistent storage under <code>backend\data</code> by default; <code>FOLIO_DATA_DIR</code> can configure another location. Restart the API after changing its environment.</p>
+  <h3>Frontend &mdash; install</h3>
+  <p>Open a second PowerShell terminal at the repository root. Install the lockfile-defined dependencies:</p>
+  <pre><code>Set-Location .\frontend
+npm.cmd ci</code></pre>
+  <h3>Frontend &mdash; run</h3>
+  <p>After installation succeeds, run this in the same frontend terminal:</p>
+  <pre><code>npm.cmd run dev</code></pre>
+  <p>Open <a href="http://127.0.0.1:5174/">http://127.0.0.1:5174/</a>. The configuration in <a href="../frontend/vite.config.ts">vite.config.ts</a> forwards <code>/api</code> to <code>http://127.0.0.1:8010</code>. Keep both terminals running. No frontend API key or separate frontend environment file is required.</p>
+  <h3>Verify the services</h3>
+  <pre><code>Invoke-RestMethod http://127.0.0.1:8010/api/health</code></pre>
+  <p>Expect <code>status: ok</code>. API documentation is at <a href="http://127.0.0.1:8010/docs">http://127.0.0.1:8010/docs</a>. A successful health check verifies the API, not Anthropic credentials or model access. The UI should show an API connection and the greeting. Do not send a loan number merely to test startup unless you intend to make a billable review request.</p>
+  <h3>VS Code alternative, stopping and troubleshooting</h3>
+  <ul>
+    <li>After installation/configuration, use <strong>Terminal &rarr; Run Task &rarr; Agent: Start</strong> to start both services. <strong>Agent: API</strong> and <strong>Agent: UI</strong> start them individually; definitions are in <a href="../.vscode/tasks.json">.vscode/tasks.json</a>.</li>
+    <li>Press <strong>Ctrl+C</strong> in each service terminal to stop it, or terminate its VS Code task. Rerun the startup command/task to restart. Do not delete persistent data to restart.</li>
+    <li>If a port is occupied, stop the service you own in its terminal. Do not terminate unrelated processes. Changing ports requires coordinated task, Vite proxy and backend CORS changes.</li>
+    <li>If the UI cannot reach the API, check that port 8010 is running and the health endpoint responds. If Claude is unavailable, verify backend configuration locally and restart the API; deterministic results retain explicit provider warnings.</li>
+    <li>For a frontend build check, run <code>npm.cmd run build</code> from <code>frontend</code>. This creates static assets; it does not start either service or configure production routing. The local development commands above are not production deployment instructions.</li>
+  </ul>
+</section>
 <section id="sources">
-  <h2>12 / Source map and reading order</h2>
+  <h2>13 / Source map and reading order</h2>
   <p>Relative links below work when this HTML stays in the repository's docs folder. The document itself needs no remote scripts, styles, fonts or services to render.</p>
   <ol>
     <li><a href="../backend/main.py">backend/main.py</a> &mdash; API routes, intake, startup recovery and executor orchestration.</li>

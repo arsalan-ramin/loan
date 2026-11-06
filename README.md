@@ -9,7 +9,7 @@ composition, and batch execution, see the standalone
 [implementation architecture](docs/architecture.html).
 
 For step-by-step UI/backend startup commands, first-time setup, stopping/restarting
-and troubleshooting, see [docs/RUNNING.md](docs/RUNNING.md).
+and troubleshooting, see the [installation and startup sections](docs/architecture.html#installation).
 
 Requirements: **Python 3.11–3.13**, **Node.js 22.12+** and npm. Dependencies are already installed in this workspace. The Python environment is `.venv`.
 
@@ -29,6 +29,57 @@ Chat requires a valid API key, model access, and billable network access to Anth
 These ports intentionally avoid another local project using ports 8000 and 5173. The frontend proxies `/api` to the backend. If changing ports, update the VS Code tasks, Vite proxy, and backend CORS settings together. Always run tasks from the repository root.
 
 For a fresh checkout, create a Python virtual environment, install [backend/requirements.txt](backend/requirements.txt) into it, and run npm install inside [frontend](frontend). Then use the tasks above. On non-Windows systems, change the task interpreter path from `.venv/Scripts/python.exe` to `.venv/bin/python`.
+
+### Install and run the backend (Windows PowerShell)
+
+**Current installation blocker:** [backend/requirements.txt](backend/requirements.txt) contains unresolved Git merge markers. Resolve that conflict before running the dependency installation command. The instructions below describe the intended setup; the requirements file has been left unchanged.
+
+From the repository root, create the environment with an installed Python 3.11-3.13 interpreter (the example selects 3.13):
+
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r .\backend\requirements.txt
+```
+
+Run the second command only after environment creation succeeds. Configure `backend\.env` as described above; copy the example only if no local file exists:
+
+```powershell
+if (-not (Test-Path .\backend\.env)) {
+    Copy-Item .\backend\.env.example .\backend\.env
+}
+```
+
+Edit the copied file locally to set your Anthropic key and account-accessible model. Start the API from the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8010
+```
+
+Keep this terminal open. Activation is not required because commands use the virtual environment's interpreter explicitly.
+
+### Install and run the frontend (Windows PowerShell)
+
+Use a Node release supported by [frontend/package.json](frontend/package.json): Node 22.12+ within 22.x, 24.x, or 26+. Open a **second terminal** at the repository root:
+
+```powershell
+Set-Location .\frontend
+npm.cmd ci
+npm.cmd run dev
+```
+
+Run the development server only after dependency installation succeeds. Open http://127.0.0.1:5174. Vite forwards `/api` requests to http://127.0.0.1:8010; keep both services running. No frontend API key or separate frontend environment file is needed.
+
+### Check, stop and restart
+
+From another PowerShell terminal:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8010/api/health
+```
+
+Expect `status: ok`; API documentation is at http://127.0.0.1:8010/docs. A healthy API does not verify Anthropic credentials or model access. Local lookups are free; Claude chat/explanations require a configured, billable provider.
+
+Press **Ctrl+C** in each service terminal to stop it, then rerun its startup command to restart. Restart the backend after environment changes. If a port is occupied, stop the service you started in its own terminal rather than terminating unrelated processes. Do not delete the data directory when restarting; SQLite, uploaded workbooks, and token history persist there.
 
 ## Using the workspace
 

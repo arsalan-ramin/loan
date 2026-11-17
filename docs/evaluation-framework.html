@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Proposed target state for measuring AI quality offline and in production with golden datasets, traces, and evaluation tooling.">
+  <meta name="description" content="Proposed centralized AI evaluation platform for measuring quality offline and in production with golden datasets, traces, and release evidence.">
   <title>AI Evaluation Framework | Target State</title>
   <style>
     :root {
@@ -237,7 +237,7 @@
       <div class="topline">
         <div>
           <h1>EVALUATION FRAMEWORK | From offline proof to production confidence</h1>
-          <p class="subtitle">A proposed, risk-tiered evidence loop: measure quality before release, observe real behavior in production, and use the same traceable evaluation contract at both stages.</p>
+          <p class="subtitle">A proposed, risk-tiered evidence loop: measure quality before release, observe real behavior in production, and use the same traceable evaluation contract at both stages. <a href="#central-platform">See the centralized platform design</a>.</p>
         </div>
         <span class="target-pill">Target state / for discussion</span>
       </div>
@@ -393,8 +393,35 @@
       <div class="recommendation"><p><strong>Governance rule:</strong> dataset edits are versioned and reviewed; evaluation results pin the exact dataset version. Do not tune against the held-out set, and do not send regulated or confidential records to a vendor until security, privacy, residency, retention, and contractual controls are approved.</p></div>
     </section>
 
+    <section class="detail-section" id="central-platform" aria-labelledby="central-platform-title">
+      <h2 class="section-label" id="central-platform-title">03 / Centralized evaluation platform | shared standards, isolated execution</h2>
+      <p class="detail-intro">Give every AI team one place to register a use case, find approved evaluation suites, trigger runs, and review release evidence. Centralize policy and results, not raw production data: teams run workloads in approved environments and share only what policy permits.</p>
+      <div class="table-wrap">
+        <table class="plan-table">
+          <thead><tr><th scope="col">Platform layer</th><th scope="col">What to build or reuse</th><th scope="col">Integration and control</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Intake &amp; registry</th><td>Use case and workspace registration; catalog versioned datasets, evaluator suites, baselines, and risk-tier policies. Link each record to the existing AI asset registry.</td><td>Onboard with a named owner, risk tier, approved data boundary, and release approver. Separate permissions by team and environment.</td></tr>
+            <tr><th scope="row">Offline execution</th><td>One run API and a reusable CI template submit pinned manifests to approved workers. Run deterministic checks, calibrated model judges, and reviewer rubrics.</td><td>Keep restricted inputs and case-level results in the approved workspace. Use scoped workload identities, per-team quotas, and approved judge endpoints.</td></tr>
+            <tr><th scope="row">Production monitoring</th><td>Collect permitted application and gateway traces through a common telemetry schema. Score approved samples asynchronously and route alerts to the owning team.</td><td>Filter and redact before export; keep production scoring off the request path. Report sampling coverage and missing telemetry separately from quality. Review and sanitize failures before adding them to a golden set.</td></tr>
+            <tr><th scope="row">Results, gates &amp; audit</th><td>Normalize results into a central scorecard and store signed-off release evidence in the bank's approved evidence store. Show portfolio trends and link back to restricted case details.</td><td>The release pipeline reads the bank-owned gate outcome: pass, fail, or incomplete. Missing, stale, or failed mandatory checks block promotion unless an authorized, time-limited exception is recorded.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="detail-grid spaced">
+        <article class="detail-card">
+          <h3>Common run and result contract</h3>
+          <p>Stamp each run with a run ID, use case, owner, environment, application build, and applicable model, prompt, dataset, evaluator, baseline, and policy versions. Record metric and slice results, coverage, trace or case references, gate outcome, and reviewer or exception IDs. For online runs without reference labels, record the sampling policy and mark dataset and reference-based measures as not applicable.</p>
+        </article>
+        <article class="detail-card">
+          <h3>Who owns what</h3>
+          <p><strong>AI Platform</strong> owns the shared service, schemas, adapters, access, and support. <strong>Use-case teams and data owners</strong> own cases, labels, instrumentation, and remediation. <strong>Model Risk / Control Tower</strong> define gate policy and exception authority; the designated release approver signs off independently of the team submitting the run.</p>
+        </article>
+      </div>
+      <div class="recommendation"><p><strong>Keep the bank-owned records separate from the tooling:</strong> use a thin adapter to normalize runs and results from LangSmith or Arize (Phoenix or AX). Choose one default backend after the pilot. Evaluator definitions, approved dataset versions, gate rules, and signed release evidence remain portable; a vendor outage or change must not turn an incomplete gate into a pass.</p></div>
+    </section>
+
     <section class="detail-section" aria-labelledby="tooling-title">
-      <div class="section-label" id="tooling-title">03 / Tooling shortlist | LangSmith + Arize</div>
+      <div class="section-label" id="tooling-title">04 / Tooling shortlist | LangSmith + Arize</div>
       <p class="detail-intro">Propose a time-boxed proof of concept for both options against the same sanitized golden set and workflow. Product capabilities below reflect vendor documentation; enterprise fit, deployment, cost, retention, and data handling need direct validation with the vendors and internal control owners.</p>
       <div class="detail-grid">
         <article class="vendor-card">
@@ -431,19 +458,19 @@
           </tbody>
         </table>
       </div>
-      <div class="recommendation"><p><strong>Proposed posture:</strong> run a short, controlled bake-off; do not procure or deploy both by default. Keep the approved golden dataset and release-gate definition tool-agnostic. Select one operational system of record after the PoC, with exportable evidence and portable instrumentation where feasible.</p></div>
+      <div class="recommendation"><p><strong>Proposed posture:</strong> run a short, controlled bake-off against the common run and result contract; do not procure or deploy both by default. Select one default evaluation backend after the PoC, with exportable evidence and portable instrumentation. The bank's approved evidence store remains the system of record for release decisions.</p></div>
     </section>
 
     <section class="detail-section" aria-labelledby="implementation-title">
-      <div class="section-label" id="implementation-title">04 / Adoption plan | prove value before scaling</div>
+      <div class="section-label" id="implementation-title">05 / Adoption plan | prove value before scaling</div>
       <p class="detail-intro">Start with one bounded use case and non-production or approved synthetic data. Advance only when evidence and control dependencies are cleared.</p>
       <div class="table-wrap">
         <table class="plan-table">
           <thead><tr><th scope="col">Stage</th><th scope="col">Activities</th><th scope="col">Exit evidence</th><th scope="col">Accountable roles</th></tr></thead>
           <tbody>
             <tr><th scope="row">A / Define</th><td>Select use case and risk tier; agree scorecard, reviewer rubric, data boundary, and baseline.</td><td>Approved evaluation charter, owners, success criteria, and data approval.</td><td>Product / business owner, Model Risk, data owner</td></tr>
-            <tr><th scope="row">B / Pilot</th><td>Build reviewed golden / edge / regression cases; instrument traces; run LangSmith and Arize PoC.</td><td>Comparable results, trace coverage, control assessment, support / cost estimate, documented gaps.</td><td>AI Engineering, platform, Security / Privacy</td></tr>
-            <tr><th scope="row">C / Gate</th><td>Integrate offline suite in release workflow; assign exception and approval path.</td><td>Signed baseline, repeatable run, thresholds and rollback / hold criteria.</td><td>Release owner, Model Risk, Control Tower</td></tr>
+            <tr><th scope="row">B / Pilot</th><td>Build a reviewed golden set; submit the same candidate and baseline through the shared run contract to LangSmith and Arize using approved test data.</td><td>Comparable results, trace coverage, evidence export, control assessment, and support / cost estimate.</td><td>AI Engineering, platform, Security / Privacy</td></tr>
+            <tr><th scope="row">C / Gate</th><td>Publish the CI template and onboard a second team in an isolated workspace before broad rollout. Assign the exception and approval path.</td><td>Repeatable runs and signed baselines; isolation verified; passing, failing, and incomplete runs produce the expected promotion decisions and evidence.</td><td>Release owner, Model Risk, Control Tower</td></tr>
             <tr><th scope="row">D / Observe</th><td>Use approved production sampling; review traces, incidents, overrides, and drift indicators.</td><td>Access-controlled operational dashboard and incident / re-evaluation playbook.</td><td>Operations, business reviewer, AI Engineering</td></tr>
             <tr><th scope="row">E / Improve</th><td>Promote reviewed failures to a new dataset version; fix, re-run, compare, re-approve.</td><td>Trace-to-case lineage and documented resolution; no unreviewed benchmark changes.</td><td>Dataset owner, evaluators, release approver</td></tr>
           </tbody>

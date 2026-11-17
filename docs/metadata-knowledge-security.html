@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Proposed target state for governed knowledge, metadata, authorization, security, and data access for enterprise AI agents.">
+  <title>AI Data Foundations | Metadata, Knowledge &amp; Security</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c2927;
+      --muted: #596663;
+      --deep: #102b27;
+      --green: #dce9df;
+      --green-strong: #315d49;
+      --gold: #f0dfb8;
+      --gold-strong: #a27424;
+      --purple: #e5dfef;
+      --purple-strong: #71628a;
+      --line: #cbd2cd;
+      --paper: #fff;
+      --canvas: #edf0ed;
+      --gray: #e7e9e7;
+      --red-soft: #f4e3df;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 28px; color: var(--ink); background: var(--canvas); font: 14px/1.45 Arial, Helvetica, sans-serif; }
+    .slide { position: relative; max-width: 1280px; margin: 0 auto; padding: 42px 48px 30px; overflow: hidden; background: var(--paper); border: 1px solid #d5dad6; box-shadow: 0 12px 38px #1c292712; }
+    .ribbon { position: absolute; top: 24px; right: -42px; width: 172px; padding: 8px 0; transform: rotate(45deg); background: #c97827; color: #fff; text-align: center; text-transform: uppercase; letter-spacing: 1.4px; font-size: 10px; font-weight: 700; }
+    .eyebrow { margin: 0 0 9px; color: #53625c; text-transform: uppercase; letter-spacing: 2px; font-size: 11px; font-weight: 700; }
+    h1 { margin: 0; font-size: clamp(26px, 3vw, 36px); line-height: 1.1; letter-spacing: -.7px; }
+    h2 { margin: 0 0 12px; font-size: 17px; }
+    h3 { margin: 0 0 7px; font-size: 13px; }
+    p { margin: 0; }
+    .subtitle { max-width: 970px; margin: 10px 0 24px; color: var(--muted); font-size: 15px; }
+    .topline { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+    .target-pill { flex: 0 0 auto; margin: 2px 75px 0 0; padding: 7px 13px; border-radius: 20px; background: #e1ebe4; color: #365747; text-transform: uppercase; letter-spacing: .8px; font-size: 10px; font-weight: 700; }
+    .section-label { display: flex; align-items: center; gap: 10px; margin: 25px 0 10px; color: #34433e; text-transform: uppercase; letter-spacing: 1px; font-size: 10px; font-weight: 700; }
+    .section-label::after { height: 1px; flex: 1; background: var(--line); content: ""; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px 17px; margin: 0 0 11px; color: #52605a; font-size: 10px; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .swatch { width: 13px; height: 13px; border: 1px solid #bfc7c1; }
+    .chosen { background: var(--green); color: #2f5b45; }
+    .decide { background: var(--gold); color: #795816; }
+    .build { background: var(--purple); color: #625276; }
+    .future { background: #e7e9e7; color: #58625e; }
+    .architecture { display: grid; grid-template-columns: 1.05fr 1.4fr 1.2fr 1.15fr; gap: 18px; }
+    .capability-map { display: grid; gap: 6px; }
+    .capability-band { display: grid; grid-template-columns: 126px minmax(0, 1fr); border: 1px solid var(--line); background: #f7f8f6; }
+    .capability-plane { display: flex; align-items: center; padding: 10px 12px; background: var(--deep); color: #fff; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .65px; }
+    .capability-plane small { display: block; margin-top: 3px; color: #d1dcd5; font-size: 9px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+    .capability-items { display: flex; flex-wrap: wrap; align-content: center; gap: 6px; padding: 7px; }
+    .capability { flex: 1 1 155px; min-width: 135px; padding: 7px 8px; border: 1px solid #cbd2cd; background: #eef3ef; }
+    .capability strong { display: block; margin: 4px 0 2px; font-size: 10px; }
+    .capability p { color: #53605a; font-size: 9px; line-height: 1.4; }
+    .capability .status { margin: 0; font-size: 7px; }
+    .capability.c-decide { background: #f6eddb; }
+    .capability.c-build { background: #eeeaf4; }
+    .capability.c-target { background: #e8f0e9; }
+    .capability.c-later { background: #f0f1ef; }
+    .component-legend { margin-top: 9px; }
+    .routing-note { margin-top: 9px; padding: 9px 11px; border: 1px dashed #82948c; background: #f5f7f5; color: #42514b; font-size: 10px; }
+    .plane { position: relative; min-width: 0; padding: 12px; border: 1px solid var(--line); background: #f8f9f7; }
+    .plane::after { position: absolute; top: 50%; right: -14px; z-index: 1; width: 9px; height: 9px; transform: rotate(45deg); border-top: 2px solid #557166; border-right: 2px solid #557166; content: ""; }
+    .plane:last-child::after { content: none; }
+    .plane h3 { margin: -12px -12px 10px; padding: 8px 10px; background: var(--deep); color: #fff; text-transform: uppercase; letter-spacing: .8px; font-size: 10px; }
+    .plane small { display: block; color: #d1dcd5; font-size: 9px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+    .unit { margin-top: 7px; padding: 9px; border: 1px solid #cbd2cd; background: #eef3ef; font-size: 10px; }
+    .unit strong { display: block; margin-bottom: 3px; font-size: 10px; }
+    .unit p { color: #53605a; }
+    .unit.decide-unit { background: #f6eddb; }
+    .unit.build-unit { background: #eeeaf4; }
+    .unit.secure-unit { background: #e9efed; }
+    .access-bar { margin-top: 11px; padding: 8px 10px; border: 1px dashed #82948c; background: #f5f7f5; color: #42514b; text-align: center; font-size: 10px; font-weight: 700; }
+    .loop-note { margin-top: 9px; color: var(--muted); font-size: 10px; }
+    .table-wrap { min-width: 0; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 10px; }
+    th, td { padding: 8px 9px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    thead th { background: var(--deep); color: white; font-size: 11px; }
+    thead th:first-child { width: 145px; background: #e7e9e7; color: var(--ink); }
+    tbody th { width: 145px; background: #e9ece9; font-size: 10px; }
+    td { background: #fafbf9; }
+    .status { display: inline-block; margin-bottom: 4px; padding: 2px 6px; border-radius: 2px; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .35px; }
+    .maturity th, .maturity td { padding: 9px; }
+    .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .card { min-width: 0; padding: 14px 15px; border: 1px solid var(--line); background: #f8f9f7; }
+    .card h3 { margin-bottom: 8px; text-transform: uppercase; letter-spacing: .55px; font-size: 10px; }
+    .card p, .card li { color: #414e49; font-size: 11px; }
+    .card ul { margin: 0; padding-left: 17px; }
+    .card li + li { margin-top: 5px; }
+    .subtle { color: var(--muted); font-size: 11px; }
+    .callout { margin-top: 12px; padding: 12px 14px; border-left: 4px solid var(--gold-strong); background: #f8f1e2; }
+    .callout p { color: #4a4638; font-size: 11px; }
+    .principle { background: #f0f5f0; border-left-color: var(--green-strong); }
+    .schema th:first-child { width: 150px; }
+    .schema tbody th { width: 150px; }
+    .schema td { font-size: 10px; }
+    .schema-wrap { margin-top: 10px; }
+    .card-grid-spaced { margin-top: 12px; }
+    .schema td:last-child { color: #4d5b55; }
+    .path { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; align-items: stretch; }
+    .path-step { position: relative; padding: 11px 12px; border: 1px solid var(--line); background: #f5f7f4; }
+    .path-step:not(:last-child)::after { position: absolute; top: 21px; right: -8px; z-index: 1; width: 13px; height: 13px; transform: rotate(45deg); background: #f5f7f4; border-top: 1px solid var(--line); border-right: 1px solid var(--line); content: ""; }
+    .path-step strong { display: block; margin-bottom: 4px; font-size: 10px; }
+    .path-step span { color: #53605a; font-size: 10px; }
+    .risk-table tbody th { width: 160px; }
+    .risk-table td:first-of-type { width: 34%; }
+    .dependencies { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-top: 12px; }
+    .dependency { padding: 10px 11px; border: 1px dashed #aeb8b1; background: #fbfcfa; }
+    .dependency strong { display: block; margin-bottom: 4px; font-size: 10px; }
+    .dependency span { color: var(--muted); font-size: 9px; }
+    footer { display: flex; justify-content: space-between; gap: 20px; margin-top: 18px; padding-top: 9px; border-top: 1px solid var(--line); color: #68736e; font-size: 10px; }
+    @media (max-width: 900px) {
+      body { padding: 12px; }
+      .slide { padding: 30px 24px 24px; }
+      .architecture { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .plane:nth-child(2)::after { content: none; }
+      .capability-band { grid-template-columns: 112px minmax(0, 1fr); }
+      .path { grid-template-columns: 1fr; }
+      .path-step:not(:last-child)::after { top: auto; right: 20px; bottom: -8px; transform: rotate(135deg); }
+      .dependencies { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 560px) {
+      body { padding: 0; }
+      .slide { padding: 24px 16px; border: 0; }
+      .topline { display: block; }
+      .target-pill { display: inline-block; margin: 14px 0 0; }
+      .architecture, .cards, .dependencies { grid-template-columns: 1fr; }
+      .capability-band { grid-template-columns: 1fr; }
+      .capability-plane { min-height: 38px; }
+      .capability { flex-basis: 100%; }
+      .plane::after, .plane:nth-child(2)::after { top: auto; right: 20px; bottom: -14px; transform: rotate(135deg); }
+      .plane:last-child::after { content: none; }
+      .maturity, .schema, .risk-table { min-width: 760px; }
+      footer { flex-direction: column; gap: 4px; }
+      .ribbon { top: 18px; right: -51px; }
+    }
+    @media print {
+      @page { size: landscape; margin: 8mm; }
+      body { padding: 0; background: white; }
+      .slide { max-width: none; padding: 24px 30px; border: 0; box-shadow: none; }
+      .architecture { grid-template-columns: 1.05fr 1.4fr 1.2fr 1.15fr; }
+      .capability-band { grid-template-columns: 126px minmax(0, 1fr); }
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .dependencies { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .plane, .unit, .access-bar, thead th, tbody th, .status, .card, .callout, .path-step, .dependency, .capability-plane, .capability { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      tr, .card, .plane { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main class="slide">
+    <div class="ribbon">Draft</div>
+    <header>
+      <p class="eyebrow">AI capability roadmap / Govern · Control · Run · Secure</p>
+      <div class="topline">
+        <div>
+          <h1>TRUSTED AI DATA | Metadata, knowledge &amp; access controls</h1>
+          <p class="subtitle">A proposed target state for delivering the right approved information to the right agent, for the right purpose, with identity, authorization, and evidence carried end to end.</p>
+        </div>
+        <span class="target-pill">Target state / for discussion</span>
+      </div>
+    </header>
+
+    <div class="section-label">Reference architecture | policy follows the data to every retrieval</div>
+    <section class="architecture" aria-label="Governed data and agent access architecture">
+      <div class="plane">
+        <h3>Govern <small>Policy, ownership, approval records</small></h3>
+        <div class="unit"><strong>Intake &amp; approval</strong><p>Source owner, purpose, permitted use, risk review</p></div>
+        <div class="unit"><strong>Data &amp; model registry</strong><p>Owners, versions, approved sources and models</p></div>
+        <div class="unit decide-unit"><strong>Classification policy</strong><p>PII / confidential labels, retention, residency</p></div>
+        <div class="unit"><strong>Access review</strong><p>Role, agent, source and entitlement recertification</p></div>
+      </div>
+      <div class="plane">
+        <h3>Knowledge <small>Governed source-to-index lifecycle</small></h3>
+        <div class="unit"><strong>Approved source connectors</strong><p>Named repositories and business systems; source ACLs captured</p></div>
+        <div class="unit"><strong>Normalize &amp; enrich</strong><p>Parse, classify, attach canonical metadata and provenance</p></div>
+        <div class="unit build-unit"><strong>Knowledge store</strong><p>Versioned content, chunks, indexes and source references</p></div>
+        <div class="unit"><strong>Refresh &amp; retire</strong><p>Sync status, effective dates, deletion and re-index evidence</p></div>
+      </div>
+      <div class="plane">
+        <h3>Run <small>Every request uses the approved route</small></h3>
+        <div class="unit secure-unit"><strong>Agent identity</strong><p>Authenticated workload, owner, purpose and scoped entitlements</p></div>
+        <div class="unit decide-unit"><strong>Gateway &amp; policy decision</strong><p>Authenticate, authorize, route; enforce purpose and data policy</p></div>
+        <div class="unit"><strong>Retrieval service</strong><p>Filter by access before content enters model context</p></div>
+        <div class="unit build-unit"><strong>Agent runtime</strong><p>Approved model, tools and bounded context</p></div>
+      </div>
+      <div class="plane">
+        <h3>Secure + observe <small>Evidence and stop controls</small></h3>
+        <div class="unit secure-unit"><strong>Guardrails</strong><p>Data loss prevention, prompt / content checks, tool policy</p></div>
+        <div class="unit"><strong>Trace + evidence store</strong><p>Identity, query, filters, source IDs, result and decision</p></div>
+        <div class="unit"><strong>Security monitoring</strong><p>Access anomalies, policy denials, incidents and alerts</p></div>
+        <div class="unit decide-unit"><strong>Stop / revoke</strong><p>Disable agent, credential, source route or risky capability</p></div>
+      </div>
+    </section>
+    <div class="access-bar">END-TO-END ACCESS INVARIANT &nbsp;·&nbsp; No agent or user can retrieve content beyond approved identity, entitlement, purpose, source and classification.</div>
+    <p class="loop-note">Observability returns evidence to governance for recertification, incident response, and source / model change review. Security controls can stop or restrict a route at any stage.</p>
+
+    <div class="section-label">Maturity spine | proposed capability by release</div>
+    <div class="legend" aria-label="Status legend">
+      <span><i class="swatch chosen"></i> Chosen / foundation</span>
+      <span><i class="swatch decide"></i> To choose / confirm</span>
+      <span><i class="swatch build"></i> To build</span>
+      <span><i class="swatch future"></i> Later capability</span>
+    </div>
+    <div class="table-wrap">
+      <table class="maturity">
+        <thead><tr><th scope="col">Capability</th><th scope="col">v1.0 Foundation<br><small>Live since 10/20</small></th><th scope="col">v2.0 Operational<br><small>Target Dec 2026</small></th><th scope="col">v2.1 Agentic ready<br><small>Target Q1 2027</small></th><th scope="col">v3.0 Scaled<br><small>Target 2H 2027</small></th></tr></thead>
+        <tbody>
+          <tr><th scope="row">AI-ready data</th><td><span class="status chosen">Chosen</span><br>Approved or mock data only; build and test in a bounded environment.</td><td><span class="status build">To build</span><br>Approved sources, named owners, classification labels and governed ingestion.</td><td><span class="status build">To build</span><br>Data owners approve what each agent can retrieve, per source.</td><td><span class="status future">Target</span><br>Agents query structured data through governed, reusable access paths.</td></tr>
+          <tr><th scope="row">Knowledge + retrieval</th><td><span class="status chosen">Chosen</span><br>Each application may build its own search index.</td><td><span class="status decide">To choose</span><br>Reusable retrieval service and approved index / knowledge-store pattern.</td><td><span class="status build">To build</span><br>Approved connectors and source-level retrieval policy.</td><td><span class="status future">Target</span><br>Shared knowledge and analytics reused across approved agents.</td></tr>
+          <tr><th scope="row">Metadata + filtering</th><td><span class="status decide">To confirm</span><br>Basic source attributes; coverage and consistency need assessment.</td><td><span class="status build">To build</span><br>Canonical schema, lineage, sensitivity labels and effective dates.</td><td><span class="status build">To build</span><br>Authorization filters enforced at retrieval and rechecked on results.</td><td><span class="status future">Target</span><br>Policy-aware filtering across documents, chunks and structured sources.</td></tr>
+          <tr><th scope="row">Agent identity</th><td><span class="status chosen">Foundation</span><br>People and applications authenticate centrally; keys held centrally.</td><td><span class="status build">To build</span><br>Access to models and apps is role-based and traceable.</td><td><span class="status build">To build</span><br>Every agent has its own identity, owner and approved connectors.</td><td><span class="status future">Target</span><br>Agent access automatically re-certified; credentials rotated and revoked.</td></tr>
+          <tr><th scope="row">Security + guardrails</th><td><span class="status chosen">Chosen</span><br>Approved models and approved data only.</td><td><span class="status build">To build</span><br>Sensitive / harmful content controls; incident playbook in place.</td><td><span class="status build">To build</span><br>Agents can be stopped quickly; unregistered agents detected.</td><td><span class="status future">Target</span><br>No write action without approval; risky actions remain in sandboxes.</td></tr>
+          <tr><th scope="row">Evidence + audit</th><td><span class="status chosen">Foundation</span><br>Usage visible per app.</td><td><span class="status build">To build</span><br>Each app has one evidence record and an accountable owner.</td><td><span class="status build">To build</span><br>Trace links caller, agent identity, filters, source and decision.</td><td><span class="status future">Target</span><br>Evidence reused for continuous monitoring and re-approval.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section-label">Platform capability map | components by plane</div>
+    <p class="subtle">The same target architecture, organized by capability plane. Status labels are proposed maturity placement from the roadmap, not a declaration that a platform choice or control is complete.</p>
+    <div class="legend component-legend" aria-label="Component maturity legend">
+      <span><i class="swatch decide"></i> To choose / confirm</span>
+      <span><i class="swatch build"></i> To build</span>
+      <span><i class="swatch chosen"></i> Target capability</span>
+      <span><i class="swatch future"></i> Later / scale</span>
+    </div>
+    <section class="capability-map" aria-label="AI platform capability map">
+      <div class="capability-band">
+        <div class="capability-plane">Govern<small>Policy, ownership, approval records</small></div>
+        <div class="capability-items">
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Data classes &amp; owners</strong><p>Classification taxonomy, named source owners, purpose, retention and jurisdiction register.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Source &amp; agent registry</strong><p>Approved data sources, models, agents, tools, owners and permitted use.</p></article>
+          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Data access policy</strong><p>Common policy definitions for roles, source entitlements, delegated access and approvals.</p></article>
+          <article class="capability c-target"><span class="status chosen">Target / v2.1+</span><strong>Access recertification</strong><p>Periodic review and expiry of agent, owner, connector and data entitlements.</p></article>
+        </div>
+      </div>
+      <div class="capability-band">
+        <div class="capability-plane">Control<small>Identity, access, decision, stop</small></div>
+        <div class="capability-items">
+          <article class="capability c-build"><span class="status build">To build / v2.1</span><strong>Agent identity</strong><p>Unique workload identity per agent and environment; owner, purpose and least-privilege scope.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Keys &amp; secrets</strong><p>Central vault, short-lived credentials where supported, rotation, scoped access and revocation.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Action approval</strong><p>Human approval for consequential writes; policy check, approver, decision and outcome recorded.</p></article>
+          <article class="capability c-target"><span class="status chosen">Target / v2.1</span><strong>Stop / revoke</strong><p>Disable agent, credential, tool or source route; verify downstream access is revoked.</p></article>
+        </div>
+      </div>
+      <div class="capability-band">
+        <div class="capability-plane">Interface<small>Channels, agents, tools, external suppliers</small></div>
+        <div class="capability-items">
+          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Approved AI gateways</strong><p>Controlled model and tool routes for authentication, policy, usage limits and logging.</p></article>
+          <article class="capability c-decide"><span class="status decide">To choose / v2.1</span><strong>MCP server hosting</strong><p>Approved MCP route and catalog; each tool independently authenticates and authorizes requests.</p></article>
+          <article class="capability c-later"><span class="status future">Later / v3.0</span><strong>Agent communication</strong><p>Approved agent-to-agent protocol with authenticated peers, scoped delegation and traceable handoffs.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>External supplier routes</strong><p>Reach vendors, models and tools only through approved gateways and reviewed data paths.</p></article>
+        </div>
+      </div>
+      <div class="capability-band">
+        <div class="capability-plane">Run<small>Orchestration, compute, data</small></div>
+        <div class="capability-items">
+          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Business process engine</strong><p>Workflow orchestration, bounded steps, durable checkpoints, retry and approval handoff.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.1</span><strong>Agent runtime + sandbox</strong><p>Isolated execution with approved models, tools, network egress and resource limits.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.1</span><strong>Agent / workflow state store</strong><p>Scoped session state and workflow status with ownership, expiry, encryption and access policy.</p></article>
+          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Caching layer</strong><p>Tenant- and authorization-scoped cache keys; re-check access and invalidate on ACL, label or source changes.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Retrieval service + indexes</strong><p>Approved vector / keyword indexes retain provenance and apply authorization before context assembly.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Data segregation</strong><p>Separate tenant, environment, classification and workload boundaries across stores and compute.</p></article>
+          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Data lakes</strong><p>Governed source and curated zones; owner, classification, access and lineage travel with data.</p></article>
+          <article class="capability c-decide"><span class="status decide">To choose / v2.1</span><strong>Analytics platforms</strong><p>Approved query paths and semantic / row-level controls; no broad agent access to raw data.</p></article>
+        </div>
+      </div>
+      <div class="capability-band">
+        <div class="capability-plane">Observe<small>Evidence, usage, performance</small></div>
+        <div class="capability-items">
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Audit + trace</strong><p>Correlate user, agent, policy decision, retrieval, model call, tool and approval events.</p></article>
+          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Evidence store</strong><p>Access-controlled, integrity-protected records with retention, search and export controls.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Conversation archive</strong><p>Approved, minimized conversation records with access restrictions and defined retention.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Incident record</strong><p>Link alert, affected identity / data, investigation, containment, owner and remediation evidence.</p></article>
+        </div>
+      </div>
+      <div class="capability-band">
+        <div class="capability-plane">Secure<small>Security and data protection, every plane</small></div>
+        <div class="capability-items">
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Threat detection</strong><p>Monitor anomalous access, prompt / tool abuse, egress, credential misuse and policy bypass.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Data-loss controls</strong><p>Classification-aware redaction, minimization, egress checks and protected telemetry.</p></article>
+          <article class="capability c-target"><span class="status chosen">Target / v2.1</span><strong>Incident response</strong><p>Runbooks for exposure, poisoned / stale data, identity compromise and unsafe agent action.</p></article>
+          <article class="capability c-target"><span class="status chosen">Target / v3.0</span><strong>Continuous assurance</strong><p>Test segregation, cache isolation, access revocation, sandbox boundaries and recovery.</p></article>
+        </div>
+      </div>
+    </section>
+    <div class="routing-note"><strong>Cross-plane rule:</strong> every model, MCP tool, agent handoff, cache lookup, retrieval index, data-lake query and analytics call uses an approved route. Authorization is evaluated before data enters the agent context; state and cached results remain scoped to identity, tenant, purpose and expiry.</div>
+
+    <div class="section-label">01 / Metadata contract | minimum fields for a governed knowledge item</div>
+    <p class="subtle">Apply metadata consistently to source records and derived chunks. Keep source-of-truth content in its governed system; the index is a controlled retrieval projection with traceable provenance.</p>
+    <div class="table-wrap schema-wrap">
+      <table class="schema">
+        <thead><tr><th scope="col">Metadata group</th><th scope="col">Example attributes</th><th scope="col">Why it matters</th><th scope="col">Control expectation</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Identity &amp; lineage</th><td>Document / record ID, chunk ID, source system, source URI, version, checksum, ingestion job ID</td><td>Trace retrieved content to the authoritative record and its exact version.</td><td>Stable IDs; provenance is retained through chunking, re-indexing and export.</td></tr>
+          <tr><th scope="row">Ownership &amp; purpose</th><td>Business owner, data steward, source owner, approved purpose, product / domain</td><td>Establish accountability and the use context in which the source is approved.</td><td>Named accountable owner; purpose is explicit and reviewed.</td></tr>
+          <tr><th scope="row">Classification &amp; privacy</th><td>Data classification, sensitivity labels, personal-data indicator, permitted handling, retention class</td><td>Drive retrieval eligibility, redaction, storage, logging and retention decisions.</td><td>Derived chunks inherit the strictest applicable source label; fail closed if unknown.</td></tr>
+          <tr><th scope="row">Access policy</th><td>Tenant / legal entity, allowed groups or roles, source ACL reference, jurisdiction, compartment</td><td>Scope retrieval to the requesting user and agent's authorized context.</td><td>Policy is enforced at query time; access changes and revocations propagate.</td></tr>
+          <tr><th scope="row">Validity &amp; freshness</th><td>Effective-from / until, source-updated-at, indexed-at, sync status, expiry / review date</td><td>Prevent stale, superseded or out-of-period content from influencing a response.</td><td>Freshness SLA, deletion / tombstone propagation and stale-content handling are defined.</td></tr>
+          <tr><th scope="row">Quality &amp; control</th><td>Content type, language, extraction quality, approval status, source trust tier, policy version</td><td>Support quality-aware retrieval, ingestion exceptions and auditable decisions.</td><td>Ingestion failures quarantine for review; quality flags are visible to retrieval policy.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout principle"><p><strong>Schema rule:</strong> distinguish immutable provenance (where data came from and which version) from mutable authorization (who can access it now). Derive access from the authoritative policy / ACL service where feasible; do not rely on a stale copied permission as the only control.</p></div>
+
+    <div class="section-label">02 / Knowledge-store lifecycle | source remains authoritative</div>
+    <div class="path" aria-label="Knowledge store lifecycle">
+      <div class="path-step"><strong>1 / APPROVE SOURCE</strong><span>Owner, purpose, classification, access path and review evidence are registered.</span></div>
+      <div class="path-step"><strong>2 / INGEST</strong><span>Authenticate connector; validate format, labels, malware / content policy and provenance.</span></div>
+      <div class="path-step"><strong>3 / NORMALIZE</strong><span>Extract, chunk and enrich while preserving source IDs, version and ACL lineage.</span></div>
+      <div class="path-step"><strong>4 / INDEX</strong><span>Publish to the approved store; apply retention, encryption and access controls.</span></div>
+      <div class="path-step"><strong>5 / REFRESH / RETIRE</strong><span>Sync changes, propagate revocations / deletions, monitor failures and attest freshness.</span></div>
+    </div>
+    <div class="cards card-grid-spaced">
+      <article class="card">
+        <h3>Knowledge-store design principles</h3>
+        <ul>
+          <li>Separate authoritative content from derived embeddings, chunks, caches and search indexes.</li>
+          <li>Partition by approved tenancy / security boundary where required; isolate development, test and production.</li>
+          <li>Encrypt in transit and at rest; restrict service identities, operators, backup access and administrative paths.</li>
+          <li>Provide freshness / deletion SLAs, re-index controls, backup recovery and auditable lifecycle events.</li>
+        </ul>
+      </article>
+      <article class="card">
+        <h3>Ingestion and content trust</h3>
+        <ul>
+          <li>Allowlist connectors and source locations; validate types, size, structure and source ownership.</li>
+          <li>Treat ingested text as untrusted data, not instructions; retrieval content cannot grant tools or alter system policy.</li>
+          <li>Quarantine parsing, classification, malware, provenance or ACL-sync exceptions; alert an accountable owner.</li>
+          <li>Reconcile indexed counts and deletions to source manifests; report freshness and failed syncs.</li>
+        </ul>
+      </article>
+    </div>
+
+    <div class="section-label">03 / Metadata filtering | authorize before context assembly</div>
+    <div class="cards">
+      <article class="card">
+        <h3>Request context</h3>
+        <p>Resolve the human caller, authenticated workload / agent identity, tenant, approved use case, purpose, and delegated permissions. Reject missing or expired identity context.</p>
+      </article>
+      <article class="card">
+        <h3>Policy decision</h3>
+        <p>Evaluate user and agent entitlements together against source ACL, classification, purpose, jurisdiction, tenant boundary, effective dates and current policy.</p>
+      </article>
+      <article class="card">
+        <h3>Constrained retrieval</h3>
+        <p>Pass mandatory authorization predicates to the retrieval / data service before results are returned. Apply the same controls to vector, keyword, cache, reranker and structured-data paths.</p>
+      </article>
+      <article class="card">
+        <h3>Re-check and minimize</h3>
+        <p>Validate returned records and citations, remove disallowed fields, minimize context, and deny rather than broaden access when filters cannot be enforced or verified.</p>
+      </article>
+    </div>
+    <div class="callout"><p><strong>Non-negotiable:</strong> post-retrieval filtering alone is not an authorization boundary: unauthorized content may already have reached the application, logs, reranker or model context. Fail closed if policy evaluation, ACL synchronization or tenant scoping is unavailable.</p></div>
+
+    <div class="section-label">04 / Agent authentication &amp; authorization | distinct identity per workload</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Lifecycle control</th><th scope="col">Target-state requirement</th><th scope="col">Evidence / operating signal</th><th scope="col">Release maturity</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Register &amp; own</th><td>Every agent / service has a unique workload identity, named business and technical owner, purpose, environment, approved models, tools and sources.</td><td>Registry entry, approval record, inventory reconciliation; unregistered identity is denied.</td><td>v2.0 register; v2.1 enforce</td></tr>
+          <tr><th scope="row">Authenticate</th><td>Use centrally managed workload authentication and short-lived credentials / tokens where supported. No shared human credentials or embedded long-lived secrets.</td><td>Issuer, subject, audience, expiry and authentication result are validated and recorded.</td><td>v2.0 controlled; v2.1 standard</td></tr>
+          <tr><th scope="row">Authorize</th><td>Grant least privilege per environment, model, connector, data domain and action. Preserve caller context where user delegation is required; agent identity alone does not imply user data access.</td><td>Policy decision, scope, purpose and denial reason are traceable; default is deny.</td><td>v2.0 role-based; v2.1 per-agent</td></tr>
+          <tr><th scope="row">Rotate &amp; revoke</th><td>Automate credential rotation; support rapid disablement of a principal, tool, source route or agent. Remove access on owner / role / risk change.</td><td>Rotation and revocation tests; time-to-disable target; residual access checks.</td><td>v2.1 tested stop control</td></tr>
+          <tr><th scope="row">Recertify</th><td>Periodically re-approve identity ownership, purpose, scopes, connectors and use. Expire unattended or unowned registrations.</td><td>Time-bound attestations, overdue exceptions and audit-ready change history.</td><td>v3.0 automated recertification</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section-label">05 / Security &amp; data access | controls across the request lifecycle</div>
+    <div class="table-wrap">
+      <table class="risk-table">
+        <thead><tr><th scope="col">Risk / boundary</th><th scope="col">Prevent &amp; constrain</th><th scope="col">Detect &amp; respond</th><th scope="col">Required evidence</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Unauthorized retrieval</th><td>Least privilege; source ACL-aware policy; tenant isolation; query-time filters; deny on policy uncertainty.</td><td>Alert on cross-scope attempts, repeated denials, ACL-sync lag and unusual access patterns.</td><td>Caller / agent, policy version, allowed scope, source IDs and decision outcome.</td></tr>
+          <tr><th scope="row">Sensitive-data exposure</th><td>Classification, minimization, redaction, approved-use enforcement, field-level policy and restricted logging.</td><td>Monitor DLP events, sensitive-data paths, export and retention exceptions.</td><td>Data labels, redaction / policy result, approved purpose and access record.</td></tr>
+          <tr><th scope="row">Untrusted retrieved content</th><td>Source allowlist, provenance checks, content scanning and instruction/data separation; bound tools and model context.</td><td>Review suspicious content, unexpected tool requests and policy override attempts.</td><td>Source version, content reference, retrieval path, guardrail result and tool decision.</td></tr>
+          <tr><th scope="row">Identity / credential misuse</th><td>Unique principals, short-lived credentials, secret vault, workload authentication, scoped tokens and environment isolation.</td><td>Detect anomalous principal use, expired / stale credentials and unregistered agents; provide kill switch.</td><td>Identity lifecycle, owner, issuer, scope, rotation and disablement events.</td></tr>
+          <tr><th scope="row">Unsafe action or egress</th><td>Read-only by default; tool allowlists; human approval for consequential writes; sandbox uncertain actions; approved network routes.</td><td>Monitor tool calls, outbound destinations, approval bypass and unexpected state changes.</td><td>Requested action, policy decision, approver, executed result and rollback / incident link.</td></tr>
+          <tr><th scope="row">Incomplete audit trail</th><td>Centralize policy, gateway and data-access events; define protected retention and restricted audit access.</td><td>Alert on missing telemetry, tampering, pipeline gaps and retention failures.</td><td>Correlatable event IDs from user request through retrieval, agent response and downstream action.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cards card-grid-spaced">
+      <article class="card">
+        <h3>Data-access operating model</h3>
+        <ul>
+          <li>Business / data owners approve sources, purposes, labels, populations and access conditions.</li>
+          <li>Security / Privacy / Legal review sensitive data handling, residency, retention and vendor / connector paths.</li>
+          <li>Platform owns identity, policy enforcement, logging, secret management and emergency disablement.</li>
+          <li>AI application owners keep agent inventory, tool scopes, evaluations and runbooks current.</li>
+        </ul>
+      </article>
+      <article class="card">
+        <h3>Evidence and incident readiness</h3>
+        <ul>
+          <li>Correlate request, user / workload identity, authorization decision, source references, model / prompt version and tool actions.</li>
+          <li>Do not indiscriminately log raw sensitive content; define redaction, access, retention and evidence integrity.</li>
+          <li>Exercise incident playbooks for data exposure, poisoned / stale source, identity compromise and unsafe action.</li>
+          <li>Test the stop path and confirm it revokes subsequent retrieval / tool access, not only UI availability.</li>
+        </ul>
+      </article>
+    </div>
+
+    <div class="section-label">06 / Release gates &amp; critical dependencies</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Release</th><th scope="col">Proof point</th><th scope="col">Exit gate</th><th scope="col">Must be cleared</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">v1.0 Foundation</th><td>Governed model / data access for bounded build and test; centralized people and application authentication.</td><td>Certification, SIT / UAT, operations handover; approved data boundary and owners.</td><td>Approved models and data; central key handling; named support owner.</td></tr>
+          <tr><th scope="row">v2.0 Operational</th><td>First bounded production application with enforced controls; tool gateway and read-only agents proven in non-production.</td><td>Role-based, traceable access; source / metadata contract; incident and release evidence.</td><td>Data owner approvals, classification / DLP alignment, Control Tower and MRM registration.</td></tr>
+          <tr><th scope="row">v2.1 Agentic ready</th><td>First read-only agent in production through the approved gateway, with per-agent identity and source-level access.</td><td>Retrieval authorization tests, trace coverage, recertification owner, tested stop control.</td><td>Agent identity standard, approved connectors, metadata filter validation and incident playbook.</td></tr>
+          <tr><th scope="row">v3.0 Scaled</th><td>First approval-gated agent action; reusable governed knowledge / analytics across approved agents.</td><td>Action approvals, continuous access reviews, automated evidence and risk monitoring.</td><td>Business value / action thresholds, finance / control approvals, resilient shared services.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="dependencies" aria-label="Critical dependencies">
+      <div class="dependency"><strong>Data owner approval per source</strong><span>Purpose, classification, ACL, retention and jurisdiction.</span></div>
+      <div class="dependency"><strong>Agent identity standard</strong><span>Named owner, unique principal, scopes and lifecycle.</span></div>
+      <div class="dependency"><strong>Policy enforcement point</strong><span>Gateway and retrieval services enforce a common decision.</span></div>
+      <div class="dependency"><strong>Control Tower + MRM</strong><span>Registration, change approval, audit and incident readiness.</span></div>
+    </div>
+
+    <div class="callout principle"><p><strong>Boundary:</strong> this is a proposed architecture and maturity target, not a statement that these controls or approvals are currently implemented. Validate current-state capability, platform standards, legal obligations, data-owner approvals and risk acceptance before production use.</p></div>
+    <footer>
+      <span>Proposed target state; owners, platforms, policies, control evidence and dates require confirmation.</span>
+      <span>M&amp;T Tech / AI governance</span>
+    </footer>
+  </main>
+</body>
+</html>

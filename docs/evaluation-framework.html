@@ -236,20 +236,20 @@
       <p class="eyebrow">AI capability roadmap / Observe</p>
       <div class="topline">
         <div>
-          <h1>EVALUATION FRAMEWORK | From offline proof to production confidence</h1>
-          <p class="subtitle">A proposed, risk-tiered evidence loop: measure quality before release, observe real behavior in production, and use the same traceable evaluation contract at both stages. <a href="#central-platform">See the centralized platform design</a>.</p>
+          <h1>EVALUATION FRAMEWORK | What we test, when, and why</h1>
+          <p class="subtitle">Before release, test the new version on cases with known answers. After release, sample real requests to find failures the test set missed. <a href="#central-platform">See how teams use one evaluation platform</a>.</p>
         </div>
         <span class="target-pill">Target state / for discussion</span>
       </div>
     </header>
 
-    <div class="section-label">Target operating loop</div>
+    <div class="section-label">How evaluation works</div>
     <section class="flow" aria-label="Evaluation workflow">
-      <div class="flow-step"><span class="step-number">01 / CURATE</span><strong>Golden dataset</strong><span>Versioned, reviewed cases with expected outcomes and evidence</span></div>
-      <div class="flow-step"><span class="step-number">02 / TEST</span><strong>Offline evaluation</strong><span>Repeatable regression, slices, and baseline comparison</span></div>
-      <div class="flow-step"><span class="step-number">03 / GATE</span><strong>Release decision</strong><span>Risk-tier thresholds, approvals, and recorded rationale</span></div>
-      <div class="flow-step"><span class="step-number">04 / OBSERVE</span><strong>Production traces</strong><span>Versioned inputs, outputs, evidence, cost, and outcomes</span></div>
-      <div class="flow-step"><span class="step-number">05 / IMPROVE</span><strong>Continuous evaluation</strong><span>Sample, investigate drift, curate regressions, repeat</span></div>
+      <div class="flow-step"><span class="step-number">01 / CURATE</span><strong>Golden dataset</strong><span>Save reviewed test cases with expected answers, refusals, or citations.</span></div>
+      <div class="flow-step"><span class="step-number">02 / TEST</span><strong>Offline evaluation</strong><span>Run the current and proposed versions on the same test set.</span></div>
+      <div class="flow-step"><span class="step-number">03 / GATE</span><strong>Release decision</strong><span>Check required limits. Record who approved or blocked the release and why.</span></div>
+      <div class="flow-step"><span class="step-number">04 / OBSERVE</span><strong>Production traces</strong><span>Record permitted details about each sampled request, such as source IDs and response time.</span></div>
+      <div class="flow-step"><span class="step-number">05 / IMPROVE</span><strong>Fix and retest</strong><span>Turn reviewed failures into test cases so the next release checks for them.</span></div>
     </section>
 
     <div class="section-label">Release maturity | proposed target by capability</div>
@@ -267,26 +267,26 @@
           <tbody>
             <tr>
               <th scope="row">What we measure</th>
-              <td><span class="status decide">To decide</span><p>Agree a small scorecard: task / decision quality, evidence grounding, policy adherence, safety, latency, and cost.</p></td>
-              <td><span class="status build">To build</span><p>Score each release against risk-tier thresholds; report slices, regressions, and human-review agreement.</p></td>
-              <td><span class="status chosen">Target</span><p>Trend quality and drift continuously; recalibrate thresholds from approved outcomes and review.</p></td>
+              <td><span class="status decide">To decide</span><p>Define how to count correct answers, unsupported claims, policy violations, latency, and cost.</p></td>
+              <td><span class="status build">To build</span><p>Check release limits by risk tier. Report failures by case type and check where automated scores disagree with reviewers.</p></td>
+              <td><span class="status chosen">Target</span><p>Track scores over time. Investigate declines and require approval for changes to release limits.</p></td>
             </tr>
             <tr>
               <th scope="row">Offline vs. production</th>
-              <td><span class="status decide">To decide</span><p>Run a repeatable, non-production baseline before promotion. Keep production actions human-approved.</p></td>
-              <td><span class="status build">To build</span><p>Compare candidate vs. baseline offline; sample read-only production traffic and review failures.</p></td>
-              <td><span class="status chosen">Target</span><p>Join offline regressions to sampled live results; block, roll back, or re-approve on defined guardrails.</p></td>
+              <td><span class="status decide">To decide</span><p>Test in non-production. Production apps can recommend; a person acts on the recommendation.</p></td>
+              <td><span class="status build">To build</span><p>Compare versions offline. Sample read-only agent requests in production and review failures.</p></td>
+              <td><span class="status chosen">Target</span><p>Use live findings to add tests. Define when to pause a rollout or roll back a deployed version.</p></td>
             </tr>
             <tr>
               <th scope="row">Golden dataset</th>
               <td><span class="status decide">To decide</span><p>Name an owner, approval process, permitted data, labels, and initial representative cases.</p></td>
               <td><span class="status build">To build</span><p>Version reviewed cases with expected outputs, evidence references, risk tags, and edge cases.</p></td>
-              <td><span class="status chosen">Target</span><p>Maintain governed suites by use case; separate tuning from held-out regression sets.</p></td>
+              <td><span class="status chosen">Target</span><p>Maintain test sets by use case. Keep release test cases separate from examples used to tune the system.</p></td>
             </tr>
             <tr>
               <th scope="row">Traces &amp; evidence</th>
-              <td><span class="status chosen">Foundation</span><p>Capture prompt / model versions, inputs and outputs, evidence path, and usage per run.</p></td>
-              <td><span class="status build">To build</span><p>Link each eval result to its trace, dataset version, approval, and incident / override.</p></td>
+              <td><span class="status chosen">Foundation</span><p>Record prompt and model versions, permitted request details, and usage per run.</p></td>
+              <td><span class="status build">To build</span><p>Link a score to its run and test case or live request. Attach review, incident, or override IDs when applicable.</p></td>
               <td><span class="status chosen">Target</span><p>Searchable, access-controlled evidence store; retention, redaction, and audit are enforced.</p></td>
             </tr>
             <tr>
@@ -301,15 +301,14 @@
       <aside class="side-stack" aria-label="Release principles and dependencies">
         <section class="side-card">
           <h3>Production boundary</h3>
-          <p>Evaluation is evidence, not authorization. Production behavior remains within the approved authority tier; a passing score cannot bypass a human approval or control.</p>
+          <p>A passing test does not grant new permissions. A read-only agent still cannot write to a system, and an action that requires approval still needs it.</p>
         </section>
         <section class="side-card callout">
-          <h3>Critical decisions to unblock</h3>
+          <h3>Decisions before launch</h3>
           <ul>
-            <li>Evaluation / data tooling decision and owner</li>
-            <li>Data owner approval per source; privacy and retention alignment</li>
-            <li>Model risk thresholds, release gate, and exception authority</li>
-            <li>Control Tower / MRM registration and incident playbook</li>
+            <li>AI Platform: select the tool and name its owner.</li>
+            <li>Data owners: approve which data can be tested, logged, or exported.</li>
+            <li>Model Risk and Control Tower: confirm release limits, exception authority, and incident response.</li>
           </ul>
         </section>
         <section class="side-card">
@@ -319,160 +318,162 @@
       </aside>
     </div>
 
-    <div class="section-label">Minimum viable design | shared across offline and production</div>
+    <div class="section-label">Worked example | internal policy assistant</div>
+    <p class="detail-intro">The assistant answers staff questions from approved policy documents. The case and numbers below are illustrative, not bank policy or approved thresholds.</p>
     <div class="bottom-grid">
       <section class="bottom-card metrics">
-        <h3>Measures | define thresholds by risk tier</h3>
+        <h3>Golden case | what should happen</h3>
         <ul>
-          <li>Outcome / task correctness and completeness</li>
-          <li>Evidence coverage, citation validity, and groundedness</li>
-          <li>Policy / safety violations, escalation and override rate</li>
-          <li>Latency, failure rate, tokens, and cost per task</li>
+          <li><strong>Input:</strong> A staff user with access to the policy asks, &ldquo;When do I need a receipt for an expense?&rdquo;</li>
+          <li><strong>Expected:</strong> &ldquo;A receipt is required for expenses of $25 or more.&rdquo; Cite Expense Policy, version 3, section 4.</li>
+          <li><strong>Failure:</strong> &ldquo;Over $25&rdquo; is wrong because it excludes exactly $25.</li>
         </ul>
       </section>
       <section class="bottom-card traces">
-        <h3>Golden cases + trace record</h3>
-        <p>Store approved or synthetic inputs, expected outcome, evidence IDs, labels, risk slice, and dataset version. Link each run to prompt / model versions, retrieval, output, scores, latency, cost, reviewer, and result.</p>
+        <h3>Offline | why the release is blocked</h3>
+        <ul>
+          <li><strong>Answer check:</strong> Require 95/100. The new build gets 98/100; the current build gets 96/100.</li>
+          <li><strong>Access check:</strong> Require zero disclosures in 20 tests. The new build shows a restricted citation in one test.</li>
+          <li><strong>Decision:</strong> Block the release. Fix the disclosure and rerun both sets.</li>
+        </ul>
       </section>
       <section class="bottom-card gates">
-        <h3>Release gate | no single score</h3>
-        <p>Require minimum per-risk thresholds, no critical safety regression, documented exceptions, and named approval. Use human review for ambiguous or high-impact outcomes; re-evaluate after material changes.</p>
+        <h3>Production | what to check after release</h3>
+        <p>After the fixed build is approved and deployed, sample live requests. If 80 sampled answers require citations and four omit them, report <strong>4 of 80 answers missing a required citation (5%)</strong>. Send those four traces to the app team. This measures citation coverage, not answer accuracy.</p>
       </section>
     </div>
 
     <section class="detail-section" aria-labelledby="scorecard-title">
       <div class="section-label" id="scorecard-title">01 / Evaluation scorecard | proposed measures</div>
-      <p class="detail-intro">Keep deterministic checks as the first line of defense. Use model-based judges and human review where quality cannot be reliably captured by code alone. Set thresholds by use case and risk tier; calibrate them on reviewed examples before making them release gates.</p>
+      <p class="detail-intro">Use code for checks with exact rules. Use a reviewer or a model that scores against a written rubric when meaning matters. Set pass limits by use case and risk tier before testing.</p>
       <div class="table-wrap">
         <table class="metric-table">
           <thead><tr><th scope="col">Dimension</th><th scope="col">Example measure</th><th scope="col">Evaluation method</th><th scope="col">Decision use</th></tr></thead>
           <tbody>
-            <tr><th scope="row">Outcome quality</th><td>Correctness, completeness, task success</td><td>Reference comparison; rubric judge; reviewer label</td><td>Primary quality threshold; segment by case type</td></tr>
-            <tr><th scope="row">Evidence &amp; grounding</th><td>Required evidence present; citation / source validity; unsupported claims</td><td>Deterministic source checks plus calibrated judge or review</td><td>Block unsupported high-impact conclusions</td></tr>
-            <tr><th scope="row">Policy &amp; safety</th><td>Forbidden action, sensitive-data handling, escalation compliance</td><td>Rules and adversarial / edge-case suite; human adjudication</td><td>Critical guardrail; do not average away failures</td></tr>
-            <tr><th scope="row">Human oversight</th><td>Escalation, override, disagreement and reviewer burden</td><td>Production outcomes and sampled review</td><td>Check authority boundary and operational usability</td></tr>
-            <tr><th scope="row">Reliability &amp; cost</th><td>Latency, error / timeout rate, tokens, cost per completed task</td><td>Trace telemetry and workload-specific service objectives</td><td>Capacity, resilience and cost guardrails</td></tr>
+            <tr><th scope="row">Answer accuracy</th><td>Correct answers / answerable test cases</td><td>Compare with the expected answer; use a rubric for paraphrases.</td><td>Require a minimum pass rate.</td></tr>
+            <tr><th scope="row">Evidence</th><td>Answers whose cited sources support every required claim / answers checked</td><td>Verify the source ID in code. Have a reviewer or validated judge check the claim against the source text.</td><td>Flag unsupported claims; block those defined as critical.</td></tr>
+            <tr><th scope="row">Access &amp; safety</th><td>Unauthorized disclosures in access-control tests</td><td>Verify that a user without access gets neither restricted text nor restricted citations.</td><td>Block release on any critical failure, even if accuracy improves.</td></tr>
+            <tr><th scope="row">Human review</th><td>Reviewer corrections / outputs reviewed</td><td>Record whether the reviewer accepted or corrected the output.</td><td>Investigate common correction reasons. Do not treat this sample as the full traffic population.</td></tr>
+            <tr><th scope="row">Reliability &amp; cost</th><td>95th-percentile response time; errors / requests; total request cost / completed tasks</td><td>Measure from traces and usage records for the same workload and time window.</td><td>Compare each measure with its approved limit.</td></tr>
           </tbody>
         </table>
       </div>
       <div class="detail-grid spaced">
         <article class="detail-card">
-          <h3>Judge quality is itself evaluated</h3>
-          <p>Calibrate judge rubrics against a human-reviewed sample, monitor inter-rater agreement and false passes, pin judge model / prompt versions, and route ambiguous or high-risk cases to a person. A judge score is supporting evidence, not ground truth.</p>
+          <h3>Check the automated judge</h3>
+          <p>Compare its scores with human labels. Count false passes: cases the judge passed but a reviewer failed. Record the judge model and rubric versions, and send disputed or high-risk cases to a person.</p>
         </article>
         <article class="detail-card">
-          <h3>Report distributions, not just averages</h3>
-          <p>Show pass rate and confidence alongside failure examples and slices by product, risk tier, language, data quality, and workflow path. Record sample size; define minimum coverage before a result can qualify as a release gate.</p>
+          <h3>Show counts by case type</h3>
+          <p>Report both passed and tested counts: for example, 98/100 answerable cases and 19/20 access-control cases. If required cases are missing, mark the run incomplete rather than passing it.</p>
         </article>
       </div>
     </section>
 
     <section class="detail-section" aria-labelledby="dataset-title">
-      <div class="section-label" id="dataset-title">02 / Golden dataset | governed learning loop</div>
-      <p class="detail-intro">Golden data is a reviewed benchmark, not a bulk copy of production traffic. Treat case selection, labels, access, and set membership as governed changes with traceable ownership.</p>
+      <div class="section-label" id="dataset-title">02 / Golden dataset | build a reviewed test set</div>
+      <p class="detail-intro">A golden dataset is a set of approved test inputs with reviewed expected results. Start with synthetic cases or approved data, not a copy of production traffic.</p>
       <div class="detail-grid">
         <article class="detail-card">
           <h3>Case record | minimum fields</h3>
           <ul>
-            <li>Stable case ID, use case, risk tier, and dataset / split version</li>
-            <li>Approved input or synthetic equivalent; source and permitted-use metadata</li>
-            <li>Expected result, acceptable range / rubric, required evidence references</li>
-            <li>Edge-case tags, label provenance, reviewer, approval date, and change history</li>
+            <li>Case ID, use case, dataset version, and whether the case is for tuning or release testing.</li>
+            <li>Input, caller role, and any source documents the caller can access.</li>
+            <li>Expected result, how to score it, and any required citation.</li>
+            <li>Case type, reviewer, and approval date.</li>
           </ul>
         </article>
         <article class="detail-card">
-          <h3>Lifecycle | intake to regression</h3>
+          <h3>How to add and update cases</h3>
           <ul>
-            <li>Start with representative, edge, and known-failure cases; exclude unapproved data</li>
-            <li>Have subject-matter reviewers adjudicate ambiguous labels and disagreements</li>
-            <li>Separate development examples from a held-out regression set</li>
-            <li>Promote sanitized, reviewed production failures into the suite through change control</li>
+            <li>Cover common questions, boundary values such as exactly $25, and requests for restricted material.</li>
+            <li>Have a subject-matter reviewer confirm each expected result.</li>
+            <li>Keep release tests separate from examples used to tune the assistant.</li>
+            <li>Remove sensitive details from live failures and get approval before adding them as tests.</li>
           </ul>
         </article>
       </div>
-      <div class="recommendation"><p><strong>Governance rule:</strong> dataset edits are versioned and reviewed; evaluation results pin the exact dataset version. Do not tune against the held-out set, and do not send regulated or confidential records to a vendor until security, privacy, residency, retention, and contractual controls are approved.</p></div>
+      <div class="recommendation"><p><strong>Data rule:</strong> approve dataset edits and record the exact version used in each run. Do not export confidential or regulated records without approval for the specific data, destination, and retention period.</p></div>
     </section>
 
     <section class="detail-section" id="central-platform" aria-labelledby="central-platform-title">
-      <h2 class="section-label" id="central-platform-title">03 / Centralized evaluation platform | shared standards, isolated execution</h2>
-      <p class="detail-intro">Give every AI team one place to register a use case, find approved evaluation suites, trigger runs, and review release evidence. Centralize policy and results, not raw production data: teams run workloads in approved environments and share only what policy permits.</p>
+      <h2 class="section-label" id="central-platform-title">03 / Centralized platform | what teams share and what stays private</h2>
+      <p class="detail-intro">Teams use one registry, one way to start a test, and one place to see release results. Restricted inputs, raw traces, and case-level results stay in approved workspaces. The shared dashboard shows permitted summaries and links that still require workspace access.</p>
       <div class="table-wrap">
         <table class="plan-table">
-          <thead><tr><th scope="col">Platform layer</th><th scope="col">What to build or reuse</th><th scope="col">Integration and control</th></tr></thead>
+          <thead><tr><th scope="col">Platform layer</th><th scope="col">What it does</th><th scope="col">How it works for the policy assistant</th></tr></thead>
           <tbody>
-            <tr><th scope="row">Intake &amp; registry</th><td>Use case and workspace registration; catalog versioned datasets, evaluator suites, baselines, and risk-tier policies. Link each record to the existing AI asset registry.</td><td>Onboard with a named owner, risk tier, approved data boundary, and release approver. Separate permissions by team and environment.</td></tr>
-            <tr><th scope="row">Offline execution</th><td>One run API and a reusable CI template submit pinned manifests to approved workers. Run deterministic checks, calibrated model judges, and reviewer rubrics.</td><td>Keep restricted inputs and case-level results in the approved workspace. Use scoped workload identities, per-team quotas, and approved judge endpoints.</td></tr>
-            <tr><th scope="row">Production monitoring</th><td>Collect permitted application and gateway traces through a common telemetry schema. Score approved samples asynchronously and route alerts to the owning team.</td><td>Filter and redact before export; keep production scoring off the request path. Report sampling coverage and missing telemetry separately from quality. Review and sanitize failures before adding them to a golden set.</td></tr>
-            <tr><th scope="row">Results, gates &amp; audit</th><td>Normalize results into a central scorecard and store signed-off release evidence in the bank's approved evidence store. Show portfolio trends and link back to restricted case details.</td><td>The release pipeline reads the bank-owned gate outcome: pass, fail, or incomplete. Missing, stale, or failed mandatory checks block promotion unless an authorized, time-limited exception is recorded.</td></tr>
+            <tr><th scope="row">Registry</th><td>Link each use case to the AI asset registry. Record its owner, risk tier, workspace, approved test sets, and release approver.</td><td>Register the policy assistant with its owner and approved policy documents. Give the team access to its own test workspace.</td></tr>
+            <tr><th scope="row">Offline runner</th><td>A shared CI template calls the run API with the app build, comparison build, test-set version, and evaluator versions. An approved worker runs the tests.</td><td>Run both builds on the same 100 answer cases and 20 access-control cases. Send counts and status to the dashboard, not restricted case content.</td></tr>
+            <tr><th scope="row">Production monitoring</th><td>Apply approved sampling and redact traces before export. Score samples after the response so evaluations do not delay users.</td><td>Route missing-citation alerts to the assistant team. Report how many requests were sampled and how many could not be scored.</td></tr>
+            <tr><th scope="row">Release decision</th><td>The pipeline reads the bank-owned gate result. Store the result and any approval or authorized exception in the bank's evidence store.</td><td><strong>Fail:</strong> A required check fails. <strong>Incomplete:</strong> No failure is known, but a required result is missing. Both stop deployment by default. <strong>Pass:</strong> All required checks pass; release sign-off is still required.</td></tr>
           </tbody>
         </table>
       </div>
       <div class="detail-grid spaced">
         <article class="detail-card">
-          <h3>Common run and result contract</h3>
-          <p>Stamp each run with a run ID, use case, owner, environment, application build, and applicable model, prompt, dataset, evaluator, baseline, and policy versions. Record metric and slice results, coverage, trace or case references, gate outcome, and reviewer or exception IDs. For online runs without reference labels, record the sampling policy and mark dataset and reference-based measures as not applicable.</p>
+          <h3>What each run records</h3>
+          <p>Save the run ID, use case, environment, app build, and versions of the model, prompt, checks, and release rules. Offline runs also record the test set and comparison build. Live runs record the sampling policy. Save tested and passed counts, links to cases or traces, and any release decision or exception.</p>
         </article>
         <article class="detail-card">
           <h3>Who owns what</h3>
-          <p><strong>AI Platform</strong> owns the shared service, schemas, adapters, access, and support. <strong>Use-case teams and data owners</strong> own cases, labels, instrumentation, and remediation. <strong>Model Risk / Control Tower</strong> define gate policy and exception authority; the designated release approver signs off independently of the team submitting the run.</p>
+          <p><strong>AI Platform</strong> runs the service. <strong>App teams</strong> write tests, send traces, and fix failures. <strong>Data owners</strong> approve data use. <strong>Model Risk and Control Tower</strong> define release rules and who can grant exceptions. An independent release approver signs off.</p>
         </article>
       </div>
-      <div class="recommendation"><p><strong>Keep the bank-owned records separate from the tooling:</strong> use a thin adapter to normalize runs and results from LangSmith or Arize (Phoenix or AX). Choose one default backend after the pilot. Evaluator definitions, approved dataset versions, gate rules, and signed release evidence remain portable; a vendor outage or change must not turn an incomplete gate into a pass.</p></div>
+      <div class="recommendation"><p><strong>Tools run tests; the bank controls releases.</strong> Convert LangSmith or Arize results to the same format. Keep versioned tests and release rules in bank-controlled storage. If a tool is unavailable and required results are missing, mark the gate incomplete.</p></div>
     </section>
 
     <section class="detail-section" aria-labelledby="tooling-title">
       <div class="section-label" id="tooling-title">04 / Tooling shortlist | LangSmith + Arize</div>
-      <p class="detail-intro">Propose a time-boxed proof of concept for both options against the same sanitized golden set and workflow. Product capabilities below reflect vendor documentation; enterprise fit, deployment, cost, retention, and data handling need direct validation with the vendors and internal control owners.</p>
+      <p class="detail-intro">Run the same policy assistant tests in LangSmith and Arize. Give both tools the same app builds, test cases, and scoring rules. Neither tool is approved by this proposal.</p>
       <div class="detail-grid">
         <article class="vendor-card">
           <h3>LangSmith</h3>
           <p class="vendor-type">Managed evaluation + observability platform</p>
-          <p>Strong candidate for the integrated developer workflow: instrument application runs, inspect traces, run offline dataset experiments, compare versions, and apply online evaluators to sampled production interactions.</p>
+          <p>Run tests against a dataset, compare app versions, inspect request traces, and score sampled live requests.</p>
           <ul>
-            <li>Test dataset workflows, evaluator authoring, experiment comparisons, trace search, and feedback capture.</li>
-            <li>Check framework fit, self-hosted / hybrid options, data controls, access model, retention, and total cost.</li>
-            <li>Potential preference when teams prioritize an integrated prompt / agent iteration loop.</li>
+            <li>Test whether a developer can open a failed case, find its trace, and rerun it after a prompt change.</li>
+            <li>Verify supported deployment options and whether the chosen option meets bank data and access rules.</li>
           </ul>
           <p class="source-links"><a href="https://docs.langchain.com/langsmith/observability" target="_blank" rel="noreferrer">Official observability docs</a><a href="https://docs.langchain.com/langsmith/evaluation" target="_blank" rel="noreferrer">Official evaluation docs</a></p>
         </article>
         <article class="vendor-card">
           <h3>Arize</h3>
           <p class="vendor-type">Compare Phoenix (open source) and Arize AX (managed)</p>
-          <p>Phoenix is an open-source, OpenTelemetry / OpenInference-oriented option for traces, evaluations, annotations, datasets, and experiments. Arize AX is the managed enterprise platform option for observing, evaluating, and improving agents.</p>
+          <p>Phoenix is the open-source option for traces and tests. AX is Arize's managed enterprise option. Assess their hosting and support requirements separately.</p>
           <ul>
-            <li>Test instrumentation portability, trace / span coverage, evaluation workflow, and experiment comparison.</li>
-            <li>Decide separately whether self-managed Phoenix or managed AX meets operating and control needs.</li>
-            <li>Potential preference when open standards, deployment flexibility, or Arize's managed workflow is a priority.</li>
+            <li>Test whether OpenTelemetry / OpenInference captures the assistant's retrieval and model calls with their shared trace ID.</li>
+            <li>Estimate the staff and infrastructure needed to run Phoenix, or the cost and controls of using AX.</li>
           </ul>
           <p class="source-links"><a href="https://arize.com/docs/phoenix" target="_blank" rel="noreferrer">Phoenix docs</a><a href="https://arize.com/docs/ax" target="_blank" rel="noreferrer">Arize AX docs</a></p>
         </article>
       </div>
       <div class="table-wrap">
         <table class="vendor-table">
-          <thead><tr><th scope="col">PoC criterion</th><th scope="col">LangSmith evidence</th><th scope="col">Arize evidence</th><th scope="col">Required decision</th></tr></thead>
+          <thead><tr><th scope="col">Pilot check</th><th scope="col">What both tools must demonstrate</th></tr></thead>
           <tbody>
-            <tr><th scope="row">Offline evals</th><td>Can a pinned dataset run, evaluator suite, and candidate-vs-baseline comparison produce reproducible evidence?</td><td>Can the same cases and evaluator logic run in Phoenix or AX with comparable, exportable results?</td><td>Metric parity, repeatability, supported formats / APIs</td></tr>
-            <tr><th scope="row">Production traces</th><td>Can traces be sampled, filtered, reviewed, and linked back to an evaluation and release?</td><td>Can OpenTelemetry / OpenInference instrumentation capture the same important spans and metadata?</td><td>Coverage, sampling, latency overhead, failure behavior</td></tr>
-            <tr><th scope="row">Control fit</th><td>Validate deployment choices, SSO / RBAC, redaction, retention, residency, audit, and support.</td><td>Validate Phoenix hosting responsibilities or AX service controls, plus SSO / RBAC, retention, and audit.</td><td>Security, privacy, architecture, legal, procurement approval</td></tr>
-            <tr><th scope="row">Portability &amp; cost</th><td>Test export / API access for cases, runs, feedback, and results; estimate volume-based cost.</td><td>Test standards-based instrumentation and data export; estimate hosting or managed-service cost.</td><td>Exit path, operational ownership, projected total cost</td></tr>
+            <tr><th scope="row">Offline tests</th><td>Run both app builds on the same 120 cases. Compare results and investigate any scoring differences.</td></tr>
+            <tr><th scope="row">Trace review</th><td>Open a failed score, find the corresponding request and source IDs, and confirm redacted fields did not reach the tool.</td></tr>
+            <tr><th scope="row">Access &amp; retention</th><td>Verify that a second team cannot read private case details. Confirm where records are stored, who can access them, and when they are deleted.</td></tr>
+            <tr><th scope="row">Export &amp; cost</th><td>Import an exported test result into the bank's dashboard. Estimate hosting, support, trace storage, and scoring costs at the same expected volume.</td></tr>
           </tbody>
         </table>
       </div>
-      <div class="recommendation"><p><strong>Proposed posture:</strong> run a short, controlled bake-off against the common run and result contract; do not procure or deploy both by default. Select one default evaluation backend after the PoC, with exportable evidence and portable instrumentation. The bank's approved evidence store remains the system of record for release decisions.</p></div>
+      <div class="recommendation"><p><strong>Selection rule:</strong> rule out any option that fails a required control. Compare the remaining options on test workflow, trace review, export, and cost. Select one default tool; keep release decisions in the bank's evidence store.</p></div>
     </section>
 
     <section class="detail-section" aria-labelledby="implementation-title">
       <div class="section-label" id="implementation-title">05 / Adoption plan | prove value before scaling</div>
-      <p class="detail-intro">Start with one bounded use case and non-production or approved synthetic data. Advance only when evidence and control dependencies are cleared.</p>
+      <p class="detail-intro">Start with one read-only assistant and approved test data. Let a second team try the same process before expanding.</p>
       <div class="table-wrap">
         <table class="plan-table">
           <thead><tr><th scope="col">Stage</th><th scope="col">Activities</th><th scope="col">Exit evidence</th><th scope="col">Accountable roles</th></tr></thead>
           <tbody>
-            <tr><th scope="row">A / Define</th><td>Select use case and risk tier; agree scorecard, reviewer rubric, data boundary, and baseline.</td><td>Approved evaluation charter, owners, success criteria, and data approval.</td><td>Product / business owner, Model Risk, data owner</td></tr>
-            <tr><th scope="row">B / Pilot</th><td>Build a reviewed golden set; submit the same candidate and baseline through the shared run contract to LangSmith and Arize using approved test data.</td><td>Comparable results, trace coverage, evidence export, control assessment, and support / cost estimate.</td><td>AI Engineering, platform, Security / Privacy</td></tr>
-            <tr><th scope="row">C / Gate</th><td>Publish the CI template and onboard a second team in an isolated workspace before broad rollout. Assign the exception and approval path.</td><td>Repeatable runs and signed baselines; isolation verified; passing, failing, and incomplete runs produce the expected promotion decisions and evidence.</td><td>Release owner, Model Risk, Control Tower</td></tr>
-            <tr><th scope="row">D / Observe</th><td>Use approved production sampling; review traces, incidents, overrides, and drift indicators.</td><td>Access-controlled operational dashboard and incident / re-evaluation playbook.</td><td>Operations, business reviewer, AI Engineering</td></tr>
-            <tr><th scope="row">E / Improve</th><td>Promote reviewed failures to a new dataset version; fix, re-run, compare, re-approve.</td><td>Trace-to-case lineage and documented resolution; no unreviewed benchmark changes.</td><td>Dataset owner, evaluators, release approver</td></tr>
+            <tr><th scope="row">A / Define</th><td>Name the app owner, risk tier, approved data, current build, and pass limits.</td><td>Approved test plan and named release approver.</td><td>Product owner, Model Risk, data owner</td></tr>
+            <tr><th scope="row">B / Pilot</th><td>Run both builds on the same reviewed test set in LangSmith and Arize.</td><td>Recorded scores, a trace linked to a failed test, and a documented tool decision.</td><td>AI Platform, Security, Privacy</td></tr>
+            <tr><th scope="row">C / Gate</th><td>Have a second team use the shared CI template in its own workspace.</td><td>Verify results stay separate and that failed or incomplete runs stop deployment.</td><td>Release owner, Model Risk, Control Tower</td></tr>
+            <tr><th scope="row">D / Observe</th><td>Sample live requests and route alerts to the team that owns the app.</td><td>Verify that the owner receives an alert and can find its trace.</td><td>Operations, app team</td></tr>
+            <tr><th scope="row">E / Improve</th><td>Turn an approved, sanitized failure into a test. Fix the issue and rerun.</td><td>Show the new test fails on the old build and passes on the fixed build.</td><td>Dataset owner, app team, release approver</td></tr>
           </tbody>
         </table>
       </div>

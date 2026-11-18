@@ -156,13 +156,13 @@
       <div class="topline">
         <div>
           <h1>TRUSTED AI DATA | Metadata, knowledge &amp; access controls</h1>
-          <p class="subtitle">A proposed target state for delivering the right approved information to the right agent, for the right purpose, with identity, authorization, and evidence carried end to end.</p>
+          <p class="subtitle">Check both the user and the agent before returning data. Keep test and production data separate. Require human approval before an agent changes a production record.</p>
         </div>
         <span class="target-pill">Target state / for discussion</span>
       </div>
     </header>
 
-    <div class="section-label">Reference architecture | policy follows the data to every retrieval</div>
+    <div class="section-label">Reference architecture | where access is checked</div>
     <section class="architecture" aria-label="Governed data and agent access architecture">
       <div class="plane">
         <h3>Govern <small>Policy, ownership, approval records</small></h3>
@@ -193,8 +193,21 @@
         <div class="unit decide-unit"><strong>Stop / revoke</strong><p>Disable agent, credential, source route or risky capability</p></div>
       </div>
     </section>
-    <div class="access-bar">END-TO-END ACCESS INVARIANT &nbsp;·&nbsp; No agent or user can retrieve content beyond approved identity, entitlement, purpose, source and classification.</div>
-    <p class="loop-note">Observability returns evidence to governance for recertification, incident response, and source / model change review. Security controls can stop or restrict a route at any stage.</p>
+    <div class="access-bar">ACCESS RULE &nbsp;·&nbsp; For a user request, return only data that both the user and the agent may read for that task.</div>
+    <p class="loop-note">Use audit records to review access and investigate incidents. Security can disable an agent, credential, tool, or data route.</p>
+
+    <div class="section-label">Worked example | the same question, two access decisions</div>
+    <p class="subtle">The internal policy assistant answers &ldquo;When do I need a receipt?&rdquo; using a synthetic Finance policy. The $25 threshold is an example, not bank policy.</p>
+    <div class="cards card-grid-spaced">
+      <article class="card">
+        <h3>Allow | both identities have access</h3>
+        <p>The employee and the read-only agent can access Expense Policy, version 3. The retrieval service returns section 4. The assistant answers &ldquo;$25 or more&rdquo; and cites section 4.</p>
+      </article>
+      <article class="card">
+        <h3>Deny | the agent cannot lend its access</h3>
+        <p>For a user without access, the service returns no policy text or citation, even if the agent has access or an earlier answer is cached. Log the decision without copying restricted text into the audit log.</p>
+      </article>
+    </div>
 
     <div class="section-label">Maturity spine | proposed capability by release</div>
     <div class="legend" aria-label="Status legend">
@@ -218,7 +231,7 @@
     </div>
 
     <div class="section-label">Platform capability map | components by plane</div>
-    <p class="subtle">The same target architecture, organized by capability plane. Status labels are proposed maturity placement from the roadmap, not a declaration that a platform choice or control is complete.</p>
+    <p class="subtle">Each row groups related components. Release labels show proposed timing, not current implementation or approval.</p>
     <div class="legend component-legend" aria-label="Component maturity legend">
       <span><i class="swatch decide"></i> To choose / confirm</span>
       <span><i class="swatch build"></i> To build</span>
@@ -240,7 +253,7 @@
         <div class="capability-items">
           <article class="capability c-build"><span class="status build">To build / v2.1</span><strong>Agent identity</strong><p>Unique workload identity per agent and environment; owner, purpose and least-privilege scope.</p></article>
           <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Keys &amp; secrets</strong><p>Central vault, short-lived credentials where supported, rotation, scoped access and revocation.</p></article>
-          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Action approval</strong><p>Human approval for consequential writes; policy check, approver, decision and outcome recorded.</p></article>
+          <article class="capability c-build"><span class="status build">Production target / v3.0</span><strong>Action approval</strong><p>A person approves the exact change before it runs. If the change is edited, ask again.</p></article>
           <article class="capability c-target"><span class="status chosen">Target / v2.1</span><strong>Stop / revoke</strong><p>Disable agent, credential, tool or source route; verify downstream access is revoked.</p></article>
         </div>
       </div>
@@ -248,31 +261,31 @@
         <div class="capability-plane">Interface<small>Channels, agents, tools, external suppliers</small></div>
         <div class="capability-items">
           <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Approved AI gateways</strong><p>Controlled model and tool routes for authentication, policy, usage limits and logging.</p></article>
-          <article class="capability c-decide"><span class="status decide">To choose / v2.1</span><strong>MCP server hosting</strong><p>Approved MCP route and catalog; each tool independently authenticates and authorizes requests.</p></article>
-          <article class="capability c-later"><span class="status future">Later / v3.0</span><strong>Agent communication</strong><p>Approved agent-to-agent protocol with authenticated peers, scoped delegation and traceable handoffs.</p></article>
+          <article class="capability c-decide"><span class="status decide">To choose / v2.1</span><strong>MCP server hosting</strong><p>Model Context Protocol (MCP) connects agents to tools. Register each tool and verify caller identity and permissions on every call.</p></article>
+          <article class="capability c-later"><span class="status future">Parallel track</span><strong>Agent communication</strong><p>When one agent hands off a task, the receiving agent verifies the sender and checks its own permissions. Record the handoff under the same trace ID.</p></article>
           <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>External supplier routes</strong><p>Reach vendors, models and tools only through approved gateways and reviewed data paths.</p></article>
         </div>
       </div>
       <div class="capability-band">
         <div class="capability-plane">Run<small>Orchestration, compute, data</small></div>
         <div class="capability-items">
-          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Business process engine</strong><p>Workflow orchestration, bounded steps, durable checkpoints, retry and approval handoff.</p></article>
-          <article class="capability c-build"><span class="status build">To build / v2.1</span><strong>Agent runtime + sandbox</strong><p>Isolated execution with approved models, tools, network egress and resource limits.</p></article>
-          <article class="capability c-build"><span class="status build">To build / v2.1</span><strong>Agent / workflow state store</strong><p>Scoped session state and workflow status with ownership, expiry, encryption and access policy.</p></article>
-          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Caching layer</strong><p>Tenant- and authorization-scoped cache keys; re-check access and invalidate on ACL, label or source changes.</p></article>
+          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Business process engine</strong><p>Runs steps in order, pauses for approval, and resumes from the saved step after a restart.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.1</span><strong>Agent runtime + sandbox</strong><p>The runtime runs the agent. The sandbox isolates test runs from production records and tools.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.1</span><strong>Agent / workflow state store</strong><p>Saves session context and workflow progress, such as &ldquo;waiting for approval.&rdquo; Restrict access by workspace and expire records on schedule.</p></article>
+          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Caching layer</strong><p>Reuses recent results only within the same tenant and permission scope. Recheck access on reuse; invalidate results when permissions or source data change.</p></article>
           <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Retrieval service + indexes</strong><p>Approved vector / keyword indexes retain provenance and apply authorization before context assembly.</p></article>
           <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Data segregation</strong><p>Separate tenant, environment, classification and workload boundaries across stores and compute.</p></article>
-          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Data lakes</strong><p>Governed source and curated zones; owner, classification, access and lineage travel with data.</p></article>
-          <article class="capability c-decide"><span class="status decide">To choose / v2.1</span><strong>Analytics platforms</strong><p>Approved query paths and semantic / row-level controls; no broad agent access to raw data.</p></article>
+          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Data lakes</strong><p>Separate raw from approved datasets. Record the owner, sensitivity, and source for each dataset.</p></article>
+          <article class="capability c-decide"><span class="status decide">To choose / v2.1</span><strong>Analytics platforms</strong><p>Agents query approved views. The platform limits which rows and columns each caller can see.</p></article>
         </div>
       </div>
       <div class="capability-band">
         <div class="capability-plane">Observe<small>Evidence, usage, performance</small></div>
         <div class="capability-items">
-          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Audit + trace</strong><p>Correlate user, agent, policy decision, retrieval, model call, tool and approval events.</p></article>
-          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Evidence store</strong><p>Access-controlled, integrity-protected records with retention, search and export controls.</p></article>
-          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Conversation archive</strong><p>Approved, minimized conversation records with access restrictions and defined retention.</p></article>
-          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Incident record</strong><p>Link alert, affected identity / data, investigation, containment, owner and remediation evidence.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Audit + trace</strong><p>Use one request ID to link the caller, agent, access decision, source, tool call, and approval.</p></article>
+          <article class="capability c-decide"><span class="status decide">To choose / v2.0</span><strong>Evidence store</strong><p>Protect test results and signed approvals from unauthorized changes. Limit access and retain records on schedule.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Conversation archive</strong><p>Keep only permitted chat content. Restrict who can read it and apply a separate retention schedule.</p></article>
+          <article class="capability c-build"><span class="status build">To build / v2.0</span><strong>Incident record</strong><p>Record the alert, affected data, incident owner, steps taken to stop the issue, and how the fix was verified.</p></article>
         </div>
       </div>
       <div class="capability-band">
@@ -288,7 +301,7 @@
     <div class="routing-note"><strong>Cross-plane rule:</strong> every model, MCP tool, agent handoff, cache lookup, retrieval index, data-lake query and analytics call uses an approved route. Authorization is evaluated before data enters the agent context; state and cached results remain scoped to identity, tenant, purpose and expiry.</div>
 
     <div class="section-label">01 / Metadata contract | minimum fields for a governed knowledge item</div>
-    <p class="subtle">Apply metadata consistently to source records and derived chunks. Keep source-of-truth content in its governed system; the index is a controlled retrieval projection with traceable provenance.</p>
+    <p class="subtle">Metadata describes a document and its searchable excerpts. The policy repository holds the official document. Each indexed excerpt points back to its document, version, and section.</p>
     <div class="table-wrap schema-wrap">
       <table class="schema">
         <thead><tr><th scope="col">Metadata group</th><th scope="col">Example attributes</th><th scope="col">Why it matters</th><th scope="col">Control expectation</th></tr></thead>
@@ -333,26 +346,26 @@
       </article>
     </div>
 
-    <div class="section-label">03 / Metadata filtering | authorize before context assembly</div>
+    <div class="section-label">03 / Metadata filtering | block restricted content before it reaches the model</div>
     <div class="cards">
       <article class="card">
-        <h3>Request context</h3>
-        <p>Resolve the human caller, authenticated workload / agent identity, tenant, approved use case, purpose, and delegated permissions. Reject missing or expired identity context.</p>
+        <h3>1 / Identify the user and agent</h3>
+        <p>Verify who made the request, which agent is acting, and which tenant and task the request belongs to. Reject missing or expired credentials.</p>
       </article>
       <article class="card">
-        <h3>Policy decision</h3>
-        <p>Evaluate user and agent entitlements together against source ACL, classification, purpose, jurisdiction, tenant boundary, effective dates and current policy.</p>
+        <h3>2 / Check both sets of permissions</h3>
+        <p>Use current source permissions and metadata (such as tenant, sensitivity, and effective date) to decide which documents both identities may read for this task.</p>
       </article>
       <article class="card">
-        <h3>Constrained retrieval</h3>
-        <p>Pass mandatory authorization predicates to the retrieval / data service before results are returned. Apply the same controls to vector, keyword, cache, reranker and structured-data paths.</p>
+        <h3>3 / Search only allowed records</h3>
+        <p>Apply the access filter in keyword search, vector search, and structured queries. Recheck permissions before serving a cache hit.</p>
       </article>
       <article class="card">
-        <h3>Re-check and minimize</h3>
-        <p>Validate returned records and citations, remove disallowed fields, minimize context, and deny rather than broaden access when filters cannot be enforced or verified.</p>
+        <h3>4 / Return only what the task needs</h3>
+        <p>Recheck returned records and citations. Send only permitted fields and excerpts to the model.</p>
       </article>
     </div>
-    <div class="callout"><p><strong>Non-negotiable:</strong> post-retrieval filtering alone is not an authorization boundary: unauthorized content may already have reached the application, logs, reranker or model context. Fail closed if policy evaluation, ACL synchronization or tenant scoping is unavailable.</p></div>
+    <div class="callout"><p><strong>If access cannot be verified, return no data.</strong> Filtering only the final answer is too late: restricted text may already have reached a model, ranking service, or log.</p></div>
 
     <div class="section-label">04 / Agent authentication &amp; authorization | distinct identity per workload</div>
     <div class="table-wrap">
@@ -408,10 +421,10 @@
       <table>
         <thead><tr><th scope="col">Release</th><th scope="col">Proof point</th><th scope="col">Exit gate</th><th scope="col">Must be cleared</th></tr></thead>
         <tbody>
-          <tr><th scope="row">v1.0 Foundation</th><td>Governed model / data access for bounded build and test; centralized people and application authentication.</td><td>Certification, SIT / UAT, operations handover; approved data boundary and owners.</td><td>Approved models and data; central key handling; named support owner.</td></tr>
-          <tr><th scope="row">v2.0 Operational</th><td>First bounded production application with enforced controls; tool gateway and read-only agents proven in non-production.</td><td>Role-based, traceable access; source / metadata contract; incident and release evidence.</td><td>Data owner approvals, classification / DLP alignment, Control Tower and MRM registration.</td></tr>
-          <tr><th scope="row">v2.1 Agentic ready</th><td>First read-only agent in production through the approved gateway, with per-agent identity and source-level access.</td><td>Retrieval authorization tests, trace coverage, recertification owner, tested stop control.</td><td>Agent identity standard, approved connectors, metadata filter validation and incident playbook.</td></tr>
-          <tr><th scope="row">v3.0 Scaled</th><td>First approval-gated agent action; reusable governed knowledge / analytics across approved agents.</td><td>Action approvals, continuous access reviews, automated evidence and risk monitoring.</td><td>Business value / action thresholds, finance / control approvals, resilient shared services.</td></tr>
+          <tr><th scope="row">v1.0 Foundation</th><td>Teams build and test with approved models and approved or mock data.</td><td>Complete certification, integration and user acceptance tests, and handover to Operations.</td><td>Approved model and data list; central key storage; named support owner.</td></tr>
+          <tr><th scope="row">v2.0 Operational</th><td>A production app recommends; a person acts. Test the tool gateway and read-only agents outside production.</td><td>Show that users see only permitted records and that staff can find the access decision in the audit log.</td><td>Source owner approval, data loss prevention rules, Control Tower and Model Risk registration.</td></tr>
+          <tr><th scope="row">v2.1 Agentic ready</th><td>A read-only production agent uses its own identity and approved tools.</td><td>Verify restricted retrieval is denied, tool calls are traceable, and disabling the agent blocks further calls.</td><td>Approved identity standard, connectors, and incident response plan.</td></tr>
+          <tr><th scope="row">v3.0 Scaled</th><td>An agent can change a production record only after a person approves the exact action.</td><td>Verify an unapproved write is blocked and an approved write records the approver and outcome.</td><td>Risk approval for write thresholds and a confirmed business process engine.</td></tr>
         </tbody>
       </table>
     </div>
